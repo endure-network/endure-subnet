@@ -251,10 +251,17 @@ def test_registry_accepts_clean_public_history_at_immutable_bootstrap(
     registry_path: Path,
 ) -> None:
     payload = _payload()
-    bootstrap_record = payload["activation_history"][-1]
-    assert PUBLIC_HISTORY_BOOTSTRAP == (
-        bootstrap_record["key"],
-        bootstrap_record["digest"],
+    history = payload["activation_history"]
+    # The bootstrap is an exact (key, digest) assignment, not a position:
+    # later public activations may be appended behind it.
+    bootstrap_index = next(
+        index
+        for index, record in enumerate(history)
+        if (record["key"], record["digest"]) == PUBLIC_HISTORY_BOOTSTRAP
+    )
+    assert all(
+        record["key"] >= PUBLIC_HISTORY_BOOTSTRAP[0]
+        for record in history[bootstrap_index + 1 :]
     )
     public_root_receipt = "ab" * 32
 
