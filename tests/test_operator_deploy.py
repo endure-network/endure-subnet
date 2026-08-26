@@ -1,3 +1,4 @@
+import os
 import re
 import subprocess
 import sys
@@ -128,6 +129,58 @@ def test_runtime_images_embed_oci_source_identity() -> None:
         assert "org.opencontainers.image.revision=$ENDURE_SOURCE_REVISION" in dockerfile
         assert "org.opencontainers.image.source=$ENDURE_SOURCE_URL" in dockerfile
         assert "org.opencontainers.image.version=$ENDURE_IMAGE_VERSION" in dockerfile
+
+
+def test_runtime_images_validate_release_identity_before_dependencies() -> None:
+    for dockerfile_name in ("validator.Dockerfile", "miner.Dockerfile"):
+        dockerfile = (ROOT / "docker" / dockerfile_name).read_text()
+
+        check_at = dockerfile.index("RUN sh check-release-identity.sh")
+        assert check_at < dockerfile.index("uv export --locked")
+        assert "COPY docker/check-release-identity.sh" in dockerfile
+
+
+def _release_identity_check(env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["sh", str(ROOT / "docker" / "check-release-identity.sh")],
+        env={"PATH": os.environ["PATH"], **env},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def test_release_identity_check_passes_dev_builds_without_args() -> None:
+    assert _release_identity_check({}).returncode == 0
+    assert _release_identity_check({"ENDURE_IMAGE_VERSION": "dev"}).returncode == 0
+
+
+def test_release_identity_check_accepts_a_full_matching_revision() -> None:
+    sha = "ab" * 20
+    result = _release_identity_check(
+        {"ENDURE_SOURCE_REVISION": sha, "ENDURE_IMAGE_VERSION": f"sha-{sha}"}
+    )
+
+    assert result.returncode == 0
+
+
+def test_release_identity_check_refuses_an_abbreviated_revision() -> None:
+    result = _release_identity_check(
+        {"ENDURE_SOURCE_REVISION": "abcdef1", "ENDURE_IMAGE_VERSION": "sha-abcdef1"}
+    )
+
+    assert result.returncode == 1
+    assert "full 40-hex commit" in result.stderr
+
+
+def test_release_identity_check_refuses_a_mismatched_version() -> None:
+    sha = "ab" * 20
+    result = _release_identity_check(
+        {"ENDURE_SOURCE_REVISION": sha, "ENDURE_IMAGE_VERSION": "sha-" + "cd" * 20}
+    )
+
+    assert result.returncode == 1
+    assert f"must be sha-{sha}" in result.stderr
 
 
 def test_soak_probe_requires_readiness_and_exact_release_identity() -> None:

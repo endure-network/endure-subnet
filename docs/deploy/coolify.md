@@ -46,6 +46,11 @@ Optional settings are `CHAIN` (default `test`), `MARKET_DATA_ENDPOINT`,
 URL must be stored as a Coolify secret and must use a host accepted by the
 runtime serving-stage guard.
 
+The compose files pass no build arguments, so Coolify must inject
+`ENDURE_SOURCE_REVISION=<full 40-hex commit>` and
+`ENDURE_IMAGE_VERSION=sha-<that commit>` at build time; without them the image
+reports `source_revision: unknown` and the soak health probe rejects it.
+
 ### Testnet wallet exception
 
 `WALLETS_TAR_B64` is a deliberate exception for this team-operated testnet
