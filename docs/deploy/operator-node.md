@@ -78,7 +78,8 @@ docker compose --env-file deploy/operator-node/.env \
 
 ## Deploy
 
-Run from the repository checkout on the host:
+Run from the directory holding the copied `deploy/operator-node/` (the script
+resolves its env file and compose file relative to itself):
 
 ```bash
 sudo deploy/operator-node/deploy.sh
