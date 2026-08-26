@@ -156,6 +156,10 @@ def test_release_workflow_publishes_only_a_green_staging_sha() -> None:
     assert "repos/$GITHUB_REPOSITORY/git/ref/heads/staging" in workflow
     assert 'test "$staging_sha" = "$SOURCE_SHA"' in workflow
     assert workflow.count('test "$staging_sha" = "$SOURCE_SHA"') == 3
+    assert "ghcr.io/$owner/endure-subnet-validator:sha-$SOURCE_SHA" in workflow
+    assert "ghcr.io/$owner/endure-subnet-miner:sha-$SOURCE_SHA" in workflow
+    assert "ghcr.io/$owner/endure-validator:sha-$SOURCE_SHA" not in workflow
+    assert "ghcr.io/$owner/endure-miner:sha-$SOURCE_SHA" not in workflow
     assert "for _ in {1..360}; do" in workflow
     assert "sleep 10" in workflow
     assert (
