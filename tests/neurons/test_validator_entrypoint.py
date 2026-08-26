@@ -1,6 +1,7 @@
 import argparse
 import asyncio
 import logging
+import threading
 from collections.abc import Iterator
 from contextlib import ExitStack, contextmanager
 from decimal import Decimal
@@ -488,6 +489,26 @@ def test_runtime_health_reports_unstarted_background_thread_as_not_alive(
     assert validator.runtime_health()["validator_loop_alive"] is False
 
 
+def test_main_stops_cleanly_when_the_shutdown_event_is_set() -> None:
+    from neurons.validator import main
+
+    validator = MagicMock()
+    validator.watchdog_exit_reason.return_value = None
+    context = MagicMock()
+    context.__enter__.return_value = validator
+    stop = threading.Event()
+    stop.set()
+
+    with (
+        patch("neurons.validator.install_shutdown_handlers", return_value=stop),
+        patch("neurons.validator.Validator", return_value=context),
+    ):
+        main()
+
+    context.__exit__.assert_called_once()
+    validator.watchdog_exit_reason.assert_not_called()
+
+
 def test_main_exits_nonzero_and_cleans_up_on_watchdog_failure() -> None:
     from neurons.validator import main
 
@@ -497,6 +518,10 @@ def test_main_exits_nonzero_and_cleans_up_on_watchdog_failure() -> None:
     context.__enter__.return_value = validator
 
     with (
+        patch(
+            "neurons.validator.install_shutdown_handlers",
+            return_value=threading.Event(),
+        ),
         patch("neurons.validator.Validator", return_value=context),
         pytest.raises(SystemExit) as exit_info,
     ):
@@ -515,6 +540,10 @@ def test_main_redacts_runtime_endpoint_credentials() -> None:
     error_log = MagicMock()
 
     with (
+        patch(
+            "neurons.validator.install_shutdown_handlers",
+            return_value=threading.Event(),
+        ),
         patch("neurons.validator.Validator", side_effect=RuntimeError(credential_url)),
         patch("neurons.validator.bt.logging.error", error_log),
         pytest.raises(SystemExit) as exit_info,

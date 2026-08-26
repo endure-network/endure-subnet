@@ -1,3 +1,4 @@
+import threading
 from collections.abc import Iterator
 from contextlib import ExitStack, contextmanager
 from unittest.mock import MagicMock, patch
@@ -217,6 +218,9 @@ def test_main_redacts_startup_endpoint_credentials() -> None:
     )
     error_log = MagicMock()
     with (
+        patch(
+            "neurons.miner.install_shutdown_handlers", return_value=threading.Event()
+        ),
         patch("neurons.miner.Miner", side_effect=RuntimeError(credential_url)),
         patch("neurons.miner.bt.logging.error", error_log),
         pytest.raises(SystemExit) as exit_info,
@@ -239,6 +243,9 @@ def test_main_exits_nonzero_and_cleans_up_on_worker_failure() -> None:
     context.__enter__.return_value = miner
 
     with (
+        patch(
+            "neurons.miner.install_shutdown_handlers", return_value=threading.Event()
+        ),
         patch("neurons.miner.Miner", return_value=context),
         pytest.raises(SystemExit) as exit_info,
     ):
@@ -246,3 +253,22 @@ def test_main_exits_nonzero_and_cleans_up_on_worker_failure() -> None:
 
     assert exit_info.value.code == 1
     context.__exit__.assert_called_once()
+
+
+def test_main_stops_cleanly_when_the_shutdown_event_is_set() -> None:
+    from neurons.miner import main
+
+    miner = MagicMock()
+    context = MagicMock()
+    context.__enter__.return_value = miner
+    stop = threading.Event()
+    stop.set()
+
+    with (
+        patch("neurons.miner.install_shutdown_handlers", return_value=stop),
+        patch("neurons.miner.Miner", return_value=context),
+    ):
+        main()
+
+    context.__exit__.assert_called_once()
+    miner.thread.is_alive.assert_not_called()

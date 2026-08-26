@@ -34,6 +34,7 @@ from endure.assessment.schemas.subnet_alpha_risk import (
     RISK_SCHEMA_ID,
 )
 from endure.assessment.subnet_alpha_universe import StaticAlphaRiskUniverseProvider
+from endure.base.shutdown import install_shutdown_handlers
 from endure.base.validator import (
     WEIGHT_EMISSION_FINALITY_MARGIN_BLOCKS,
     WEIGHT_EMISSION_PERIOD_BLOCKS,
@@ -986,14 +987,16 @@ def main() -> None:
             f"image_version={identity['image_version']} "
             f"protocol_version_key={CURRENT_VERSION_KEY}"
         )
+        stop = install_shutdown_handlers()
         validator = Validator()
         with validator:
-            while True:
+            while not stop.is_set():
                 if (reason := validator.watchdog_exit_reason()) is not None:
                     bt.logging.error(f"validator watchdog exiting: {reason}")
                     raise SystemExit(1)
                 bt.logging.info(f"Validator running... {time.time()}")
-                time.sleep(5)
+                stop.wait(5)
+        bt.logging.info("validator stopped on shutdown signal")
     except DevOnlyConfigError as error:
         bt.logging.error(f"validator refused to start: {safe_error(error)}")
         raise SystemExit(1) from None
