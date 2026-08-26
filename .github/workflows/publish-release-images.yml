@@ -63,8 +63,8 @@ jobs:
       - name: Define immutable image tags
         run: |
           owner="${GITHUB_REPOSITORY_OWNER,,}"
-          echo "VALIDATOR_TAG=ghcr.io/$owner/endure-validator:sha-$SOURCE_SHA" >> "$GITHUB_ENV"
-          echo "MINER_TAG=ghcr.io/$owner/endure-miner:sha-$SOURCE_SHA" >> "$GITHUB_ENV"
+          echo "VALIDATOR_TAG=ghcr.io/$owner/endure-subnet-validator:sha-$SOURCE_SHA" >> "$GITHUB_ENV"
+          echo "MINER_TAG=ghcr.io/$owner/endure-subnet-miner:sha-$SOURCE_SHA" >> "$GITHUB_ENV"
 
       - name: Authenticate to the container registry
         run: echo "$GH_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
