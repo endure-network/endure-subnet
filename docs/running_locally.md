@@ -5,13 +5,12 @@ three-node subtensor chain, a seeded subnet with miner + validator wallets,
 and the Endure neuron entrypoints with the validator successfully writing
 weights to chain.
 
-**Scope.** Developer ergonomics only. Nothing here is part of the MVP
-product surface. Alpha Risk V1 is the default served runtime; Forge lending remains
-selectable as a reference schema, and lending is registered/selectable but not
-served yet.
+**Scope.** Developer ergonomics only. Alpha Risk V1 is the default served
+runtime; Forge lending remains selectable as a reference schema, and lending is
+registered/selectable but not served yet.
 
-**Tested on:** macOS 14+ on Apple Silicon, 2026-04-24. Linux steps are noted
-where they differ but have not been exercised in this run.
+Written against macOS on Apple Silicon. Linux steps are noted where they
+differ.
 
 ## Prerequisites
 
@@ -51,9 +50,13 @@ sudo apt install python3.12-venv
 
 ```bash
 make bootstrap
-make install  # uv sync --locked --no-dev, creating .venv as needed
-"${XDG_CACHE_HOME:-$HOME/.cache}/endure/uv-0.11.32/bin/uv" tool install bittensor-cli
+make install         # uv sync --locked --no-dev, creating .venv as needed
+make seeder-install  # hash-locked btcli for scripts/dev/seed_chain.sh
 ```
+
+`make seeder-install` builds a separate `.venv-seeder` on purpose: `btcli` and
+its dependency tree are pinned independently of the Endure lockfile, so the
+seeder toolchain never has to agree with `.venv`.
 
 Use `make dev-install` (`uv sync --locked --extra dev`) when you need the test,
 lint, and type-check tooling. `make bootstrap` is the documented installation
@@ -80,6 +83,10 @@ HOME=/tmp/endure-public-miner timeout 90s make dev-miner
 The validator liveness response reports `status: live` and its readiness response
 reports `status: ok`; the miner logs `Miner running...` when it reaches steady
 state. Remove both temporary homes after the timed runs.
+
+On macOS the `timeout` command is not installed by default; install GNU
+coreutils (`brew install coreutils`) and use `gtimeout`, or drop the `timeout`
+prefix and stop each process manually.
 
 ## Fast path — chain from a container (skips Phases 1–2)
 
@@ -176,6 +183,18 @@ Once the chain is producing blocks, run the idempotent seeder:
 bash scripts/dev/seed_chain.sh
 ```
 
+It reads `BTCLI` and `PY` (default: the `.venv-seeder` binaries from
+`make seeder-install`), `WALLET_PATH` (default: `~/.bittensor/wallets`), and
+`CHAIN_ENDPOINT` (default: `ws://127.0.0.1:9946`). To keep the throwaway
+wallets inside the checkout the way CI does, seed and run the cycle with the
+same path:
+
+```bash
+mkdir -p var/wallets
+WALLET_PATH=$PWD/var/wallets bash scripts/dev/seed_chain.sh
+make devnet-cycle NETUID=<from seeder> NETWORK=ws://127.0.0.1:9946 WALLET_PATH=$PWD/var/wallets
+```
+
 It handles all seven on-chain steps in a single command:
 
 1. Create `alice` (from `//Alice` dev URI — pre-funded on localnet),
@@ -185,8 +204,10 @@ It handles all seven on-chain steps in a single command:
    capturing the assigned netuid — **expect 2, not 1**, because
    netuid 0 is root and earlier slots may be consumed
 4. Start the subnet's emission schedule
-5. Register `miner` + `validator` on the subnet
-6. Stake TAO from `validator` to itself (without this the validator has
+5. Disable `commit_reveal_weights_enabled` on the subnet (the localnet has no
+   drand beacon, so chain-side commit/reveal would strand weight submissions)
+6. Register `miner` + `validator` on the subnet
+7. Stake TAO from `validator` to itself (without this the validator has
    no permit and cannot set weights)
 
 The script prints the assigned netuid and all key SS58 addresses at the
@@ -205,7 +226,7 @@ while writing it, and may bite you if you diverge from the script):
 - **`SubtokenDisabled(Module)` on stake add.** Subnets need their emission
   schedule started (via `btcli subnets start`) before stake can be added.
   The seeder does this between registration and staking.
-- **btcli flag drift.** bittensor-cli 9.20.1 renamed most flags:
+- **btcli flag drift.** bittensor-cli 9.x uses hyphenated flags:
   `--wallet.name` → `--wallet-name`,
   `--wallet.hotkey` → `--hotkey`, `--no_prompt` → `--no-prompt`,
   `--no_password` → `--no-use-password`. `--subtensor.chain_endpoint` is
@@ -281,18 +302,20 @@ the seeder (usually `2`):
 make devnet-cycle NETUID=2 NETWORK=ws://127.0.0.1:9946
 ```
 
-Expected successful output is a checklist like:
+A successful run prints the readiness line and then the checklist:
 
 ```text
+[x] both neurons ready with <seconds>s epoch runway
 [x] round opened
-[x] bundle accepted
-[x] consensus rows <all whitelisted coordinates>
+[x] accepted bundles <count>
+[x] consensus rows <count>
 [x] 5d pass
 [x] 30d pass
 [x] round closed
 [x] miner EMA positive
 [x] miner blended score positive
-[x] batch 1 confirmation=confirmed
+[x] confirmed weight emission batch present
+[x] miner confirmed weight non-zero
 ```
 
 Each invocation writes a hermetic evidence bundle under
@@ -384,6 +407,7 @@ Triggers match the agreed policy:
 | Pull request to `develop` | Manual — add the `qualify` label to the pull request. |
 | Push to `develop` | Automatic. |
 | Pull request `develop` → `staging` | Automatic. |
+| Push to `staging` | Automatic. |
 
 Labelling is the manual trigger rather than `workflow_dispatch` because GitHub
 only offers dispatch for workflows present on the default branch, and `main`
@@ -408,11 +432,11 @@ tmux kill-session -t endure-miner
 tmux kill-session -t endure-validator
 tmux kill-session -t localnet
 pkill -9 node-subtensor
-rm -rf /tmp/one /tmp/two /tmp/three    # node state
+rm -rf var/localnet                    # node state
 ```
 
 Wallets in `~/.bittensor/wallets/` are safe to keep across runs. Chain
-state in `/tmp/one|two|three` is ephemeral and should be purged between
+state in `var/localnet/` is ephemeral and should be purged between
 fresh-genesis runs.
 
 ## Known failure modes

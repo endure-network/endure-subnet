@@ -30,14 +30,13 @@ Endure's current Bittensor testnet netuid is `504`. Substitute wallet names and
 hotkeys, then check the prompted fee and chain state before confirming:
 
 ```bash
-btcli subnet register --netuid 504 --wallet.name <wallet-name> \
-  --wallet.hotkey <validator-hotkey> --subtensor.network test
-btcli stake add --netuid 504 --amount <tao> --wallet.name <wallet-name> \
-  --wallet.hotkey <validator-hotkey> --subtensor.network test
+btcli subnets register --netuid 504 --wallet-name <wallet-name> \
+  --hotkey <validator-hotkey> --network test
+btcli stake add --netuid 504 --amount <tao> --wallet-name <wallet-name> \
+  --hotkey <validator-hotkey> --network test
 ```
 
-Register and stake the miner hotkey the same way. `btcli` changes independently
-of Endure; use its installed `--help` output if these option names differ.
+Register and stake the miner hotkey the same way.
 
 ## Validator first
 
@@ -93,7 +92,3 @@ The [`staging` contract](running_on_staging.md) describes the release-candidate
 branch and environment independently of any deployment provider.
 
 Mainnet serving remains prohibited until the soak gate and a later code change.
-
-Compressed synthetic rounds are now reached through
-`--endure.devnet_time_compression` and `--endure.synthetic_epoch`; there is no
-fixture path to replace.

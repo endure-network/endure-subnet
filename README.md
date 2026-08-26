@@ -48,21 +48,21 @@ soak produces enough measurements for an honest recommendation.
 
 ## Install from source
 
-Use Python 3.12. The checked-in `uv.lock` is authoritative. Bootstrap the pinned
-development tools before any locked command:
+The checked-in `uv.lock` is authoritative. Bootstrap the pinned development
+tools before any locked command.
+
+Prerequisites:
+
+- A Python 3.12 executable (macOS: `brew install python@3.12` or
+  `uv python install 3.12`; Debian: `apt install python3.12 python3.12-venv`).
+  If it is not on `PATH` as `python3.12`, pass
+  `make bootstrap BOOTSTRAP_PYTHON=/path/to/python3.12`.
+- Node.js 22 or newer (`make verify` runs `npx jscpd`).
+- Docker, only for the localnet container fast path.
 
 ```bash
 git clone https://github.com/endure-network/endure-subnet.git
 cd endure-subnet
-```
-
-On Debian or Ubuntu, install the venv prerequisite first:
-
-```bash
-sudo apt install python3.12-venv
-```
-
-```bash
 make bootstrap     # installs hash-pinned uv and Gitleaks in the local tool cache
 make install       # uv sync --locked --no-dev, creating .venv as needed
 # or, for contributors and testnet operators:
