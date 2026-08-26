@@ -5,8 +5,11 @@
 FROM python:3.12-slim@sha256:57cd7c3a7a273101a6485ba99423ee568157882804b1124b4dd04266317710de
 
 ARG ENDURE_SOURCE_REVISION="unknown"
-ARG ENDURE_SOURCE_URL="https://github.com/Endure-Network/endure-subnet"
+ARG ENDURE_SOURCE_URL="https://github.com/endure-network/endure-subnet"
 ARG ENDURE_IMAGE_VERSION="dev"
+
+ENV ENDURE_SOURCE_REVISION=$ENDURE_SOURCE_REVISION \
+    ENDURE_IMAGE_VERSION=$ENDURE_IMAGE_VERSION
 
 LABEL org.opencontainers.image.revision=$ENDURE_SOURCE_REVISION \
       org.opencontainers.image.source=$ENDURE_SOURCE_URL \

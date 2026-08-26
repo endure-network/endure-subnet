@@ -33,6 +33,8 @@ from endure.protocol.risk_runtime import (
 )
 from endure.protocol.schedulers import scheduler_for_schema
 from endure.protocol.synapses import SubmitCommit, SubmitReveal
+from endure.protocol.version_contract import CURRENT_VERSION_KEY
+from endure.runtime.identity import runtime_identity
 from endure.runtime.resolve import resolve_runtime_provider
 from endure.scoring.market_data import recorded_mainnet_fixture_provider
 from endure.utils.config import (
@@ -308,6 +310,13 @@ class Miner(BaseMinerNeuron):
 
 def main() -> None:
     try:
+        identity = runtime_identity()
+        bt.logging.info(
+            "runtime identity "
+            f"source_revision={identity['source_revision']} "
+            f"image_version={identity['image_version']} "
+            f"protocol_version_key={CURRENT_VERSION_KEY}"
+        )
         with Miner() as miner:
             while True:
                 if miner.thread is None or not miner.thread.is_alive():
