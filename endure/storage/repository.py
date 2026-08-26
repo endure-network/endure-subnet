@@ -740,8 +740,15 @@ class Storage:
         schema_id: str,
         universe: UniverseSnapshot | None,
         now_iso: str,
+        publication_available_at: datetime | None = None,
     ) -> None:
         """Create the round row + universe snapshot; idempotent."""
+        publication_at = publication_available_at or windows.reveal_close
+        if publication_at.tzinfo is None or publication_at.utcoffset() is None:
+            raise ValueError("publication_available_at must be timezone-aware")
+        publication_at = publication_at.astimezone(UTC)
+        if publication_at < windows.reveal_close.astimezone(UTC):
+            raise ValueError("publication_available_at must not precede reveal_close")
         with self._engine.begin() as connection:
             existing = connection.execute(
                 select(rounds.c.state).where(
@@ -772,6 +779,7 @@ class Storage:
                     commit_close_at=windows.commit_close.isoformat(),
                     reveal_open_at=windows.reveal_open.isoformat(),
                     reveal_close_at=windows.reveal_close.isoformat(),
+                    publication_available_at=publication_at.isoformat(),
                     t0_close_at=windows.t0_close.isoformat(),
                     created_at=now_iso,
                     updated_at=now_iso,
@@ -876,6 +884,7 @@ class Storage:
             rounds.c.state,
             rounds.c.created_at,
             rounds.c.reveal_close_at,
+            rounds.c.publication_available_at,
         ).where(rounds.c.schema_id == schema_id)
         if state is not None:
             query = query.where(rounds.c.state == state)
@@ -889,15 +898,17 @@ class Storage:
                     "state": row.state,
                     "created_at": row.created_at,
                     "reveal_close_at": row.reveal_close_at,
+                    "publication_available_at": row.publication_available_at,
                 }
                 for row in connection.execute(query)
             ]
 
-    def _post_embargo_rounds(self, schema_id: str):
+    def _post_embargo_rounds(self, schema_id: str, *, now_iso: str):
         """Embargo enforced at the read path, not by write-ordering trust."""
         return select(rounds.c.round_id).where(
             rounds.c.schema_id == schema_id,
             rounds.c.state.in_(POST_EMBARGO_ROUND_STATES),
+            rounds.c.publication_available_at < now_iso,
         )
 
     def round_state(self, round_id: str, schema_id: str) -> str | None:
@@ -1319,6 +1330,7 @@ class Storage:
             "t0_close_at": row.t0_close_at,
             "reveal_open_at": row.reveal_open_at,
             "reveal_close_at": row.reveal_close_at,
+            "publication_available_at": row.publication_available_at,
             "universe_source_hash": universe.source_hash if universe else None,
             "universe_size": len(universe.tickers) if universe else 0,
             "accepted_submissions": accepted,
@@ -1443,6 +1455,27 @@ class Storage:
             )
         ]
 
+    def assessment_hotkeys_eligible_for_round(
+        self, schema_id: str, round_id: str
+    ) -> set[str]:
+        """Hotkeys with an accepted reveal no later than ``round_id``.
+
+        Assessment round IDs are canonical ISO dates, so lexical ordering is
+        chronological. Keeping eligibility in durable submission history makes
+        staggered horizon resolution independent of the order rounds resolve.
+        """
+        with self._engine.connect() as connection:
+            result = connection.execute(
+                select(submissions.c.miner_hotkey)
+                .distinct()
+                .where(
+                    submissions.c.schema_id == schema_id,
+                    submissions.c.verdict == "accepted",
+                    submissions.c.round_id <= round_id,
+                )
+            )
+            return {str(row.miner_hotkey) for row in result}
+
     def _insert_assessment_consensus_if_absent(
         self,
         connection: Connection,
@@ -1563,7 +1596,9 @@ class Storage:
                 for row in result
             ]
 
-    def latest_assessment_consensus_round(self, schema_id: str) -> str | None:
+    def latest_assessment_consensus_round(
+        self, schema_id: str, *, now_iso: str
+    ) -> str | None:
         with self._engine.connect() as connection:
             row = connection.execute(
                 select(assessment_consensus.c.round_id)
@@ -1571,7 +1606,7 @@ class Storage:
                 .where(
                     assessment_consensus.c.schema_id == schema_id,
                     assessment_consensus.c.round_id.in_(
-                        self._post_embargo_rounds(schema_id)
+                        self._post_embargo_rounds(schema_id, now_iso=now_iso)
                     ),
                 )
                 # Round ids are ISO dates (YYYY-MM-DD), so lexical DESC is newest first.
@@ -1585,6 +1620,8 @@ class Storage:
         schema_id: str,
         horizon_value: int,
         outputs: Sequence[str],
+        *,
+        now_iso: str,
     ) -> dict[int, str]:
         """Latest complete resolved round per subnet netuid for one horizon."""
         required_outputs = frozenset(outputs)
@@ -1624,7 +1661,7 @@ class Storage:
                 assessment_realized_targets.c.value_text.is_not(None),
                 assessment_realized_targets.c.output.in_(tuple(required_outputs)),
                 assessment_realized_targets.c.round_id.in_(
-                    self._post_embargo_rounds(schema_id)
+                    self._post_embargo_rounds(schema_id, now_iso=now_iso)
                 ),
             )
             .group_by(

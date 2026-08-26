@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from decimal import Decimal
 
 from endure.assessment.coordinates import AssessmentConsensusRow, AssessmentCoordinate
@@ -120,8 +121,13 @@ def _tier_inputs(
     )
 
 
-def _feed_payload(storage: Storage) -> dict[str, object]:
-    round_id = storage.latest_assessment_consensus_round(RISK_SCHEMA_ID)
+def _feed_payload(storage: Storage, *, now: datetime) -> dict[str, object]:
+    if now.tzinfo is None or now.utcoffset() is None:
+        raise ValueError("risk feed now must be timezone-aware")
+    now_iso = now.astimezone(UTC).isoformat()
+    round_id = storage.latest_assessment_consensus_round(
+        RISK_SCHEMA_ID, now_iso=now_iso
+    )
     consensus_rows = (
         []
         if round_id is None
@@ -138,6 +144,7 @@ def _feed_payload(storage: Storage) -> dict[str, object]:
             RISK_SCHEMA_ID,
             HORIZON_30D_SECONDS,
             TIER_OUTPUTS,
+            now_iso=now_iso,
         ).items()
         if netuid in ALPHA_RISK_WHITELISTED_NETUIDS
     }
@@ -214,8 +221,9 @@ def build_signed_risk_feed(
     *,
     signer: Signer | None = None,
     signed_by: str | None = None,
+    now: datetime | None = None,
 ) -> dict[str, object]:
-    payload = _feed_payload(storage)
+    payload = _feed_payload(storage, now=now or datetime.now(UTC))
     canonical_payload = canonical_bundle_bytes(payload)
     signature = None
     if signer is not None and signed_by is not None:

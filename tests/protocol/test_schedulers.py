@@ -32,6 +32,17 @@ class TestSyntheticScheduler:
         assert window is not None
         assert window.round_id == "2023-03-07"
 
+    def test_publication_waits_for_the_next_period_commit_close(self) -> None:
+        scheduler = SyntheticScheduler(
+            sessions=SESSIONS, epoch=EPOCH, period_seconds=100
+        )
+        window = scheduler.active_window(EPOCH + timedelta(seconds=10))
+
+        assert window is not None
+        assert scheduler.publication_available_at(window) == EPOCH + timedelta(
+            seconds=140
+        )
+
     def test_no_window_before_epoch_or_after_sessions_exhaust(self) -> None:
         scheduler = SyntheticScheduler(
             sessions=SESSIONS, epoch=EPOCH, period_seconds=100
@@ -76,6 +87,15 @@ class TestNyseScheduler:
         scheduler = NyseScheduler(fetch_delay_seconds=72000)
 
         assert scheduler.active_window(datetime(2026, 6, 7, 15, 0, tzinfo=UTC)) is None
+
+    def test_publication_waits_for_the_next_session_commit_close(self) -> None:
+        scheduler = NyseScheduler(fetch_delay_seconds=72000)
+        window = scheduler.active_window(datetime(2026, 6, 9, 15, 0, tzinfo=UTC))
+
+        assert window is not None
+        assert scheduler.publication_available_at(window) == datetime(
+            2026, 6, 10, 19, 30, tzinfo=UTC
+        )
 
     def test_resolution_due_after_fetch_delay(self) -> None:
         scheduler = NyseScheduler(fetch_delay_seconds=72000)

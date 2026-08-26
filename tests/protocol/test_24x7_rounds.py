@@ -80,6 +80,9 @@ class TestFixedUtcScheduler:
         assert window.t0_close == datetime(2026, 6, 19, 20, tzinfo=UTC)
         assert window.reveal_open == datetime(2026, 6, 19, 20, 30, tzinfo=UTC)
         assert window.reveal_close == datetime(2026, 6, 20, 0, tzinfo=UTC)
+        assert scheduler.publication_available_at(window) == datetime(
+            2026, 6, 20, 19, 30, tzinfo=UTC
+        )
 
     def test_creates_a_round_on_a_weekend(self) -> None:
         scheduler = FixedUtcScheduler(fetch_delay_seconds=0)

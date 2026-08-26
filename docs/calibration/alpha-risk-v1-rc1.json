@@ -1,0 +1,201 @@
+{
+  "anchor_block": 7410000,
+  "coordinate_scores": [
+    {
+      "horizon_seconds": 432000,
+      "netuid": 8,
+      "output": "max_drawdown",
+      "scores": {
+        "perfect": "1",
+        "previous_round_persistence": "0.7953448275862068965517241379",
+        "reference_baseline": "0.7953448275862068965517241379"
+      },
+      "target": 113
+    },
+    {
+      "horizon_seconds": 432000,
+      "netuid": 8,
+      "output": "realized_volatility",
+      "scores": {
+        "perfect": "1",
+        "previous_round_persistence": "0.5471034482758620689655172414",
+        "reference_baseline": "0.5471034482758620689655172414"
+      },
+      "target": 933
+    },
+    {
+      "horizon_seconds": 432000,
+      "netuid": 8,
+      "output": "twap_price",
+      "scores": {
+        "perfect": "1",
+        "previous_round_persistence": "1",
+        "reference_baseline": "1"
+      },
+      "target": 43625643
+    },
+    {
+      "horizon_seconds": 432000,
+      "netuid": 8,
+      "output": "liquidity_depth",
+      "scores": {
+        "perfect": "1",
+        "previous_round_persistence": "1",
+        "reference_baseline": "1"
+      },
+      "target": 93116461489830
+    },
+    {
+      "horizon_seconds": 2592000,
+      "netuid": 8,
+      "output": "max_drawdown",
+      "scores": {
+        "perfect": "1",
+        "previous_round_persistence": "0.6686206896551724137931034483",
+        "reference_baseline": "0.6686206896551724137931034483"
+      },
+      "target": 878
+    },
+    {
+      "horizon_seconds": 2592000,
+      "netuid": 8,
+      "output": "realized_volatility",
+      "scores": {
+        "perfect": "1",
+        "previous_round_persistence": "0.5953793103448275862068965517",
+        "reference_baseline": "0.5953793103448275862068965517"
+      },
+      "target": 1633
+    },
+    {
+      "horizon_seconds": 2592000,
+      "netuid": 8,
+      "output": "twap_price",
+      "scores": {
+        "perfect": "1",
+        "previous_round_persistence": "1",
+        "reference_baseline": "1"
+      },
+      "target": 43273895
+    },
+    {
+      "horizon_seconds": 2592000,
+      "netuid": 8,
+      "output": "liquidity_depth",
+      "scores": {
+        "perfect": "1",
+        "previous_round_persistence": "1",
+        "reference_baseline": "1"
+      },
+      "target": 94393856310000
+    },
+    {
+      "horizon_seconds": 432000,
+      "netuid": 44,
+      "output": "max_drawdown",
+      "scores": {
+        "perfect": "1",
+        "previous_round_persistence": "0.825",
+        "reference_baseline": "0.825"
+      },
+      "target": 285
+    },
+    {
+      "horizon_seconds": 432000,
+      "netuid": 44,
+      "output": "realized_volatility",
+      "scores": {
+        "perfect": "1",
+        "previous_round_persistence": "0.7216551724137931034482758621",
+        "reference_baseline": "0.7216551724137931034482758621"
+      },
+      "target": 3464
+    },
+    {
+      "horizon_seconds": 432000,
+      "netuid": 44,
+      "output": "twap_price",
+      "scores": {
+        "perfect": "1",
+        "previous_round_persistence": "0.9006762299150872419885273808",
+        "reference_baseline": "0.8933006400121413652517962452"
+      },
+      "target": 27730336
+    },
+    {
+      "horizon_seconds": 432000,
+      "netuid": 44,
+      "output": "liquidity_depth",
+      "scores": {
+        "perfect": "1",
+        "previous_round_persistence": "1",
+        "reference_baseline": "1"
+      },
+      "target": 44749429580319
+    },
+    {
+      "horizon_seconds": 2592000,
+      "netuid": 44,
+      "output": "max_drawdown",
+      "scores": {
+        "perfect": "1",
+        "previous_round_persistence": "0.7067241379310344827586206897",
+        "reference_baseline": "0.7067241379310344827586206897"
+      },
+      "target": 1099
+    },
+    {
+      "horizon_seconds": 2592000,
+      "netuid": 44,
+      "output": "realized_volatility",
+      "scores": {
+        "perfect": "1",
+        "previous_round_persistence": "0.8124137931034482758620689655",
+        "reference_baseline": "0.8124137931034482758620689655"
+      },
+      "target": 4780
+    },
+    {
+      "horizon_seconds": 2592000,
+      "netuid": 44,
+      "output": "twap_price",
+      "scores": {
+        "perfect": "1",
+        "previous_round_persistence": "0.651107846290614650062828595",
+        "reference_baseline": "0.6448896969360096050504376641"
+      },
+      "target": 32892035
+    },
+    {
+      "horizon_seconds": 2592000,
+      "netuid": 44,
+      "output": "liquidity_depth",
+      "scores": {
+        "perfect": "1",
+        "previous_round_persistence": "0.9312662473162537516761733457",
+        "reference_baseline": "0.9311651245845954345609205750"
+      },
+      "target": 50154896000953
+    }
+  ],
+  "fixture_sha256": "6548accf983b3d4e280a3740fb0b6690803e3169db6043fdab2b6c0add3f31fc",
+  "payout_half_life_rounds": 5,
+  "strategy_mean_scores": {
+    "perfect": "1",
+    "previous_round_persistence": "0.8222057314270187794571085144",
+    "reference_baseline": "0.8213498025526932020280850862"
+  },
+  "weight_scenarios_against_one_perfect_miner": {
+    "previous_round_persistence": {
+      "1": "0.3572559996517773789143597991",
+      "3": "0.6251154844006287746376184948",
+      "5": "0.7353900164359037418921709743"
+    },
+    "reference_baseline": {
+      "1": "0.3565388197198186520344644136",
+      "3": "0.6243829436179768627897920409",
+      "5": "0.7347815344377222150793681013"
+    }
+  },
+  "weight_sharpening_gamma": 3
+}

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-from endure import __spec_version__
 from endure.base.validator import BaseValidatorNeuron
 from endure.protocol.version_contract import CURRENT_VERSION_KEY
 from endure.storage.repository import _weight_intent_hash
@@ -33,11 +32,13 @@ def _neuron(spec_version: int) -> BaseValidatorNeuron:
 
 
 def test_weight_intent_uses_protocol_key_not_package_spec_version() -> None:
-    intent = _neuron(__spec_version__)._prepare_weight_intent([1], [65535])
+    unrelated_package_spec_version = CURRENT_VERSION_KEY + 1000
+    intent = _neuron(unrelated_package_spec_version)._prepare_weight_intent(
+        [1], [65535]
+    )
 
-    assert __spec_version__ == 1000
-    assert CURRENT_VERSION_KEY == 27
     assert intent.protocol_version_key == CURRENT_VERSION_KEY
+    assert intent.protocol_version_key != unrelated_package_spec_version
     assert intent.intent_hash == _weight_intent_hash(
         chain_identity="genesis",
         netuid=1,
@@ -46,4 +47,4 @@ def test_weight_intent_uses_protocol_key_not_package_spec_version() -> None:
         targets=((1, "miner-hotkey", 65535),),
         protocol_version_key=CURRENT_VERSION_KEY,
     )
-    assert intent.intent_hash.startswith("27:")
+    assert intent.intent_hash.startswith(f"{CURRENT_VERSION_KEY}:")

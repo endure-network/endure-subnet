@@ -461,6 +461,34 @@ class TestAfterEmbargo:
     def test_unknown_miner_is_404(self, client: TestClient) -> None:
         assert client.get("/miners/hk-nobody/scores").status_code == 404
 
+    def test_revealed_round_stays_embargoed_through_publication_boundary(
+        self, storage: Storage, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        windows = compute_windows(date(2026, 6, 9), offsets=DEFAULT_OFFSETS)
+        publication_available_at = windows.commit_close + timedelta(days=1)
+        storage.open_round(
+            windows=windows,
+            schema_id=RISK_SCHEMA_ID,
+            universe=UniverseSnapshot(
+                round_id=ROUND, tickers=("8",), source_hash="embargo"
+            ),
+            now_iso=NOW,
+            publication_available_at=publication_available_at,
+        )
+        storage.set_round_state(ROUND, RISK_SCHEMA_ID, "revealed", now_iso=NOW)
+        risk_client = TestClient(
+            build_app(storage=storage, schema_id=RISK_SCHEMA_ID, publisher="risk")
+        )
+        monkeypatch.setattr("endure.api.app._utc_now", lambda: publication_available_at)
+
+        assert risk_client.get(f"/rounds/{ROUND}/consensus").status_code == 403
+
+        monkeypatch.setattr(
+            "endure.api.app._utc_now",
+            lambda: publication_available_at + timedelta(microseconds=1),
+        )
+        assert risk_client.get(f"/rounds/{ROUND}/consensus").status_code == 200
+
 
 class TestRiskFeed:
     def _risk_client(self, storage: Storage) -> TestClient:

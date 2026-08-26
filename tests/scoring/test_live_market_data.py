@@ -440,6 +440,32 @@ def test_live_provider_assembles_series_at_canonical_cadence() -> None:
     assert series.source.endswith("netuid_44_live_1600_2800")
 
 
+def test_live_provider_never_fetches_past_a_misaligned_window_end() -> None:
+    # Given: the archive already has a cadence point after the requested window.
+    fetcher = FakeSubnetFetcher(
+        responses={
+            (44, 602): FakeDynamicInfo(tao_in=2_000_000_000, alpha_in=1_000_000_000),
+            (44, 1_202): FakeDynamicInfo(tao_in=3_000_000_000, alpha_in=1_000_000_000),
+            (44, 1_802): FakeDynamicInfo(tao_in=4_000_000_000, alpha_in=1_000_000_000),
+        },
+        current=1_802,
+    )
+    provider = LiveAlphaPriceProvider(
+        config=LiveAlphaPriceProviderConfig(request_pause_seconds=Decimal("0")),
+        fetcher=fetcher,
+    )
+
+    # When: the end block is not aligned to the 600-block sampling cadence.
+    series = provider.price_series(
+        44, window=ResolutionWindow(start_block=2, horizon_blocks=1_201)
+    )
+
+    # Then: the next cadence point is neither fetched nor included in the hash.
+    assert series is not None
+    assert tuple(snapshot.block for snapshot in series.snapshots) == (602, 1_202)
+    assert fetcher.calls == [(44, 602), (44, 1_202)]
+
+
 def test_live_provider_matches_recorder_decimal_derivation() -> None:
     # Given: the same reserve pair sent through the live helper and fixture recorder.
     snapshot = alpha_snapshot_from_reserves(

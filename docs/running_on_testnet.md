@@ -1,6 +1,6 @@
 # Running Endure on Testnet
 
-> **Experimental testnet alpha, unreleased `v0.1.0` candidate, protocol key `27`.** This is
+> **Experimental testnet alpha, unreleased `v0.1.0` candidate, protocol key `28`.** This is
 > not a mainnet guide. The authoritative compatibility value is
 > [version_contract.py](../endure/protocol/version_contract.py).
 

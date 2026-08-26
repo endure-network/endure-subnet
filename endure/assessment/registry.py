@@ -16,10 +16,12 @@ from endure.assessment.lending_universe import (
     validate_lending_netuid_membership,
 )
 from endure.assessment.schemas.forge_lending import (
+    LENDING_HORIZON_SECONDS,
     LendingSubmissionBundle,
     build_lending_v1_subnet_asset_schema,
 )
 from endure.assessment.schemas.subnet_alpha_risk import (
+    RISK_HORIZONS,
     RiskSubmissionBundle,
     build_risk_v1_subnet_alpha_schema,
 )
@@ -74,6 +76,7 @@ class SchemaRegistryEntry:
     bundle_membership_valid: BundleMembershipValidator | None = None
     production_scheduler_kind: ProductionSchedulerKind = "nyse"
     max_universe_targets: int | None = None
+    horizons_seconds: tuple[int, ...] = ()
 
 
 class SchemaRegistry:
@@ -126,6 +129,7 @@ def default_registry() -> SchemaRegistry:
             serving_status="registered_unserved",
             universe_provider=StaticLendingUniverseProvider(),
             bundle_membership_valid=_lending_membership_valid,
+            horizons_seconds=(LENDING_HORIZON_SECONDS,),
         )
     )
     registry.register(
@@ -137,6 +141,7 @@ def default_registry() -> SchemaRegistry:
             bundle_membership_valid=_risk_membership_valid,
             production_scheduler_kind="fixed_utc",
             max_universe_targets=MAX_ALPHA_RISK_TARGETS_PER_ROUND,
+            horizons_seconds=RISK_HORIZONS,
         )
     )
     return registry

@@ -11,10 +11,10 @@ so constants cannot drift outside the contract again.
 from pathlib import Path
 
 ACTIVATED_VERSION_REGISTRY_DIGEST = (
-    "232e29b93329e17ab3da33b6cc0441b989509b8d303069d983de9f462eb2b4df"
+    "6ce6bcbc4a7dd52d66de42351bdb1a3c48393b368a041aead334dd2541899c32"
 )
 ACTIVATED_VERSION_HISTORY_DIGEST = (
-    "617d25ba2c21db88a8711351db7849ed6c22dc44f6c6813d83458255215a7d03"
+    "5ca4cd4f9c0ea99d100db12a9b35b4ceb7477355b93345affdc4d4e34c5da75d"
 )
 
 WATCHED_PATHS = (
@@ -28,9 +28,9 @@ WATCHED_PATHS = (
 # Previous accepted protocol snapshot. When watched paths change, promote the
 # current values into the previous fields, then write the new digest and bump
 # the current version key.
-PREVIOUS_VERSION_KEY = 26
+PREVIOUS_VERSION_KEY = 27
 PREVIOUS_VERSION_DIGEST = (
-    "0d0153828eebe5f449b365b7b3a3c43e87f3118770a2f76dfb98637a6eed6d9e"
+    "d0884ffa6bf8d98807d20ab9ee8a7a0c2821bb08d0cc6376fb87a6db605cf0fb"
 )
 
 # Production serving status and CURRENT_VERSION_KEY stay unchanged until R6.
@@ -85,6 +85,11 @@ PREVIOUS_VERSION_DIGEST = (
 # 27: deleting the legacy bank-risk reference vertical changed the watched tree.
 # Wire formats, canonical serialization, commit binding, validation verdicts,
 # aggregation, and scoring math are unchanged; only the digest moves.
+# 28: the RC1 correctness cutover bounds live sampling to the deterministic
+# resolution window, settles missing archive timestamps after grace, prevents
+# later joiners from receiving retroactive absence observations, and persists
+# the next-commit-close publication embargo. Validators and miners must deploy
+# this scoring and publication contract in lockstep.
 #
 # 20: Alpha Risk calendar-independent daily rounds
 # (docs/specs/2026-07-18-alpha-risk-24x7-rounds.md). The served Alpha schema
@@ -99,7 +104,7 @@ PREVIOUS_VERSION_DIGEST = (
 # defers horizon resolution (24h grace before voiding) instead of permanently
 # voiding it. Wire formats, scoring math, and tier thresholds are unchanged;
 # resolved values become identical across independent validators.
-CURRENT_VERSION_KEY = 27
+CURRENT_VERSION_KEY = 28
 CURRENT_VERSION_DIGEST = (
-    "d0884ffa6bf8d98807d20ab9ee8a7a0c2821bb08d0cc6376fb87a6db605cf0fb"
+    "05da1df37dc67de435d0954d9b102be45922c6956822643ff1dcc7a892176e26"
 )

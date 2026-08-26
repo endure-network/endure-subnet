@@ -1,0 +1,45 @@
+{
+  "rules": [
+    {
+      "path_prefix": "endure/aggregation",
+      "references": [
+        "docs/specs/2026-07-06-alpha-risk-v1-scope.md#consensus"
+      ]
+    },
+    {
+      "path_prefix": "endure/assessment",
+      "references": [
+        "docs/specs/2026-06-19-forge-lending-v1-stage1-scope.md#locked-v1-decisions",
+        "docs/specs/2026-07-06-alpha-risk-v1-scope.md#v1-scored-schema-riskv1subnet_alpha"
+      ]
+    },
+    {
+      "path_prefix": "endure/protocol",
+      "references": [
+        "docs/specs/2026-07-06-alpha-risk-v1-scope.md#round-lifecycle-and-per-horizon-resolution",
+        "docs/specs/2026-07-18-alpha-risk-24x7-rounds.md#schedule"
+      ]
+    },
+    {
+      "path_prefix": "endure/publication",
+      "references": [
+        "docs/specs/2026-07-06-alpha-risk-v1-scope.md#derived-risk-tier-publication-layer-not-on-the-wire"
+      ]
+    },
+    {
+      "path_prefix": "endure/scoring",
+      "references": [
+        "docs/specs/2026-07-06-alpha-risk-v1-scope.md#scoring",
+        "docs/specs/2026-07-20-scoring-fairness-deltas.md#1--absence-aware-scoring"
+      ]
+    },
+    {
+      "path_prefix": "endure/storage",
+      "references": [
+        "docs/specs/2026-07-06-alpha-risk-v1-scope.md#round-lifecycle-and-per-horizon-resolution",
+        "docs/specs/2026-08-09-weight-emission-confirmation.md#design"
+      ]
+    }
+  ],
+  "schema_version": 1
+}
