@@ -56,6 +56,7 @@ from endure.protocol.synapses import SubmitCommit, SubmitReveal
 from endure.protocol.validator_service import ValidatorRoundService
 from endure.protocol.version_contract import CURRENT_VERSION_KEY
 from endure.protocol.vertical import AssessmentRoundProgram, VerticalRuntime
+from endure.runtime.identity import runtime_identity
 from endure.runtime.resolve import resolve_runtime_provider
 from endure.scoring.market_data import recorded_mainnet_fixture_provider
 from endure.scoring.policy import DEFAULT_PAYOUT_HALF_LIFE_ROUNDS
@@ -974,6 +975,13 @@ def _build_forge_vertical_runtime(validator: Validator) -> VerticalRuntime:
 
 def main() -> None:
     try:
+        identity = runtime_identity()
+        bt.logging.info(
+            "runtime identity "
+            f"source_revision={identity['source_revision']} "
+            f"image_version={identity['image_version']} "
+            f"protocol_version_key={CURRENT_VERSION_KEY}"
+        )
         validator = Validator()
         with validator:
             while True:

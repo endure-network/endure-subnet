@@ -1,6 +1,6 @@
 # Running Endure on Mainnet
 
-> **Do not run Endure on mainnet.** `v0.1.0` is an experimental testnet alpha,
+> **Do not run Endure on mainnet.** `v0.1.0-rc.1` is an experimental testnet alpha,
 > not a production or economic-readiness release. Alpha Risk serving is
 > code-gated against mainnet pending the testnet soak decision.
 

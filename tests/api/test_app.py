@@ -72,7 +72,12 @@ class TestHealthAndSchemas:
         response = client.get("/health")
 
         assert response.status_code == 200
-        assert response.json()["schema_id"] == FORGE_LENDING_SCHEMA_ID
+        body = response.json()
+        assert body["schema_id"] == FORGE_LENDING_SCHEMA_ID
+        assert body["version"] == "0.1.0rc1"
+        assert body["protocol_version_key"] == 28
+        assert body["source_revision"] == "unknown"
+        assert body["image_version"] == "dev"
 
     def test_schemas_discovery(self, client: TestClient) -> None:
         response = client.get("/schemas")
@@ -86,6 +91,9 @@ class TestHealthAndSchemas:
         assert schemas[RISK_SCHEMA_ID]["serving_status"] == "served"
         assert "collateral_factor" in schemas[FORGE_LENDING_SCHEMA_ID]["parameters"]
         assert "max_drawdown" in schemas[RISK_SCHEMA_ID]["parameters"]
+        assert schemas[FORGE_LENDING_SCHEMA_ID]["horizons_seconds"] == [432000]
+        assert schemas[RISK_SCHEMA_ID]["horizons_seconds"] == [432000, 2592000]
+        assert all("horizons_trading_days" not in schema for schema in schemas.values())
 
 
 def _runtime(
