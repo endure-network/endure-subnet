@@ -68,6 +68,7 @@ from endure.storage.repository import (
     WeightEmissionChainSnapshot,
     WeightEmissionRow,
     WeightRevealEvidence,
+    ensure_sqlite_parent_dir,
 )
 from endure.utils.config import (
     DevOnlyConfigError,
@@ -121,6 +122,7 @@ def _run_migrations(database_url: str) -> None:
         "script_location", str(repo_root / "endure/storage/migrations")
     )
     config.set_main_option("sqlalchemy.url", database_url)
+    ensure_sqlite_parent_dir(database_url)
     alembic_command.upgrade(config, "head")
 
 

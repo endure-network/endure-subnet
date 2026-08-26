@@ -15,6 +15,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
+from pathlib import Path
 
 from sqlalchemy import (
     and_,
@@ -696,6 +697,23 @@ def _coordinate_from_mapping(row: RowMapping) -> AssessmentCoordinate:
     )
 
 
+def ensure_sqlite_parent_dir(url: str) -> None:
+    """Create the directory holding a file-backed SQLite database.
+
+    The default URL is CWD-relative (``sqlite:///var/endure.db``). SQLite
+    creates the file but never its directory, so a fresh checkout or container
+    without ``var/`` would fail at the first connection with an opaque
+    "unable to open database file". In-memory and non-SQLite URLs are left alone.
+    """
+    parsed = make_url(url)
+    database = parsed.database
+    if parsed.get_backend_name() != "sqlite" or not database:
+        return
+    if database == ":memory:" or database.startswith("file:"):
+        return
+    Path(database).expanduser().parent.mkdir(parents=True, exist_ok=True)
+
+
 def _apply_sqlite_pragmas(engine: Engine) -> None:
     """Production hardening for the embedded store: WAL keeps the axon, tick,
     and API threads from blocking each other; the busy timeout absorbs writer
@@ -727,6 +745,7 @@ class Storage:
             raise ValueError(
                 f"Storage supports SQLite only, got backend {backend!r} from URL"
             )
+        ensure_sqlite_parent_dir(url)
         engine = create_engine(url)
         _apply_sqlite_pragmas(engine)
         return cls(engine)

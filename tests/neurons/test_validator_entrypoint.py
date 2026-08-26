@@ -211,6 +211,19 @@ def test_validator_bootstraps_in_mock_mode_dev_path(
     assert "Subnet mechanism" not in caplog.text
 
 
+def test_migrations_create_missing_sqlite_parent_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from neurons.validator import _run_migrations
+
+    monkeypatch.chdir(tmp_path)
+    assert not (tmp_path / "var").exists()
+
+    _run_migrations("sqlite:///var/endure.db")
+
+    assert (tmp_path / "var" / "endure.db").is_file()
+
+
 def test_migrations_preserve_bittensor_logger(tmp_path: Path) -> None:
     from neurons.validator import _run_migrations
 
