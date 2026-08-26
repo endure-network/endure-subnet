@@ -142,6 +142,7 @@ class ValidatorRoundService:
             schema_id=self._schema_id,
             universe=universe,
             now_iso=now.isoformat(),
+            publication_available_at=self._scheduler.publication_available_at(window),
         )
         self._universe_failures = 0
         self._last_universe_error = None

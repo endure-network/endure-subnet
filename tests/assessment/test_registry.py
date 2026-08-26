@@ -14,9 +14,11 @@ from endure.assessment.registry import (
 )
 from endure.assessment.schemas.forge_lending import (
     FORGE_LENDING_SCHEMA_ID,
+    LENDING_HORIZON_SECONDS,
     LendingSubmissionBundle,
 )
 from endure.assessment.schemas.subnet_alpha_risk import (
+    RISK_HORIZONS,
     RISK_SCHEMA_ID,
     RiskSubmissionBundle,
     build_risk_v1_subnet_alpha_schema,
@@ -35,6 +37,7 @@ class TestDefaultRegistry:
         assert entry.schema.schema_id == FORGE_LENDING_SCHEMA_ID
         assert entry.bundle_model is LendingSubmissionBundle
         assert entry.serving_status == "registered_unserved"
+        assert entry.horizons_seconds == (LENDING_HORIZON_SECONDS,)
 
     def test_risk_entry_is_served_with_universe(self) -> None:
         entry = default_registry().get(RISK_SCHEMA_ID)
@@ -43,6 +46,7 @@ class TestDefaultRegistry:
         assert entry.bundle_model.__name__ == "RiskSubmissionBundle"
         assert entry.serving_status == "served"
         assert entry.universe_provider is not None
+        assert entry.horizons_seconds == RISK_HORIZONS
 
     def test_get_unknown_schema_raises(self) -> None:
         with pytest.raises(UnknownSchemaError):

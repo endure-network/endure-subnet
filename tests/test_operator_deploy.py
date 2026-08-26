@@ -123,9 +123,23 @@ def test_runtime_images_embed_oci_source_identity() -> None:
         assert "ARG ENDURE_SOURCE_REVISION" in dockerfile
         assert "ARG ENDURE_SOURCE_URL" in dockerfile
         assert "ARG ENDURE_IMAGE_VERSION" in dockerfile
+        assert "ENV ENDURE_SOURCE_REVISION=$ENDURE_SOURCE_REVISION" in dockerfile
+        assert "ENDURE_IMAGE_VERSION=$ENDURE_IMAGE_VERSION" in dockerfile
         assert "org.opencontainers.image.revision=$ENDURE_SOURCE_REVISION" in dockerfile
         assert "org.opencontainers.image.source=$ENDURE_SOURCE_URL" in dockerfile
         assert "org.opencontainers.image.version=$ENDURE_IMAGE_VERSION" in dockerfile
+
+
+def test_soak_probe_requires_readiness_and_exact_release_identity() -> None:
+    workflow = (ROOT / ".github/workflows/soak-health-probe.yml").read_text()
+
+    assert "https://api.testnet.endure.network/health" in workflow
+    assert "https://api.testnet.endure.network/live" not in workflow
+    assert "vars.SOAK_EXPECTED_SHA" in workflow
+    assert '.status == "ok"' in workflow
+    assert '.schema_id == "risk.v1.subnet_alpha"' in workflow
+    assert ".protocol_version_key == 28" in workflow
+    assert ".source_revision == $sha" in workflow
 
 
 def test_release_workflow_publishes_only_a_green_staging_sha() -> None:

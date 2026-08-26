@@ -1,13 +1,13 @@
 # Running Endure on Testnet
 
-> **Experimental testnet alpha, unreleased `v0.1.0` candidate, protocol key `27`.** This is
+> **Experimental testnet alpha, `v0.1.0-rc.1` candidate, protocol key `28`.** This is
 > not a mainnet guide. The authoritative compatibility value is
 > [version_contract.py](../endure/protocol/version_contract.py).
 
 ## Install safely
 
 ```bash
-git clone https://github.com/Endure-Network/endure-subnet.git
+git clone https://github.com/endure-network/endure-subnet.git
 cd endure-subnet
 make bootstrap
 make dev-install
@@ -26,13 +26,13 @@ Keep coldkeys and mnemonics off servers. Provision only the required testnet
 hotkey plus `coldkeypub.txt` through the documented operator path, and never
 copy wallet material into an issue or log.
 
-For the current command shapes, substitute the actual testnet netuid and wallet
-names, then check the prompted fee and chain state before confirming:
+Endure's current Bittensor testnet netuid is `504`. Substitute wallet names and
+hotkeys, then check the prompted fee and chain state before confirming:
 
 ```bash
-btcli subnet register --netuid <netuid> --wallet.name <wallet-name> \
+btcli subnet register --netuid 504 --wallet.name <wallet-name> \
   --wallet.hotkey <validator-hotkey> --subtensor.network test
-btcli stake add --netuid <netuid> --amount <tao> --wallet.name <wallet-name> \
+btcli stake add --netuid 504 --amount <tao> --wallet.name <wallet-name> \
   --wallet.hotkey <validator-hotkey> --subtensor.network test
 ```
 
@@ -46,7 +46,7 @@ reachable axon address, and `--endure.serving_stage testnet`. Set
 `--endure.market_data_endpoint` to your archive source. The command is:
 
 ```bash
-.venv/bin/python neurons/validator.py --netuid <netuid> --subtensor.network test \
+.venv/bin/python neurons/validator.py --netuid 504 --subtensor.network test \
   --wallet.name <wallet-name> --wallet.hotkey <validator-hotkey> \
   --endure.serving_stage testnet --endure.database_url <persistent-db-url> \
   --endure.market_data_endpoint <archive-endpoint> --endure.api_port 8714 \
@@ -59,10 +59,17 @@ starting miners; `/live` is process liveness only and must not replace the
 operational `/health` check. Back up and restore-test the persistent database; restart
 behavior depends on retained durable state. See [validating](validating.md).
 
+The Endure-operated testnet read API is
+`https://api.testnet.endure.network`, signed by validator hotkey
+`5E2bM6DXxyraVJCDjWBcixudbzYXToDnNcsDBB4hoJdCuwTi`. This is currently the
+only public validator HTTP endpoint. Miner transport still discovers validator
+axons from the netuid-504 metagraph; the HTTPS endpoint is for consumers and
+operator checks, not commit/reveal delivery.
+
 ## Then start miners
 
 ```bash
-.venv/bin/python neurons/miner.py --netuid <netuid> --subtensor.network test \
+.venv/bin/python neurons/miner.py --netuid 504 --subtensor.network test \
   --wallet.name <wallet-name> --wallet.hotkey <miner-hotkey> \
   --endure.serving_stage testnet --endure.market_data_endpoint <archive-endpoint> \
   --axon.port <axon-port> --axon.external_ip <reachable-ip>

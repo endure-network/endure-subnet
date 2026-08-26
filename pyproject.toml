@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "endure"
-version = "0.1.0"
+version = "0.1.0rc1"
 description = "Endure — Bittensor risk-intelligence subnet"
 readme = "README.md"
 license = "MIT"
@@ -43,7 +43,7 @@ dev = [
     "pytest-cov>=5",
     "pytest-asyncio>=0.23",
     "pytest-alembic>=0.11",
-    "httpx2",  # FastAPI/starlette TestClient transport for read-API tests
+    "httpx2>=2.7,<3",  # FastAPI/starlette TestClient transport for read-API tests
     "anyio>=4,<5",
     "ruff>=0.15.10,<0.16",
     "pyright>=1.1.406",
@@ -52,6 +52,7 @@ dev = [
 ]
 
 [project.urls]
+Homepage = "https://endure.network/"
 Repository = "https://github.com/Endure-Network/endure-subnet"
 Documentation = "https://github.com/Endure-Network/endure-subnet/blob/main/docs/README.md"
 
@@ -144,7 +145,7 @@ quote-style = "double"
 [tool.pyright]
 typeCheckingMode = "basic"
 pythonVersion = "3.12"
-include = ["endure", "neurons", "scripts"]
+include = ["endure", "neurons", "scripts", "verify"]
 # Hand-curated bittensor stub lives in typings/bittensor/ — it's what
 # lets pyright catch pre-v10 lowercase-API drift (bt.wallet/bt.axon/etc.)
 # as real type errors instead of silently-Unknown returns.

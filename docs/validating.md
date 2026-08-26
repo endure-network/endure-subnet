@@ -52,9 +52,15 @@ readiness after startup and every restart. Confirm the expected schema through
 or `registered_unserved`. Inspect rounds/submissions through `/rounds`, and check
 the signed consumer feed at `/risk/v1/subnets`. A signature authenticates the
 publishing validator, not its market-data source or a minimum independent-miner
-quorum. Inspect `n_submitters`, cross-check multiple validators, and inspect the
-chain separately. Back up the database before upgrades and test a restore before
+quorum. Only one public validator endpoint currently exists, so consumers
+cannot yet establish an independent-validator quorum. Inspect `n_submitters`
+and the chain separately. Back up the database before upgrades and test a restore before
 calling a deployment durable.
+
+The Endure-operated endpoint is `https://api.testnet.endure.network`, signed by
+hotkey `5E2bM6DXxyraVJCDjWBcixudbzYXToDnNcsDBB4hoJdCuwTi` on Bittensor testnet
+netuid `504`. See the [consumer guide](consuming.md) for the distinction between
+metagraph axon discovery and consumer HTTP discovery.
 
 Alpha Risk intentionally keeps rounds open until both the 5-day and 30-day
 horizons resolve, so a steady-state backlog is expected. `/health` separates

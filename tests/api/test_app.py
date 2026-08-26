@@ -72,7 +72,12 @@ class TestHealthAndSchemas:
         response = client.get("/health")
 
         assert response.status_code == 200
-        assert response.json()["schema_id"] == FORGE_LENDING_SCHEMA_ID
+        body = response.json()
+        assert body["schema_id"] == FORGE_LENDING_SCHEMA_ID
+        assert body["version"] == "0.1.0rc1"
+        assert body["protocol_version_key"] == 28
+        assert body["source_revision"] == "unknown"
+        assert body["image_version"] == "dev"
 
     def test_schemas_discovery(self, client: TestClient) -> None:
         response = client.get("/schemas")
@@ -86,6 +91,9 @@ class TestHealthAndSchemas:
         assert schemas[RISK_SCHEMA_ID]["serving_status"] == "served"
         assert "collateral_factor" in schemas[FORGE_LENDING_SCHEMA_ID]["parameters"]
         assert "max_drawdown" in schemas[RISK_SCHEMA_ID]["parameters"]
+        assert schemas[FORGE_LENDING_SCHEMA_ID]["horizons_seconds"] == [432000]
+        assert schemas[RISK_SCHEMA_ID]["horizons_seconds"] == [432000, 2592000]
+        assert all("horizons_trading_days" not in schema for schema in schemas.values())
 
 
 def _runtime(
@@ -460,6 +468,34 @@ class TestAfterEmbargo:
 
     def test_unknown_miner_is_404(self, client: TestClient) -> None:
         assert client.get("/miners/hk-nobody/scores").status_code == 404
+
+    def test_revealed_round_stays_embargoed_through_publication_boundary(
+        self, storage: Storage, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        windows = compute_windows(date(2026, 6, 9), offsets=DEFAULT_OFFSETS)
+        publication_available_at = windows.commit_close + timedelta(days=1)
+        storage.open_round(
+            windows=windows,
+            schema_id=RISK_SCHEMA_ID,
+            universe=UniverseSnapshot(
+                round_id=ROUND, tickers=("8",), source_hash="embargo"
+            ),
+            now_iso=NOW,
+            publication_available_at=publication_available_at,
+        )
+        storage.set_round_state(ROUND, RISK_SCHEMA_ID, "revealed", now_iso=NOW)
+        risk_client = TestClient(
+            build_app(storage=storage, schema_id=RISK_SCHEMA_ID, publisher="risk")
+        )
+        monkeypatch.setattr("endure.api.app._utc_now", lambda: publication_available_at)
+
+        assert risk_client.get(f"/rounds/{ROUND}/consensus").status_code == 403
+
+        monkeypatch.setattr(
+            "endure.api.app._utc_now",
+            lambda: publication_available_at + timedelta(microseconds=1),
+        )
+        assert risk_client.get(f"/rounds/{ROUND}/consensus").status_code == 200
 
 
 class TestRiskFeed:

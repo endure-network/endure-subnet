@@ -85,6 +85,7 @@ ACTIVATED_ASSIGNMENTS = (
     (24, "8f5be3b40345d6116525380b588373940d72db933d0dd38ca6e2fd234e29879c"),
     (25, "7ceb7c8853668099cd1500cb4a3e429215ce4aa7887ae5cacdd6458f18c91383"),
     (26, "0d0153828eebe5f449b365b7b3a3c43e87f3118770a2f76dfb98637a6eed6d9e"),
+    (27, "d0884ffa6bf8d98807d20ab9ee8a7a0c2821bb08d0cc6376fb87a6db605cf0fb"),
 )
 
 
@@ -119,7 +120,7 @@ def test_registry_contains_exact_activation_history() -> None:
 
     assert payload["schema_version"] == 1
     assert actual == ACTIVATED_ASSIGNMENTS
-    assert payload["previous_activation_id"] == "activation-0039"
+    assert payload["previous_activation_id"] == "activation-0040"
 
 
 def test_source_bound_receipt_format_and_fields_are_cryptographically_sensitive() -> (
@@ -250,9 +251,10 @@ def test_registry_accepts_clean_public_history_at_immutable_bootstrap(
     registry_path: Path,
 ) -> None:
     payload = _payload()
+    bootstrap_record = payload["activation_history"][-1]
     assert PUBLIC_HISTORY_BOOTSTRAP == (
-        payload["current_lease"]["key"],
-        payload["current_lease"]["digest"],
+        bootstrap_record["key"],
+        bootstrap_record["digest"],
     )
     public_root_receipt = "ab" * 32
 
@@ -277,40 +279,42 @@ def test_registry_rejects_unrecognized_truncated_history(
 
 def test_public_history_requires_exact_receipts_after_bootstrap() -> None:
     payload = _payload()
-    bootstrap_digest = payload["current_lease"]["digest"]
+    bootstrap_digest = PUBLIC_HISTORY_BOOTSTRAP[1]
+    lease_digest = payload["current_lease"]["digest"]
     next_digest = "ab" * 32
     payload["activation_history"].extend(
         (
             {
-                "record_id": "activation-0040",
-                "key": 27,
-                "digest": bootstrap_digest,
-                "evidence_sha256": "cd" * 32,
-            },
-            {
                 "record_id": "activation-0041",
                 "key": 28,
-                "digest": next_digest,
+                "digest": lease_digest,
                 "evidence_sha256": "de" * 32,
+            },
+            {
+                "record_id": "activation-0042",
+                "key": 29,
+                "digest": next_digest,
+                "evidence_sha256": "ef" * 32,
             },
         )
     )
-    payload["previous_activation_id"] = "activation-0041"
+    payload["previous_activation_id"] = "activation-0042"
     payload["current_lease"] = {
-        "key": 29,
-        "digest": "ef" * 32,
+        "key": 30,
+        "digest": "fa" * 32,
         "holder": "future candidate",
-        "authority_sha256": "fa" * 32,
+        "authority_sha256": "fb" * 32,
     }
     registry = ActivatedVersionRegistry.model_validate_json(json.dumps(payload))
     trusted = (
         (27, bootstrap_digest, "01" * 32),
-        (28, next_digest, "de" * 32),
-        (29, "ef" * 32, "02" * 32),
+        (28, lease_digest, "de" * 32),
+        (29, next_digest, "ef" * 32),
+        (30, "fa" * 32, "02" * 32),
     )
 
     assert _matches_public_history_suffix(registry, trusted, PUBLIC_HISTORY_BOOTSTRAP)
-    altered = (trusted[0], (28, next_digest, "00" * 32), trusted[2])
+    altered = (trusted[0], (28, lease_digest, "00" * 32), *trusted[2:])
     assert not _matches_public_history_suffix(
         registry, altered, PUBLIC_HISTORY_BOOTSTRAP
     )
