@@ -605,7 +605,7 @@ def _canonical_blocks(window: ResolutionWindow) -> tuple[int, ...]:
     return tuple(
         range(
             first_block,
-            window.end_block + CANONICAL_ALPHA_SNAPSHOT_CADENCE_BLOCKS,
+            window.end_block + 1,
             CANONICAL_ALPHA_SNAPSHOT_CADENCE_BLOCKS,
         )
     )

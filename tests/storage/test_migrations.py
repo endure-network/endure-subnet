@@ -827,6 +827,52 @@ def test_head_drops_legacy_scoring_tables_and_keeps_every_shared_table(
     assert set(RETAINED_TABLES) <= tables
 
 
+def test_0015_backfills_and_requires_publication_boundary(tmp_path: Path) -> None:
+    config, engine = _alembic_config(tmp_path, "publication-embargo")
+    command.upgrade(config, "0014_drop_kre_tables")
+    reveal_close = "2026-08-27T00:00:00+00:00"
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO rounds (
+                    round_id, schema_id, state, universe_stale, degraded,
+                    commit_open_at, commit_close_at, reveal_open_at,
+                    reveal_close_at, t0_close_at, created_at, updated_at
+                ) VALUES (
+                    '2026-08-26', :schema_id, 'revealed', 0, 0,
+                    '2026-08-26T11:00:00+00:00',
+                    '2026-08-26T19:30:00+00:00',
+                    '2026-08-26T20:30:00+00:00', :reveal_close,
+                    '2026-08-26T20:00:00+00:00', :reveal_close, :reveal_close
+                )
+                """
+            ),
+            {"schema_id": RISK_SCHEMA_ID, "reveal_close": reveal_close},
+        )
+
+    command.upgrade(config, "head")
+
+    columns = {
+        column["name"]: column for column in inspect(engine).get_columns("rounds")
+    }
+    assert columns["publication_available_at"]["nullable"] is False
+    with engine.connect() as connection:
+        publication_available_at = connection.execute(
+            text(
+                "SELECT publication_available_at FROM rounds "
+                "WHERE round_id = '2026-08-26' AND schema_id = :schema_id"
+            ),
+            {"schema_id": RISK_SCHEMA_ID},
+        ).scalar_one()
+    assert publication_available_at == reveal_close
+
+    command.downgrade(config, "0014_drop_kre_tables")
+    assert "publication_available_at" not in {
+        column["name"] for column in inspect(engine).get_columns("rounds")
+    }
+
+
 def test_0014_preserves_shared_rows_while_deleting_legacy_tables(
     tmp_path: Path,
 ) -> None:

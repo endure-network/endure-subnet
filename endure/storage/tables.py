@@ -58,6 +58,7 @@ rounds = Table(
     Column("commit_close_at", Text, nullable=False),
     Column("reveal_open_at", Text, nullable=False),
     Column("reveal_close_at", Text, nullable=False),
+    Column("publication_available_at", Text, nullable=False),
     Column("t0_close_at", Text, nullable=False),
     Column("created_at", Text, nullable=False),
     Column("updated_at", Text, nullable=False),

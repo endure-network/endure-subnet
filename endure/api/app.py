@@ -268,7 +268,15 @@ def _round_meta_or_404(
 def _ensure_embargo_lifted(meta: dict[str, object]) -> None:
     state = meta["state"]
     if state in POST_EMBARGO_ROUND_STATES:
-        return
+        available_raw = meta.get("publication_available_at")
+        if isinstance(available_raw, str):
+            available_at = datetime.fromisoformat(available_raw)
+            if available_at.tzinfo is not None and _utc_now() > available_at:
+                return
+        raise HTTPException(
+            status_code=403,
+            detail="round data remains embargoed until the next commit window closes",
+        )
     if state == ROUND_STATE_OPEN:
         raise HTTPException(
             status_code=403,
@@ -467,6 +475,7 @@ def _register_risk_routes(
             storage,
             signer=publication_identity.signer,
             signed_by=publication_identity.hotkey,
+            now=_utc_now(),
         )
 
 

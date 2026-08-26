@@ -37,6 +37,8 @@ class RoundScheduler(Protocol):
 
     def active_window(self, now: datetime) -> RoundWindows | None: ...
 
+    def publication_available_at(self, windows: RoundWindows) -> datetime: ...
+
     def resolution_due(
         self, round_id: str, horizon_trading_days: int, now: datetime
     ) -> bool: ...
@@ -68,6 +70,10 @@ class NyseScheduler:
         )
         return now >= ready_at
 
+    def publication_available_at(self, windows: RoundWindows) -> datetime:
+        next_session = add_trading_days(date.fromisoformat(windows.round_id), 1)
+        return compute_windows(next_session, offsets=self.offsets).commit_close
+
 
 @dataclass(frozen=True, slots=True)
 class FixedUtcScheduler:
@@ -98,6 +104,9 @@ class FixedUtcScheduler:
             tzinfo=UTC,
         ) + timedelta(seconds=self.fetch_delay_seconds)
         return now >= ready_at
+
+    def publication_available_at(self, windows: RoundWindows) -> datetime:
+        return windows.commit_close + timedelta(days=1)
 
 
 def scheduler_for_schema(schema_id: str, *, fetch_delay_seconds: int) -> RoundScheduler:
@@ -143,6 +152,9 @@ class SyntheticScheduler:
         if index >= len(self.sessions):
             return None
         return self._windows(index)
+
+    def publication_available_at(self, windows: RoundWindows) -> datetime:
+        return windows.commit_close + timedelta(seconds=self.period_seconds)
 
     def resolution_due(
         self, round_id: str, horizon_trading_days: int, now: datetime
