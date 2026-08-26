@@ -148,6 +148,25 @@ def require_dev_only_runtime(config: "bt.Config", *, feature: str) -> None:
     )
 
 
+def require_explicit_netuid(config: "bt.Config") -> None:
+    """Refuse the argparse ``--netuid`` default outside mock/local chains.
+
+    The default keeps mock runs and tests terse, but on a live network a
+    defaulted netuid silently registers, serves and weighs against whatever
+    subnet carries that id, so the operator must name it. bt.Config records
+    which parameters the command line supplied, so the default itself can
+    stay untouched.
+    """
+    if permits_dev_only_runtime(config) or config.is_set("netuid"):
+        return
+    endpoint = safe_endpoint_label(_effective_chain(config)[0])
+    raise DevOnlyConfigError(
+        "--netuid was not provided; pass --netuid explicitly on live networks "
+        "(the default is accepted only for mock or local chains; configured "
+        f"endpoint {endpoint!r})"
+    )
+
+
 def require_compression_runtime_allowed(config: "bt.Config") -> None:
     if permits_dev_only_runtime(config):
         return

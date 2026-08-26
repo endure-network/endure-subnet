@@ -1,3 +1,4 @@
+import argparse
 import asyncio
 import logging
 from collections.abc import Iterator
@@ -163,6 +164,40 @@ def test_validator_refuses_served_risk_schema_on_finney(
 
     with _patched_chain(), pytest.raises(RuntimeError, match="R7 soak gate"):
         Validator(config=production_validator_config)
+
+
+def test_validator_refuses_defaulted_netuid_on_live_network(tmp_path: Path) -> None:
+    from endure.utils.config import add_args, add_validator_args
+    from neurons.validator import Validator
+
+    parser = argparse.ArgumentParser()
+    bt.Wallet.add_args(parser)
+    bt.Subtensor.add_args(parser)
+    bt.logging.add_args(parser)
+    bt.Axon.add_args(parser)
+    add_args(None, parser)
+    add_validator_args(None, parser)
+    # Testnet with its serving acknowledgement passes every other gate, so
+    # the defaulted netuid is the only thing left to refuse.
+    config = bt.Config(
+        parser,
+        args=[
+            "--runtime.mode",
+            "live",
+            "--subtensor.network",
+            "test",
+            "--endure.serving_stage",
+            "testnet",
+            "--neuron.dont_save_events",
+        ],
+    )
+    config.logging.logging_dir = str(tmp_path)
+
+    with (
+        _patched_chain(),
+        pytest.raises(RuntimeError, match="pass --netuid explicitly"),
+    ):
+        Validator(config=config)
 
 
 def test_validator_serving_gate_prevents_axon_creation_on_finney(

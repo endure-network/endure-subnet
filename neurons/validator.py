@@ -75,6 +75,7 @@ from endure.utils.config import (
     active_runtime_schema_id,
     permits_dev_only_runtime,
     require_compression_runtime_allowed,
+    require_explicit_netuid,
     require_serving_stage_allowed,
 )
 from endure.utils.logging import safe_endpoint_label, safe_error
@@ -132,6 +133,7 @@ class Validator(BaseValidatorNeuron):
     def __init__(self, config: bt.Config | None = None) -> None:
         resolved_config = config or type(self).build_config()
         require_serving_stage_allowed(resolved_config)
+        require_explicit_netuid(resolved_config)
         if (
             active_runtime_schema_id(resolved_config) == RISK_SCHEMA_ID
             and int(resolved_config.neuron.num_concurrent_forwards) != 1

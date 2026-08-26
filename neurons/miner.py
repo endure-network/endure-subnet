@@ -41,6 +41,7 @@ from endure.utils.config import (
     active_runtime_schema_id,
     permits_dev_only_runtime,
     require_compression_runtime_allowed,
+    require_explicit_netuid,
     require_serving_stage_allowed,
 )
 from endure.utils.logging import safe_error
@@ -94,6 +95,7 @@ class Miner(BaseMinerNeuron):
         if not permits_dev_only_runtime(resolved_config):
             resolved_config.blacklist.force_validator_permit = True
             resolved_config.blacklist.allow_non_registered = False
+        require_explicit_netuid(resolved_config)
         super().__init__(
             config=resolved_config,
             runtime_provider=resolve_runtime_provider(resolved_config),
