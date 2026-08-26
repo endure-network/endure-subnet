@@ -184,16 +184,16 @@ class Validator(BaseValidatorNeuron):
         self._api_thread: threading.Thread | None = None
         self._attach_handlers()
         self._start_api()
-        # D1=B: the code default stays 0; the soak/coolify config sets the floor.
-        # Warn loudly when a live network runs with no stake gate — any
+        # D1=B: the code default stays 0; the operator's deployment sets the
+        # floor. Warn loudly when a live network runs with no stake gate — any
         # registered hotkey can then impose commit/reveal load.
         if str(self.config.runtime.mode) != "mock" and (
             self.config.endure.min_miner_stake <= 0
         ):
             bt.logging.warning(
                 "endure.min_miner_stake is 0 on a live network — any registered "
-                "hotkey can impose commit/reveal load; set a non-zero stake "
-                "floor in the soak/coolify config"
+                "hotkey can impose commit/reveal load; pass "
+                "--endure.min_miner_stake with a positive TAO floor"
             )
 
     def runtime_health(self) -> RuntimeHealth:
