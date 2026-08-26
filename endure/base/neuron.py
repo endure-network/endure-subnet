@@ -158,6 +158,25 @@ class BaseNeuron(ABC):
             # A deferred RPC is normal control flow, never a reason to skip a checkpoint.
             self.save_state()
 
+    def refresh_uid(self) -> None:
+        """Re-derive ``uid`` from the current metagraph after a resync.
+
+        A hotkey keeps its uid only while it stays registered; a deregistration
+        and re-registration between syncs can land it on another slot, and
+        weight emission and score alignment address the chain by uid. A hotkey
+        absent from the metagraph is left for ``check_registered`` to handle.
+        """
+        hotkeys = list(self.metagraph.hotkeys)
+        hotkey = self.wallet.hotkey.ss58_address
+        if hotkey not in hotkeys:
+            return
+        uid = hotkeys.index(hotkey)
+        if uid != self.uid:
+            bt.logging.info(
+                f"neuron uid moved from {self.uid} to {uid} after metagraph resync"
+            )
+            self.uid = uid
+
     def check_registered(self):
         """Exit when the configured hotkey is not registered on this subnet."""
         with self.gated_subtensor.priority(RpcPriority.ESSENTIAL):
