@@ -1,0 +1,9 @@
+Generic single-database configuration with Alembic.
+
+Revision files live under ``versions/``. Create a new revision via:
+
+    alembic revision -m "describe change" --autogenerate
+
+Run migrations:
+
+    alembic upgrade head

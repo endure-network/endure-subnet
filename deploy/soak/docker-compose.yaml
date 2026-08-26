@@ -1,0 +1,113 @@
+# Alpha Risk R7 testnet soak — validator Coolify deployment.
+#
+# Validator-only. The soak miners run on a separate host (deploy/soak-miners)
+# to avoid public-IP hairpin failures and to separate archive request budgets.
+#
+# This standalone file lets a Coolify application with base directory
+# deploy/soak run the validator from a git checkout. Two differences from the
+# repo-root operator stack:
+#
+#   1. No host-path wallet mount. The one-shot wallet-init service materializes
+#      the wallet tree (coldkeypub.txt + hotkeys — NEVER the coldkey secret)
+#      into the `wallets` named volume from WALLETS_TAR_B64, a base64-encoded
+#      uncompressed tar delivered as a runtime env secret. Testnet-only
+#      exception: hotkey secrets ride an env var; mainnet keys never leave
+#      operator hardware this way (AGENTS.md key policy).
+#   2. Build contexts point at the repo root (../..) because this file lives in
+#      deploy/soak/.
+#
+# Required env: NETUID, EXTERNAL_IP (the host's public IP — published on-chain
+# for the axon), WALLETS_TAR_B64. Optional: CHAIN (network name OR a wss://
+# chain RPC URL such as a keyed Dwellir testnet endpoint — bittensor >=10.3
+# ignores --subtensor.chain_endpoint, so a custom RPC must ride this flag;
+# the URL host must be allowlisted in endure/utils/config.py _TESTNET_HOSTS;
+# default test), MIN_MINER_STAKE
+# (default 0 — see docs/deploy/coolify.md for the stake-floor tradeoff),
+# EPOCH_LENGTH (blocks between weight settings, default 100), MARKET_DATA_ENDPOINT
+# (mainnet archive for Alpha market data, default the public OpenTensor archive).
+#
+# Port 8091 is a raw host publish (the chain stores integer IPs; axons cannot
+# sit behind a proxy). 8714 is the read-only HTTP API — published raw for soak
+# verification; front it with a domain + TLS + rate limit at the proxy before
+# real consumers use it (docs/deploy/coolify.md).
+#
+# Build the wallet payload on the operator machine (testnet wallet only):
+#   cd ~/.bittensor/wallets && \
+#     tar -cf - endure-testnet/coldkeypub.txt endure-testnet/hotkeys | base64
+
+x-ops: &ops
+  restart: unless-stopped
+  init: true
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+volumes:
+  wallets:
+  validator-data:
+
+services:
+  wallet-init:
+    image: python:3.12-slim
+    restart: "no"
+    environment:
+      WALLETS_TAR_B64: ${WALLETS_TAR_B64:?provide base64 tar of hotkeys + coldkeypub}
+    volumes:
+      - wallets:/wallets
+    command:
+      [
+        "sh",
+        "-c",
+        "if printf '%s' \"$$WALLETS_TAR_B64\" | base64 -d | tar -tf - | grep -E '(^|/)coldkey$$'; then echo 'refusing: wallet tar contains a coldkey secret' >&2; exit 1; fi && printf '%s' \"$$WALLETS_TAR_B64\" | base64 -d | tar -xf - -C /wallets && find /wallets -type f -not -name 'coldkey' | sort",
+      ]
+
+  validator:
+    <<: *ops
+    build: { context: ../.., dockerfile: docker/validator.Dockerfile }
+    image: endure-validator:soak
+    environment:
+      PYTHONUNBUFFERED: "1"
+    depends_on:
+      wallet-init:
+        condition: service_completed_successfully
+    volumes:
+      - wallets:/root/.bittensor/wallets:ro
+      # Keep the primary DB on its named volume and snapshots on an independent
+      # host bind. Disable unused-volume pruning on the stateful host.
+      - validator-data:/data
+      # Daily snapshots remain independently host-backed.
+      - type: bind
+        source: /var/lib/endure-soak/backups
+        target: /data/backups
+    ports: ["8091:8091", "8714:8714"]
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request as u; u.urlopen('http://localhost:8714/live', timeout=5).read()",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 180s
+    command:
+      [
+        "--netuid", "${NETUID:?set NETUID}",
+        "--subtensor.network", "${CHAIN:-test}",
+        "--wallet.name", "${VALIDATOR_WALLET:-endure-testnet}",
+        "--wallet.hotkey", "${VALIDATOR_HOTKEY:-validator}",
+        "--endure.serving_stage", "testnet",
+        "--endure.market_data_endpoint", "${MARKET_DATA_ENDPOINT:-wss://archive.chain.opentensor.ai:443}",
+        "--endure.database_url", "sqlite:////data/validator-live.db",
+        "--endure.api_port", "8714",
+        "--endure.api_host", "0.0.0.0",
+        "--endure.min_miner_stake", "${MIN_MINER_STAKE:-0}",
+        "--axon.port", "8091",
+        "--axon.external_ip", "${EXTERNAL_IP:?set EXTERNAL_IP}",
+        "--neuron.epoch_length", "${EPOCH_LENGTH:-100}",
+        "--logging.info",
+      ]

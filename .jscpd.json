@@ -1,0 +1,17 @@
+{
+  "ignore": [
+    "**/__pycache__/**",
+    "**/.venv/**",
+    "**/migrations/versions/**",
+    "endure/scoring/recorded_fixtures/alpha_mainnet.py"
+  ],
+  "minLines": 10,
+  "minTokens": 70,
+  "path": [
+    "endure"
+  ],
+  "reporters": [
+    "console"
+  ],
+  "threshold": 6
+}

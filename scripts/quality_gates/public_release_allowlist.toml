@@ -1,0 +1,42 @@
+[[entries]]
+rule = "ipv4"
+path = "tests/neurons/test_miner_entrypoint.py"
+value = "203.0.113.1"
+reason = "Documentation-range endpoint in entrypoint tests."
+
+
+[[entries]]
+rule = "ipv6"
+path = "tests/neurons/test_miner_entrypoint.py"
+value = "2001:db8::1:8091"
+reason = "Parser rejection fixture for an ambiguous unbracketed IPv6 endpoint."
+
+[[entries]]
+rule = "ipv6"
+path = "tests/quality_gates/test_public_release_scan_rules.py"
+value = "2001:db8::8"
+reason = "Scanner fixture exercises non-local IPv6 detection."
+
+[[entries]]
+rule = "ipv6"
+path = "tests/quality_gates/test_public_release_scan_rules.py"
+value = "64:ff9b::8.8.8.8"
+reason = "Scanner fixture exercises an IPv6 embedded IPv4 tail."
+
+[[entries]]
+rule = "ipv6"
+path = "tests/quality_gates/test_public_release_scan_rules.py"
+value = "::ffff:8.8.8.8"
+reason = "Scanner fixture exercises an IPv4-mapped IPv6 tail."
+
+[[entries]]
+rule = "ipv6"
+path = "tests/quality_gates/test_public_release_scan_rules.py"
+value = "2600:1f18:abc:def:1:2:198.51.100.7"
+reason = "Scanner fixture exercises a full IPv6 dotted-quad tail."
+
+[[entries]]
+rule = "ipv6"
+path = "tests/quality_gates/test_public_release_scan_rules.py"
+value = "fe80::198.51.100.7"
+reason = "Scanner fixture prevents dotted tails from prefix suppression."

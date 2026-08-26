@@ -1,0 +1,11 @@
+# Direct dependencies for the scripts/dev/seed_chain.sh toolchain.
+#
+# btcli is deliberately NOT a project dependency: the validator runtime keeps
+# its own locked dependency set, and the seeder is a dev/CI-only tool. Install
+# it into a throwaway virtualenv, never into the .venv the neurons run from.
+#
+# Regenerate the hash-locked set after editing this file:
+#   uv pip compile --generate-hashes \
+#     scripts/dev/seeder-requirements.in -o scripts/dev/seeder-requirements.txt
+bittensor>=10.5,<11
+bittensor-cli==9.23.2

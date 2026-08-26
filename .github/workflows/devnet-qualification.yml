@@ -1,0 +1,180 @@
+name: Devnet qualification
+
+# Boots a pinned Subtensor localnet, seeds it, and runs the hermetic Alpha Risk
+# commit/reveal cycle (scripts/run_devnet_cycle.py) end to end.
+#
+# This is a CI job, not a deployment. It never touches staging, never receives
+# staging wallets or provider credentials, and creates only throwaway localnet
+# wallets inside the runner. Chain state is the container's writable layer and
+# dies with the job.
+#
+# The localnet has no drand beacon, so seed_chain.sh disables chain-side
+# commit/reveal. This job qualifies Endure's own assessment commit/reveal,
+# scoring, and weight-submission lifecycle. Real Subtensor CRv3 weight behavior
+# is still first observed on the testnet soak.
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: [develop, staging]
+  pull_request:
+    branches: [develop, staging]
+    types: [opened, reopened, synchronize, labeled]
+
+concurrency:
+  group: endure-devnet-qualification-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+env:
+  PYTHON_VERSION: "3.12"
+  # Pinned three-node localnet. ENTRYPOINT is /scripts/localnet.sh; the
+  # positional "True" selects fast blocks. Nodes bind 9944/9945/9946.
+  LOCALNET_IMAGE: ghcr.io/opentensor/subtensor-localnet@sha256:e55f642e34199860f809d7f0c2e8ef660f867ed28b79dde104351b559edfc76a
+  # Node "one" (--one). The image's own healthcheck probes this port.
+  CHAIN_RPC_PORT: "9944"
+
+jobs:
+  qualify:
+    name: Localnet commit/reveal qualification
+    # A pull request into develop qualifies only when someone applies the
+    # `qualify` label -- a 45-minute chain run is too expensive to fire on
+    # every commit. Develop and staging pushes, plus promotions into staging,
+    # are automatic so published images are qualified at their exact SHA.
+    if: >-
+      github.event_name == 'push'
+      || (github.event.action == 'labeled'
+          && github.event.label.name == 'qualify')
+      || (github.event.pull_request.base.ref == 'staging'
+          && github.event.action != 'labeled')
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Start pinned localnet
+        run: |
+          set -euo pipefail
+          docker run --detach --name endure-localnet \
+            --publish 127.0.0.1:9944:9944 \
+            --publish 127.0.0.1:9945:9945 \
+            --publish 127.0.0.1:9946:9946 \
+            "$LOCALNET_IMAGE" True
+          docker inspect --format \
+            'status={{.State.Status}} pid={{.State.Pid}}' endure-localnet
+
+      - name: Require the chain to author blocks
+        run: |
+          set -euo pipefail
+          mkdir -p var
+          rpc="http://127.0.0.1:${CHAIN_RPC_PORT}"
+          req='{"id":1,"jsonrpc":"2.0","method":"chain_getHeader","params":[]}'
+          # The node spends its first seconds building a chainspec, so the RPC
+          # refuses connections and curl exits non-zero. Swallow that: an
+          # unanswered probe is "not ready yet", not a job failure.
+          height() {
+            local body
+            body="$(
+              curl --silent --max-time 5 -H 'Content-Type: application/json' \
+                --data "$req" "$rpc" 2>/dev/null
+            )" || return 0
+            jq -r 'try (.result.number | ltrimstr("0x")) catch empty' \
+              <<<"$body" 2>/dev/null || true
+          }
+          first=""
+          for _ in $(seq 1 150); do
+            if ! docker inspect --format '{{.State.Running}}' endure-localnet |
+              grep -qx true; then
+              echo "localnet container exited early" >&2
+              exit 1
+            fi
+            h="$(height)"
+            if [[ -n "$h" ]]; then
+              printf 'block 0x%s\n' "$h"
+              if [[ -z "$first" ]]; then
+                first="$h"
+              elif [[ "$h" != "$first" ]]; then
+                echo "chain is advancing: 0x$first -> 0x$h"
+                exit 0
+              fi
+            fi
+            sleep 2
+          done
+          echo "chain never advanced past 0x${first:-<no header>}" >&2
+          exit 1
+
+      - name: Install Endure
+        run: |
+          make bootstrap
+          make dev-install
+
+      - name: Install pinned seeder toolchain
+        run: |
+          set -euo pipefail
+          python -m venv .venv-seeder
+          .venv-seeder/bin/python -m pip install --upgrade pip
+          .venv-seeder/bin/python -m pip install --no-cache-dir \
+            --require-hashes -r scripts/dev/seeder-requirements.txt
+          .venv-seeder/bin/btcli --version
+
+      - name: Seed the local chain
+        id: seed
+        env:
+          BTCLI: ${{ github.workspace }}/.venv-seeder/bin/btcli
+          PY: ${{ github.workspace }}/.venv-seeder/bin/python
+          WALLET_PATH: ${{ github.workspace }}/var/wallets
+          SUBNET_NAME: endure-dev
+        run: |
+          set -euo pipefail
+          mkdir -p "$WALLET_PATH"
+          CHAIN_ENDPOINT="ws://127.0.0.1:${CHAIN_RPC_PORT}" \
+            bash scripts/dev/seed_chain.sh | tee var/seed.log
+          netuid="$(awk '/^netuid:/ {print $2; exit}' var/seed.log)"
+          [[ "$netuid" =~ ^[0-9]+$ ]]
+          echo "netuid=$netuid" >>"$GITHUB_OUTPUT"
+          echo "seeded netuid=$netuid"
+
+      - name: Run the commit/reveal cycle
+        env:
+          NETUID: ${{ steps.seed.outputs.netuid }}
+          # neurons/ is not an installed package. The Makefile exports the same
+          # path; the spawned validator and miner inherit it.
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          .venv/bin/python scripts/run_devnet_cycle.py \
+            --netuid "$NETUID" \
+            --network "ws://127.0.0.1:${CHAIN_RPC_PORT}" \
+            --wallet-path "${GITHUB_WORKSPACE}/var/wallets" \
+            --validator-wallet validator \
+            --miner-wallet miner \
+            --hotkey default \
+            --artifact-root var/devnet-runs \
+            --timeout-seconds 900
+
+      - name: Collect chain logs
+        if: always()
+        run: |
+          mkdir -p var
+          docker logs --timestamps --tail 400 endure-localnet 2>&1 |
+            tee var/chain.log || true
+          docker inspect --format \
+            'status={{.State.Status}} exit={{.State.ExitCode}} oom={{.State.OOMKilled}} error={{.State.Error}}' \
+            endure-localnet || true
+
+      - name: Upload qualification evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: devnet-qualification-${{ github.run_id }}
+          path: |
+            var/devnet-runs/
+            var/chain.log
+            var/seed.log
+          retention-days: 7
+          if-no-files-found: warn

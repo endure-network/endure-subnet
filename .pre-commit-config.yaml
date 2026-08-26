@@ -1,0 +1,42 @@
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.10
+    hooks:
+      - id: ruff
+        args: [--fix]
+        files: ^(endure/|neurons/|scripts/|tests/)
+      - id: ruff-format
+        files: ^(endure/|neurons/|scripts/|tests/)
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: check-added-large-files
+      - id: check-merge-conflict
+      - id: detect-private-key
+      - id: no-commit-to-branch
+        args: [--branch, develop, --branch, staging, --branch, main]
+
+  - repo: local
+    hooks:
+      - id: canonical-json
+        name: canonical JSON
+        entry: ./.venv/bin/python -m scripts.quality_gates.checks canonical-json
+        language: system
+        pass_filenames: false
+        always_run: true
+
+      - id: pyright
+        name: pyright
+        entry: ./.venv/bin/python -m pyright
+        language: system
+        types: [python]
+        pass_filenames: false
+
+      - id: verify-on-push
+        name: make verify
+        entry: make verify
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]

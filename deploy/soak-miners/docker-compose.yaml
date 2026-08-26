@@ -1,0 +1,191 @@
+# Alpha Risk R7 soak — MINERS on a separate host from the validator.
+#
+# The validator runs on its own host (deploy/soak). Keeping miners separate
+# avoids public-IP hairpin failures and separates archive request budgets.
+#
+# Miners are push-only; nothing queries their axons, so bridge networking with
+# 1:1 published ports is fine. EXTERNAL_IP is THIS host's public IP (the miners'
+# own axon publish); the validator IP is discovered from the metagraph.
+#
+# Required env: NETUID, EXTERNAL_IP (this miner host's public IP), WALLETS_TAR_B64
+# (base64 tar of hotkeys + coldkeypub; never the coldkey secret). Optional: CHAIN
+# (network name OR a wss:// chain RPC URL, e.g. a keyed Dwellir testnet endpoint —
+# bittensor >=10.3 ignores --subtensor.chain_endpoint, so a custom RPC must ride
+# this flag; host must be allowlisted in endure/utils/config.py _TESTNET_HOSTS;
+# default test), MARKET_DATA_ENDPOINT (mainnet archive for Alpha market data;
+# default the public OpenTensor archive). Build the wallet payload on the
+# operator machine (testnet only):
+#   cd ~/.bittensor/wallets && \
+#     tar -cf - --exclude '._*' endure-testnet/coldkeypub.txt endure-testnet/hotkeys | base64
+
+x-ops: &ops
+  restart: unless-stopped
+  init: true
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+x-miner: &miner
+  <<: *ops
+  healthcheck:
+    test:
+      [
+        "CMD",
+        "python",
+        "-c",
+        "import os, socket; s=socket.create_connection(('127.0.0.1', int(os.environ['MINER_AXON_PORT'])), timeout=5); s.close()",
+      ]
+    interval: 30s
+    timeout: 10s
+    retries: 3
+    start_period: 180s
+
+volumes:
+  wallets:
+  miner-1-state:
+  miner-2-state:
+  miner-3-state:
+  miner-4-state:
+  miner-5-state:
+
+services:
+  wallet-init:
+    image: python:3.12-slim
+    restart: "no"
+    environment:
+      WALLETS_TAR_B64: ${WALLETS_TAR_B64:?provide base64 tar of hotkeys + coldkeypub}
+    volumes:
+      - wallets:/wallets
+    command:
+      [
+        "sh",
+        "-c",
+        "if printf '%s' \"$$WALLETS_TAR_B64\" | base64 -d | tar -tf - | grep -E '(^|/)coldkey$$'; then echo 'refusing: wallet tar contains a coldkey secret' >&2; exit 1; fi && printf '%s' \"$$WALLETS_TAR_B64\" | base64 -d | tar -xf - -C /wallets && find /wallets -type f -not -name 'coldkey' | sort",
+      ]
+
+  miner-1:
+    <<: *miner
+    build: { context: ../.., dockerfile: docker/miner.Dockerfile }
+    image: endure-miner:soak
+    depends_on:
+      wallet-init:
+        condition: service_completed_successfully
+    volumes:
+      - wallets:/root/.bittensor/wallets:ro
+      - miner-1-state:/root/.bittensor/miners
+    ports: ["8092:8092"]
+    environment: { PYTHONUNBUFFERED: "1", MINER_AXON_PORT: "8092" }
+    command:
+      [
+        "--netuid", "${NETUID:?set NETUID}",
+        "--subtensor.network", "${CHAIN:-test}",
+        "--wallet.name", "${MINER1_WALLET:-endure-testnet}",
+        "--wallet.hotkey", "${MINER1_HOTKEY:-miner-1}",
+        "--endure.serving_stage", "testnet",
+        "--endure.market_data_endpoint", "${MARKET_DATA_ENDPOINT:-wss://archive.chain.opentensor.ai:443}",
+        "--axon.port", "8092",
+        "--axon.external_ip", "${EXTERNAL_IP:?set EXTERNAL_IP}",
+        "--logging.info",
+      ]
+
+  miner-2:
+    <<: *miner
+    image: endure-miner:soak
+    pull_policy: never
+    depends_on:
+      wallet-init:
+        condition: service_completed_successfully
+    volumes:
+      - wallets:/root/.bittensor/wallets:ro
+      - miner-2-state:/root/.bittensor/miners
+    ports: ["8093:8093"]
+    environment: { PYTHONUNBUFFERED: "1", MINER_AXON_PORT: "8093" }
+    command:
+      [
+        "--netuid", "${NETUID:?set NETUID}",
+        "--subtensor.network", "${CHAIN:-test}",
+        "--wallet.name", "${MINER2_WALLET:-endure-testnet}",
+        "--wallet.hotkey", "${MINER2_HOTKEY:-miner-2}",
+        "--endure.serving_stage", "testnet",
+        "--endure.market_data_endpoint", "${MARKET_DATA_ENDPOINT:-wss://archive.chain.opentensor.ai:443}",
+        "--axon.port", "8093",
+        "--axon.external_ip", "${EXTERNAL_IP:?set EXTERNAL_IP}",
+        "--logging.info",
+      ]
+
+  miner-3:
+    <<: *miner
+    image: endure-miner:soak
+    pull_policy: never
+    depends_on:
+      wallet-init:
+        condition: service_completed_successfully
+    volumes:
+      - wallets:/root/.bittensor/wallets:ro
+      - miner-3-state:/root/.bittensor/miners
+    ports: ["8094:8094"]
+    environment: { PYTHONUNBUFFERED: "1", MINER_AXON_PORT: "8094" }
+    command:
+      [
+        "--netuid", "${NETUID:?set NETUID}",
+        "--subtensor.network", "${CHAIN:-test}",
+        "--wallet.name", "${MINER3_WALLET:-endure-testnet}",
+        "--wallet.hotkey", "${MINER3_HOTKEY:-miner-3}",
+        "--endure.serving_stage", "testnet",
+        "--endure.market_data_endpoint", "${MARKET_DATA_ENDPOINT:-wss://archive.chain.opentensor.ai:443}",
+        "--axon.port", "8094",
+        "--axon.external_ip", "${EXTERNAL_IP:?set EXTERNAL_IP}",
+        "--logging.info",
+      ]
+
+  miner-4:
+    <<: *miner
+    image: endure-miner:soak
+    pull_policy: never
+    depends_on:
+      wallet-init:
+        condition: service_completed_successfully
+    volumes:
+      - wallets:/root/.bittensor/wallets:ro
+      - miner-4-state:/root/.bittensor/miners
+    ports: ["8095:8095"]
+    environment: { PYTHONUNBUFFERED: "1", MINER_AXON_PORT: "8095" }
+    command:
+      [
+        "--netuid", "${NETUID:?set NETUID}",
+        "--subtensor.network", "${CHAIN:-test}",
+        "--wallet.name", "${MINER4_WALLET:-endure-testnet}",
+        "--wallet.hotkey", "${MINER4_HOTKEY:-miner-4}",
+        "--endure.serving_stage", "testnet",
+        "--endure.market_data_endpoint", "${MARKET_DATA_ENDPOINT:-wss://archive.chain.opentensor.ai:443}",
+        "--axon.port", "8095",
+        "--axon.external_ip", "${EXTERNAL_IP:?set EXTERNAL_IP}",
+        "--logging.info",
+      ]
+
+  miner-5:
+    <<: *miner
+    image: endure-miner:soak
+    pull_policy: never
+    depends_on:
+      wallet-init:
+        condition: service_completed_successfully
+    volumes:
+      - wallets:/root/.bittensor/wallets:ro
+      - miner-5-state:/root/.bittensor/miners
+    ports: ["8096:8096"]
+    environment: { PYTHONUNBUFFERED: "1", MINER_AXON_PORT: "8096" }
+    command:
+      [
+        "--netuid", "${NETUID:?set NETUID}",
+        "--subtensor.network", "${CHAIN:-test}",
+        "--wallet.name", "${MINER5_WALLET:-endure-testnet}",
+        "--wallet.hotkey", "${MINER5_HOTKEY:-miner-5}",
+        "--endure.serving_stage", "testnet",
+        "--endure.market_data_endpoint", "${MARKET_DATA_ENDPOINT:-wss://archive.chain.opentensor.ai:443}",
+        "--axon.port", "8096",
+        "--axon.external_ip", "${EXTERNAL_IP:?set EXTERNAL_IP}",
+        "--logging.info",
+      ]

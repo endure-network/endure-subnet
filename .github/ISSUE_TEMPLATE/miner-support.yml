@@ -1,0 +1,15 @@
+name: Miner support
+description: Get non-sensitive help operating a testnet miner.
+body:
+  - type: textarea
+    attributes:
+      label: Command and expected/actual behavior
+      description: Include reproducible commands and expected/actual behavior; redact wallet names if needed.
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Versions, redacted configuration, and logs
+      description: Include release, protocol key, Bittensor version, redacted config, and redacted logs. Never include mnemonic, keys, archives, tokens, or credentials.
+    validations:
+      required: true

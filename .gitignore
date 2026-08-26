@@ -1,0 +1,60 @@
+# Python build and runtime artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# Environments and local configuration
+.venv/
+venv/
+.env
+.env.*
+!.env.example
+
+# Test, coverage, and analysis caches
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.pyright/
+.hypothesis/
+
+# Editors and operating systems
+.DS_Store
+.idea/
+.vscode/
+
+# Node-based quality tooling
+node_modules/
+
+# Endure secrets and local operator state
+.secrets/
+message_and_signature.*
+*.sig
+**/wallets/
+*coldkey*
+*hotkey*
+endure.db
+endure.db-journal
+
+# Localnet bootstrap state
+/subtensor/
+/.dependencies_installed
+/.wallets_setup
+/var/localnet/
+
+# Generated run artifacts (devnet cycles, localnet seeding, neuron logs)
+var/
+*.log
+
+# Agent worktrees and local review/tooling artifacts (never vendored)
+.worktrees/
+.reviews/
+.omo/
+.sisyphus/
+.playwright-mcp/
+.argus/

@@ -1,0 +1,24 @@
+services:
+  validator:
+    command:
+      [
+        "--mock",
+        "--netuid", "1",
+        "--endure.serving_stage", "testnet",
+        "--endure.database_url", "sqlite:////data/validator.db",
+        "--endure.api_host", "0.0.0.0",
+        "--endure.api_port", "8714",
+        "--axon.port", "8091",
+        "--axon.external_ip", "127.0.0.1",
+        "--logging.info",
+      ]
+    volumes:
+      # Compose replaces this service volume list; restate wallets while swapping
+      # the deployed named-volume topology for CI's scratch mount fixture.
+      - wallets:/root/.bittensor/wallets:ro
+      - type: bind
+        source: ${SCRATCH_ROOT:?set SCRATCH_ROOT}/data
+        target: /data
+      - type: bind
+        source: ${SCRATCH_ROOT:?set SCRATCH_ROOT}/backups
+        target: /data/backups

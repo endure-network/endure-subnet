@@ -1,0 +1,128 @@
+name: Publish release images
+
+on:
+  push:
+    branches: [staging]
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Full 40-character commit SHA at the tip of staging
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+  packages: write
+
+concurrency:
+  group: publish-release-images
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish immutable validator and miner images
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ inputs.source_sha || github.sha }}
+
+      - name: Require the current staging commit
+        run: |
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          staging_sha="$(gh api \
+            "repos/$GITHUB_REPOSITORY/git/ref/heads/staging" --jq .object.sha)"
+          test "$staging_sha" = "$SOURCE_SHA"
+
+      - name: Wait for successful release workflows
+        run: |
+          # Localnet qualification has a 45-minute timeout. Allow a full hour
+          # for both exact-SHA workflows to start and finish.
+          for _ in {1..360}; do
+            if scripts/quality_gates/require_release_workflows.sh "$SOURCE_SHA"; then
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "Timed out waiting for successful release workflows for $SOURCE_SHA" >&2
+          exit 1
+
+      - name: Recheck the current staging commit
+        run: |
+          staging_sha="$(gh api \
+            "repos/$GITHUB_REPOSITORY/git/ref/heads/staging" --jq .object.sha)"
+          test "$staging_sha" = "$SOURCE_SHA"
+
+      - name: Define immutable image tags
+        run: |
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          echo "VALIDATOR_TAG=ghcr.io/$owner/endure-validator:sha-$SOURCE_SHA" >> "$GITHUB_ENV"
+          echo "MINER_TAG=ghcr.io/$owner/endure-miner:sha-$SOURCE_SHA" >> "$GITHUB_ENV"
+
+      - name: Authenticate to the container registry
+        run: echo "$GH_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+
+      - name: Build validator
+        run: |
+          docker build --platform linux/amd64 \
+            --build-arg ENDURE_SOURCE_REVISION="$SOURCE_SHA" \
+            --build-arg ENDURE_SOURCE_URL="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
+            --build-arg ENDURE_IMAGE_VERSION="sha-$SOURCE_SHA" \
+            --file docker/validator.Dockerfile \
+            --tag "$VALIDATOR_TAG" .
+
+      - name: Build miner
+        run: |
+          docker build --platform linux/amd64 \
+            --build-arg ENDURE_SOURCE_REVISION="$SOURCE_SHA" \
+            --build-arg ENDURE_SOURCE_URL="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
+            --build-arg ENDURE_IMAGE_VERSION="sha-$SOURCE_SHA" \
+            --file docker/miner.Dockerfile \
+            --tag "$MINER_TAG" .
+
+      - name: Recheck release qualification
+        run: |
+          staging_sha="$(gh api \
+            "repos/$GITHUB_REPOSITORY/git/ref/heads/staging" --jq .object.sha)"
+          test "$staging_sha" = "$SOURCE_SHA"
+          scripts/quality_gates/require_release_workflows.sh "$SOURCE_SHA"
+
+      - name: Publish images
+        run: |
+          docker push "$VALIDATOR_TAG"
+          docker push "$MINER_TAG"
+
+      - name: Record deployable digests
+        run: |
+          validator_digest="$(docker buildx imagetools inspect \
+            --format '{{json .Manifest}}' "$VALIDATOR_TAG" | jq -r .digest)"
+          miner_digest="$(docker buildx imagetools inspect \
+            --format '{{json .Manifest}}' "$MINER_TAG" | jq -r .digest)"
+          [[ "$validator_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          [[ "$miner_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          validator_ref="${VALIDATOR_TAG%:*}@$validator_digest"
+          miner_ref="${MINER_TAG%:*}@$miner_digest"
+          printf 'SOURCE_SHA=%s\nVALIDATOR_IMAGE=%s\nMINER_IMAGE=%s\n' \
+            "$SOURCE_SHA" "$validator_ref" "$miner_ref" > release-images.env
+          grep -Eq '@sha256:[0-9a-f]{64}$' release-images.env
+          {
+            echo '### Immutable release images'
+            echo
+            echo "Source commit: \`$SOURCE_SHA\`"
+            echo
+            echo 'Download the release-images artifact and deploy the recorded digests.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: release-images-${{ inputs.source_sha || github.sha }}
+          path: release-images.env
+          if-no-files-found: error
+          retention-days: 30

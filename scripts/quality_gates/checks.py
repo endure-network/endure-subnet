@@ -1,0 +1,406 @@
+from __future__ import annotations
+
+import ast
+import hashlib
+import json
+import os
+import re
+import sys
+from pathlib import Path
+from typing import Callable, Sequence
+from urllib.parse import unquote, urlsplit
+
+from endure.protocol.version_contract import (
+    ACTIVATED_VERSION_HISTORY_DIGEST,
+    ACTIVATED_VERSION_REGISTRY_DIGEST,
+    CURRENT_VERSION_DIGEST,
+    CURRENT_VERSION_KEY,
+    PREVIOUS_VERSION_DIGEST,
+    PREVIOUS_VERSION_KEY,
+    WATCHED_PATHS,
+)
+from scripts.quality_gates.activated_version_lineage import (
+    read_first_parent_activations,
+)
+from scripts.quality_gates.activated_version_models import read_registry_digests
+from scripts.quality_gates.activated_versions import (
+    PUBLIC_HISTORY_BOOTSTRAP,
+    REGISTRY_PATH,
+    VersionContract,
+    find_registry_failures,
+)
+from scripts.quality_gates.shared import (
+    Violation,
+    format_violations,
+    iter_json_files,
+    iter_text_files,
+)
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+DOMAIN_PATHS = (
+    Path("endure/assessment"),
+    Path("endure/protocol"),
+    Path("endure/aggregation"),
+    Path("endure/scoring"),
+    Path("endure/publication"),
+    Path("endure/storage"),
+)
+DECIMAL_POLICY_PATHS = DOMAIN_PATHS + (
+    Path("endure/base/validator.py"),
+    Path("endure/base/utils/weight_utils.py"),
+)
+JSON_PATHS = (Path("."),)
+IGNORED_JSON_FILES = {"coverage.json"}
+MARKDOWN_PATHS = (Path("."),)
+MARKDOWN_LINK_PATTERN = re.compile(
+    r"!?\[[^\]]*\]\((?P<target><[^>]+>|[^\s)]+)(?:\s+[^)]*)?\)"
+)
+
+
+def _reject_non_finite(token: str) -> float:
+    raise ValueError(f"non-finite JSON literal not allowed: {token}")
+
+
+def canonical_json_text(payload: object) -> str:
+    return json.dumps(payload, indent=2, sort_keys=True, allow_nan=False) + "\n"
+
+
+def find_noncanonical_json(
+    *,
+    repo_root: Path = REPO_ROOT,
+    paths: Sequence[Path] = JSON_PATHS,
+) -> list[Violation]:
+    violations: list[Violation] = []
+    for path in iter_json_files(repo_root, paths):
+        if path.name in IGNORED_JSON_FILES:
+            continue
+        contents = path.read_text(encoding="utf-8")
+        try:
+            parsed = json.loads(contents, parse_constant=_reject_non_finite)
+        except json.JSONDecodeError as exc:
+            violations.append(
+                Violation(
+                    path=path, line=exc.lineno, message=f"invalid JSON: {exc.msg}"
+                )
+            )
+            continue
+        except ValueError as exc:
+            violations.append(
+                Violation(path=path, line=1, message=f"invalid JSON: {exc}")
+            )
+            continue
+
+        if contents != canonical_json_text(parsed):
+            violations.append(
+                Violation(
+                    path=path,
+                    line=1,
+                    message="JSON file is not canonicalized (sorted keys, 2-space indent, newline-terminated)",
+                )
+            )
+    return violations
+
+
+def _annotation_has_float(annotation: ast.expr | None) -> bool:
+    if isinstance(annotation, ast.Name):
+        return annotation.id == "float"
+    if isinstance(annotation, ast.Subscript):
+        return _annotation_has_float(annotation.value) or _annotation_has_float(
+            annotation.slice
+        )
+    if isinstance(annotation, ast.BinOp):
+        return _annotation_has_float(annotation.left) or _annotation_has_float(
+            annotation.right
+        )
+    if isinstance(annotation, ast.Tuple):
+        return any(_annotation_has_float(element) for element in annotation.elts)
+    return False
+
+
+class _FloatUsageVisitor(ast.NodeVisitor):
+    _CALL_MESSAGE = "float() is forbidden in Decimal-governed domain paths"
+    _LITERAL_MESSAGE = "float literals are forbidden in Decimal-governed domain paths"
+    _ANNOTATION_MESSAGE = (
+        "float annotations are forbidden in Decimal-governed domain paths"
+    )
+
+    def __init__(self, path: Path) -> None:
+        self._path = path
+        self.violations: list[Violation] = []
+
+    def _flag(self, line: int, message: str) -> None:
+        self.violations.append(Violation(path=self._path, line=line, message=message))
+
+    def visit_Call(self, node: ast.Call) -> None:
+        if isinstance(node.func, ast.Name) and node.func.id == "float":
+            self._flag(node.lineno, self._CALL_MESSAGE)
+        self.generic_visit(node)
+
+    def visit_Constant(self, node: ast.Constant) -> None:
+        if isinstance(node.value, float):
+            self._flag(node.lineno, self._LITERAL_MESSAGE)
+        self.generic_visit(node)
+
+    def visit_arg(self, node: ast.arg) -> None:
+        if _annotation_has_float(node.annotation):
+            self._flag(node.lineno, self._ANNOTATION_MESSAGE)
+        self.generic_visit(node)
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+        if _annotation_has_float(node.annotation):
+            self._flag(node.lineno, self._ANNOTATION_MESSAGE)
+        self.generic_visit(node)
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        if _annotation_has_float(node.returns):
+            self._flag(node.lineno, self._ANNOTATION_MESSAGE)
+        self.generic_visit(node)
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        if _annotation_has_float(node.returns):
+            self._flag(node.lineno, self._ANNOTATION_MESSAGE)
+        self.generic_visit(node)
+
+
+def find_decimal_policy_violations(
+    *,
+    repo_root: Path = REPO_ROOT,
+    paths: Sequence[Path] = DECIMAL_POLICY_PATHS,
+) -> list[Violation]:
+    violations: list[Violation] = []
+    for path in iter_text_files(repo_root, paths):
+        if path.suffix != ".py":
+            continue
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        except SyntaxError as exc:
+            violations.append(
+                Violation(
+                    path=path,
+                    line=exc.lineno or 1,
+                    message=f"could not parse Python source: {exc.msg}",
+                )
+            )
+            continue
+        visitor = _FloatUsageVisitor(path)
+        visitor.visit(tree)
+        violations.extend(visitor.violations)
+    return violations
+
+
+def find_missing_spec_references(
+    *,
+    repo_root: Path = REPO_ROOT,
+    paths: Sequence[Path] = DOMAIN_PATHS,
+) -> list[Violation]:
+    violations: list[Violation] = []
+    for path in iter_text_files(repo_root, paths):
+        if path.suffix != ".py":
+            continue
+        contents = path.read_text(encoding="utf-8")
+        if "spec §" not in contents:
+            violations.append(
+                Violation(
+                    path=path,
+                    line=1,
+                    message="critical module is missing a spec reference",
+                )
+            )
+    return violations
+
+
+def find_broken_markdown_links(
+    *,
+    repo_root: Path = REPO_ROOT,
+    paths: Sequence[Path] = MARKDOWN_PATHS,
+) -> list[Violation]:
+    """Find relative Markdown links whose target is absent from the repository."""
+    violations: list[Violation] = []
+    for path in iter_text_files(repo_root, paths):
+        if path.suffix.lower() != ".md":
+            continue
+        contents = path.read_text(encoding="utf-8")
+        for match in MARKDOWN_LINK_PATTERN.finditer(contents):
+            raw_target = match.group("target").strip("<>")
+            if not raw_target or raw_target.startswith("#"):
+                continue
+            parsed = urlsplit(raw_target)
+            if parsed.scheme or parsed.netloc:
+                continue
+            decoded_path = unquote(parsed.path)
+            if not decoded_path:
+                continue
+            target = (
+                repo_root / decoded_path.lstrip("/")
+                if decoded_path.startswith("/")
+                else path.parent / decoded_path
+            )
+            if target.exists():
+                continue
+            line = contents.count("\n", 0, match.start()) + 1
+            violations.append(
+                Violation(
+                    path=path,
+                    line=line,
+                    message=f"relative Markdown link does not exist: {raw_target}",
+                )
+            )
+    return violations
+
+
+def iter_watched_files(
+    repo_root: Path = REPO_ROOT, watched_paths: Sequence[Path] = WATCHED_PATHS
+) -> list[Path]:
+    files: list[Path] = []
+    for watched_path in watched_paths:
+        for path in sorted((repo_root / watched_path).rglob("*.py")):
+            if path.is_file() and path.name != "version_contract.py":
+                files.append(path)
+    return files
+
+
+def compute_protocol_digest(
+    repo_root: Path = REPO_ROOT, watched_paths: Sequence[Path] = WATCHED_PATHS
+) -> str:
+    payload = bytearray()
+    for path in iter_watched_files(repo_root, watched_paths):
+        relative_path = path.relative_to(repo_root)
+        payload.extend(str(relative_path).encode("utf-8"))
+        payload.extend(b"\0")
+        payload.extend(path.read_bytes())
+        payload.extend(b"\0")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def find_protocol_version_failures(
+    repo_root: Path = REPO_ROOT, watched_paths: Sequence[Path] = WATCHED_PATHS
+) -> list[str]:
+    failures: list[str] = []
+    computed_digest = compute_protocol_digest(repo_root, watched_paths)
+
+    if computed_digest != CURRENT_VERSION_DIGEST:
+        failures.append(
+            "watched protocol paths changed without updating CURRENT_VERSION_DIGEST"
+        )
+    if CURRENT_VERSION_KEY < PREVIOUS_VERSION_KEY:
+        failures.append("CURRENT_VERSION_KEY must be >= PREVIOUS_VERSION_KEY")
+    if (
+        CURRENT_VERSION_DIGEST != PREVIOUS_VERSION_DIGEST
+        and CURRENT_VERSION_KEY <= PREVIOUS_VERSION_KEY
+    ):
+        failures.append(
+            "CURRENT_VERSION_KEY must increase when CURRENT_VERSION_DIGEST changes"
+        )
+    return failures
+
+
+def find_activated_version_registry_failures(
+    registry_path: Path = REPO_ROOT / REGISTRY_PATH,
+    trusted_activations: Sequence[tuple[int, str, str]] | None = None,
+) -> list[str]:
+    return find_registry_failures(
+        registry_path,
+        VersionContract(
+            current_key=CURRENT_VERSION_KEY,
+            current_digest=CURRENT_VERSION_DIGEST,
+            previous_key=PREVIOUS_VERSION_KEY,
+            previous_digest=PREVIOUS_VERSION_DIGEST,
+            history_digest=ACTIVATED_VERSION_HISTORY_DIGEST,
+            registry_digest=ACTIVATED_VERSION_REGISTRY_DIGEST,
+        ),
+        trusted_activations,
+        public_history_bootstrap=PUBLIC_HISTORY_BOOTSTRAP,
+    )
+
+
+def _run_violation_check(
+    title: str,
+    finder: Callable[[], list[Violation]],
+) -> int:
+    violations = finder()
+    if not violations:
+        print(f"{title} passed.")
+        return 0
+
+    print(format_violations(f"{title} failed:", violations, REPO_ROOT))
+    return 1
+
+
+def _run_protocol_version() -> int:
+    lineage_ref = os.environ.get("ENDURE_ACTIVATION_LINEAGE_REF") or "origin/staging"
+    activations = read_first_parent_activations(REPO_ROOT, lineage_ref)
+    trusted_activations: tuple[tuple[int, str, str], ...] | None = None
+    lineage_failure: str | None = None
+    if isinstance(activations, str):
+        lineage_failure = activations
+    else:
+        trusted_activations = tuple(
+            (activation.key, activation.digest, activation.evidence_sha256)
+            for activation in activations
+        )
+    failures = [
+        *find_protocol_version_failures(),
+        *(
+            [lineage_failure]
+            if lineage_failure is not None
+            else find_activated_version_registry_failures(
+                trusted_activations=trusted_activations
+            )
+        ),
+    ]
+    if not failures:
+        print("Protocol version check passed.")
+        return 0
+
+    print("Protocol version check failed:")
+    for failure in failures:
+        print(f"- {failure}")
+    return 1
+
+
+def _run_activation_digests() -> int:
+    digests = read_registry_digests(REPO_ROOT / REGISTRY_PATH)
+    if isinstance(digests, str):
+        print(digests)
+        return 1
+    history_digest, registry_digest = digests
+    print(f"ACTIVATED_VERSION_HISTORY_DIGEST={history_digest}")
+    print(f"ACTIVATED_VERSION_REGISTRY_DIGEST={registry_digest}")
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = argv or sys.argv[1:]
+    if len(args) != 1:
+        print(
+            "Usage: python -m scripts.quality_gates.checks "
+            "<activation-digests|canonical-json|decimal-policy|"
+            "spec-references|protocol-version|markdown-links>"
+        )
+        return 2
+
+    runners: dict[str, Callable[[], int]] = {
+        "activation-digests": _run_activation_digests,
+        "canonical-json": lambda: _run_violation_check(
+            "Canonical JSON check", find_noncanonical_json
+        ),
+        "decimal-policy": lambda: _run_violation_check(
+            "Decimal policy check", find_decimal_policy_violations
+        ),
+        "spec-references": lambda: _run_violation_check(
+            "Spec reference check", find_missing_spec_references
+        ),
+        "protocol-version": _run_protocol_version,
+        "markdown-links": lambda: _run_violation_check(
+            "Markdown link check", find_broken_markdown_links
+        ),
+    }
+    runner = runners.get(args[0])
+    if runner is None:
+        print(f"Unknown check: {args[0]}")
+        return 2
+    return runner()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

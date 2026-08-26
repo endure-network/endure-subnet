@@ -1,0 +1,15 @@
+name: Bug report
+description: Report a reproducible, non-sensitive Endure bug.
+body:
+  - type: textarea
+    attributes:
+      label: Reproduction command and expected/actual behavior
+      description: Include exact command, expected result, and observed result. Redact all secrets.
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Versions, redacted configuration, and logs
+      description: Include Endure release, protocol key, Bittensor version, redacted config, and redacted logs. Never include wallet material or credentials.
+    validations:
+      required: true

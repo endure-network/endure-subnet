@@ -1,0 +1,13 @@
+.git
+.venv
+var
+docs
+subtensor
+.sisyphus
+.playwright-mcp
+.reviews
+**/__pycache__
+**/.pytest_cache
+.env
+.env.*
+.worktrees

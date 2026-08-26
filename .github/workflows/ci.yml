@@ -1,0 +1,156 @@
+name: CI
+permissions:
+  contents: read
+on:
+  push:
+    branches: [develop, staging, main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - run: make bootstrap
+      - run: make dev-install
+      - run: make lint
+
+  typecheck:
+    name: Typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - run: make bootstrap
+      - run: make dev-install
+      - run: make typecheck
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - run: make bootstrap
+      - run: make dev-install
+      - run: make test-ci
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always()
+        with:
+          name: coverage-xml
+          path: coverage.xml
+
+  migrations:
+    name: Migrations
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - run: make bootstrap
+      - run: make dev-install
+      - run: make migrations
+
+  quality:
+    name: Quality
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "22"
+      - run: make bootstrap
+      - run: make dev-install
+      - run: make check-duplication
+
+  guardrails:
+    name: Guardrails
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - run: make bootstrap
+      - run: make dev-install
+      - run: make guardrails
+
+  deploy-assembly:
+    name: Deploy assembly
+    runs-on: ubuntu-latest
+    env:
+      NETUID: "1"
+      EXTERNAL_IP: 127.0.0.1
+      VALIDATOR_WALLET_ROOT: /tmp/endure-validator-wallet
+      MINER1_WALLET_ROOT: /tmp/endure-miner-1-wallet
+      MINER2_WALLET_ROOT: /tmp/endure-miner-2-wallet
+      MINER3_WALLET_ROOT: /tmp/endure-miner-3-wallet
+      MINER4_WALLET_ROOT: /tmp/endure-miner-4-wallet
+      MINER5_WALLET_ROOT: /tmp/endure-miner-5-wallet
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - name: Render deployed compose configurations
+        run: |
+          WALLETS_TAR_B64="$(tar -cf - --files-from /dev/null | base64 -w0)"
+          export WALLETS_TAR_B64
+          docker compose -f deploy/soak/docker-compose.yaml config
+          docker compose -f deploy/soak-miners/docker-compose.yaml config
+          docker compose --env-file deploy/operator-node/env.example \
+            -f deploy/operator-node/docker-compose.yaml config
+          docker compose -f docker-compose.yml config
+      - name: Build and start the validator with scratch mounts
+        run: |
+          SCRATCH_ROOT="$RUNNER_TEMP/endure-soak"
+          WALLETS_TAR_B64="$(tar -cf - --files-from /dev/null | base64 -w0)"
+          export SCRATCH_ROOT WALLETS_TAR_B64
+          mkdir -p "$SCRATCH_ROOT/data" "$SCRATCH_ROOT/backups"
+          docker compose -f deploy/soak/docker-compose.yaml -f .github/compose/soak-assembly.override.yaml build validator
+          docker compose -f deploy/soak/docker-compose.yaml -f .github/compose/soak-assembly.override.yaml up -d validator
+          for _ in $(seq 1 30); do
+            container_id=$(docker compose -f deploy/soak/docker-compose.yaml -f .github/compose/soak-assembly.override.yaml ps -q validator)
+            test -n "$container_id" && test "$(docker inspect -f '{{.State.Running}}' "$container_id")" = true && break
+            sleep 2
+          done
+          test -n "$container_id"
+          test "$(docker inspect -f '{{.State.Running}}' "$container_id")" = true
+          docker inspect -f '{{range .Mounts}}{{println .Source .Destination}}{{end}}' "$container_id" | grep -Fx "$SCRATCH_ROOT/data /data"
+          docker inspect -f '{{range .Mounts}}{{println .Source .Destination}}{{end}}' "$container_id" | grep -Fx "$SCRATCH_ROOT/backups /data/backups"
+          healthy=false
+          for _ in $(seq 1 30); do
+            if curl --fail --silent --show-error http://localhost:8714/health; then
+              healthy=true
+              break
+            fi
+            sleep 2
+          done
+          test "$healthy" = true
+        shell: bash
+      - name: Collect validator logs
+        if: always()
+        run: |
+          SCRATCH_ROOT="$RUNNER_TEMP/endure-soak"
+          WALLETS_TAR_B64="$(tar -cf - --files-from /dev/null | base64 -w0)"
+          export SCRATCH_ROOT WALLETS_TAR_B64
+          docker compose -f deploy/soak/docker-compose.yaml -f .github/compose/soak-assembly.override.yaml logs

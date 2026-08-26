@@ -1,0 +1,247 @@
+{
+  "activation_definition": "first appearance of a distinct CURRENT_VERSION_KEY/CURRENT_VERSION_DIGEST pair on the first-parent staging lineage",
+  "activation_history": [
+    {
+      "digest": "9bc000ca329b748b7a18ef361fff5dfb9f66b5879becd7619039b120b48ef104",
+      "evidence_sha256": "53c1f0c046e147e86e6f21b86a75c096de668f6c4ccd05f5177fdb2d6a52e83b",
+      "key": 10,
+      "record_id": "activation-0001"
+    },
+    {
+      "digest": "905fa0830072dd392caac21e2b2fd41164c3a3901630f7849f60d29a3b30e225",
+      "evidence_sha256": "08e270bda6050b804fcb676a70377e8d2845bad8e53ab1b4aac33c3bdd564892",
+      "key": 14,
+      "record_id": "activation-0002"
+    },
+    {
+      "digest": "cc388d70e7e4d26cafcd65918a0a471520587734910fb423fa32a10a9515c790",
+      "evidence_sha256": "f9fca7c5c2738b60d738f850be24390df398e45b7782db6d7d3400557b230462",
+      "key": 15,
+      "record_id": "activation-0003"
+    },
+    {
+      "digest": "83890b6a72dfb93c82d5bc64d585c674cab6f07461169036e77ad994de87aece",
+      "evidence_sha256": "14f63f688ed6b3fe6a9dd651e1506818f88f94856fb544fabca76d2b0512680f",
+      "key": 15,
+      "record_id": "activation-0004"
+    },
+    {
+      "digest": "3e61cb607af55712da072f1be52686aeb246cca43b03eb3f81987dedc12cf97d",
+      "evidence_sha256": "f9d6006a464844597b5dd7bda4d728e35e3220bf5c877dd94df1bf9e35559ef6",
+      "key": 16,
+      "record_id": "activation-0005"
+    },
+    {
+      "digest": "74e953bb6309d3dff825858dc39d579b11b7d7718688e39dac4df7417a4a7183",
+      "evidence_sha256": "22f731ff00d78d86dac655d6d840729412e96bfa2e4f8bb8db91c08536315f97",
+      "key": 16,
+      "record_id": "activation-0006"
+    },
+    {
+      "digest": "3b2ec013c6bf699ca940fb10c1b9c66bd5935d5e4dee57a6f5965293cf84db46",
+      "evidence_sha256": "0c576574271f4e6bfdae77f2f3698df8c735ff8e1e619312ab98a02a604a178d",
+      "key": 16,
+      "record_id": "activation-0007"
+    },
+    {
+      "digest": "9ca6deade93e0be309c48284187b25baa1a47e23f14ba60a3adc95239813d0b5",
+      "evidence_sha256": "60549f849abffa0eab5fa5c84171a1187d30d713fd3b954780209cf3dfb89bc5",
+      "key": 16,
+      "record_id": "activation-0008"
+    },
+    {
+      "digest": "02d56a1f6b83dc7daf5aeb980357ee36e66749e55acbc10cdf22c46d63a3764b",
+      "evidence_sha256": "115f281da8d0d88e28612a02b909dbb15b0017fc2d8faa3362fd21cd85e812fe",
+      "key": 16,
+      "record_id": "activation-0009"
+    },
+    {
+      "digest": "baed1056cf74a16acfa388d3563a8fd31ef3ddb6806c25813944abb611bfadef",
+      "evidence_sha256": "8860981fd6432bbff651e1d4e4f47e4f61ee3a048da941f2d59d0c87dbc13d2e",
+      "key": 16,
+      "record_id": "activation-0010"
+    },
+    {
+      "digest": "15d0d31e838c77a5796503d9a31b88dbb7f6f6cf3f4b0c5b069f3bdd6d67c0a6",
+      "evidence_sha256": "8a27c9beaea141281b128774004803c325f8d041e8436c613d47ba31e3b98555",
+      "key": 16,
+      "record_id": "activation-0011"
+    },
+    {
+      "digest": "08a4a41a04ff01e92c550f7e5f6abcd32b30d18a3a3ec17feb1562841ad665e3",
+      "evidence_sha256": "a41e57ae4fc744c9d998b3611a6475d0dcc85ebee2064ce1f70b03f2e3b58b4b",
+      "key": 16,
+      "record_id": "activation-0012"
+    },
+    {
+      "digest": "87f3792c916c750bba14465e6bf5c8e3486fbc2a60f70658f038128b2eba2277",
+      "evidence_sha256": "b7f56adc9c46a50436c1145d7cc899bbac886dffcdd26c1d18f40158cdd088b8",
+      "key": 16,
+      "record_id": "activation-0013"
+    },
+    {
+      "digest": "dcb6e9bc5945d417fce70b16edc63058a2ac417822bb02f7e51d7759fc5618dc",
+      "evidence_sha256": "c9ec9a034f62481f1b6be9e60ad31f466120b7e1267f524a7af26975fd2d3a11",
+      "key": 16,
+      "record_id": "activation-0014"
+    },
+    {
+      "digest": "960160e83c00f1ed6d4299990f2a61925833a29a5d17b8c0d97e2af5eb88c1cb",
+      "evidence_sha256": "8b2f4db96447b1c33ce650ea6b27184d417b6961b5bdf8cbd7e93a6464b28391",
+      "key": 16,
+      "record_id": "activation-0015"
+    },
+    {
+      "digest": "7b81558f494ea744038d9539981e0f8c6b0b8198ca995cce1fc8ed24bb644996",
+      "evidence_sha256": "be6d6b76188a5b19100d9669182bed27b59bd441902b808287ab587fd1a78a58",
+      "key": 16,
+      "record_id": "activation-0016"
+    },
+    {
+      "digest": "1f22989383e65fbca8acf7bff26cb77452e42eeb453200404301e285e74a07b8",
+      "evidence_sha256": "87ea7113148d49ce2f40b47d8733890778f1970a04a18f22d7d30ecea88c1310",
+      "key": 16,
+      "record_id": "activation-0017"
+    },
+    {
+      "digest": "d73e03a3d1c37498613bdf940b4e78cee323f1d9ae739a1dfd5b3afb9b9d450e",
+      "evidence_sha256": "1310d05c4280fe0f7dc0145dff393de0e2db6870cc8c555276b24b438b260e32",
+      "key": 16,
+      "record_id": "activation-0018"
+    },
+    {
+      "digest": "2d1a91c985dff265b51715e4baed20f351302f0d9b515c5a5abbd7fb2757f4d6",
+      "evidence_sha256": "ddc1058db4b6d93d1a1832cb0f7eabb25b4d2e383109376c6eb71a6dd845dc50",
+      "key": 16,
+      "record_id": "activation-0019"
+    },
+    {
+      "digest": "fe6e5d6c8ac706d47c5eabd88ee5279da9db51cbed0b1dd571dd9880ee1eae53",
+      "evidence_sha256": "ba1f5b479342175cdfb55a1df992d33b180e1bf0ef6836d610c70be024fba393",
+      "key": 16,
+      "record_id": "activation-0020"
+    },
+    {
+      "digest": "727f71f9c952c7c37db7b82e49154a454a00b6508daf22d294c971547b10d04e",
+      "evidence_sha256": "f08f89cf89ce823023c52981722fcbca58c39dced18d6bafcd63228e8718df7f",
+      "key": 16,
+      "record_id": "activation-0021"
+    },
+    {
+      "digest": "1674c8ab96b20bb32d5210a37dc41993af3e1edaf11da375fc4141ee983b9cc6",
+      "evidence_sha256": "9f2489f9ba9eeb0cdeba9eb1145d9f3ec45a2a4431172b59982bef3c083327bb",
+      "key": 16,
+      "record_id": "activation-0022"
+    },
+    {
+      "digest": "e255f7409264aa5806fddfe2906aeffe365e2df1f57800bb3be9a8ac25fa84d4",
+      "evidence_sha256": "ffcce95873755ce89b33388e8e95d959e8950c68495f7812b4733072e3be6a26",
+      "key": 17,
+      "record_id": "activation-0023"
+    },
+    {
+      "digest": "e720fde22c04d8f78b5cc6f7d9ef59529fc0168392d423cdab9427ccb2e61905",
+      "evidence_sha256": "abd2b95412f0c01fc3e64519bf1fe35a1cb2236732730bb24402357833612265",
+      "key": 17,
+      "record_id": "activation-0024"
+    },
+    {
+      "digest": "538696b4b6f584fa9c6750b2a2e30e97b7ae41b60f463c721673f8e448461fad",
+      "evidence_sha256": "511b410411cc826bc97425b2f7bb21c917b501d725a843e59fa2888105012418",
+      "key": 17,
+      "record_id": "activation-0025"
+    },
+    {
+      "digest": "9b3a7f5c1fd4dedf984fa9fd89e18f43cbceb32f4eecfeb40314c4d624d69f5d",
+      "evidence_sha256": "91519b85c26c4455e05628aa7b66c2116ae09c671509071091c9e382267fd0e5",
+      "key": 18,
+      "record_id": "activation-0026"
+    },
+    {
+      "digest": "8fff2f7186cbad1ede92ce29c9e02fa75c3e2599889a7d0583fee13387a5005f",
+      "evidence_sha256": "7fa30a0975a55e3ee93339d38905405cffa7d027e2e9c4ad0d94bdac9df4fe1b",
+      "key": 18,
+      "record_id": "activation-0027"
+    },
+    {
+      "digest": "7a8cd9ffc80ed410f27df96f8efc599f555bb681e96afdd307eba79d07a84524",
+      "evidence_sha256": "96aeced3491e552ce87f85dc4ca7a65ac441693f82e5003d137b83d2700765a1",
+      "key": 18,
+      "record_id": "activation-0028"
+    },
+    {
+      "digest": "6f0aeba577566b4cfa5aef18d41923b0caa0d46db2f51d69441157dbf2f8bb53",
+      "evidence_sha256": "937ce212d06ea3cb33df7cf9457f45aa18870f0c63091f0f164f2a11866306d0",
+      "key": 19,
+      "record_id": "activation-0029"
+    },
+    {
+      "digest": "ea42096cdc93b916f8153a5832f747f871ec3593595abd8df5bc005f8147b208",
+      "evidence_sha256": "3c745ea9e6441abfa355281f03b25009d77c1848fb82d978a99008877a139516",
+      "key": 19,
+      "record_id": "activation-0030"
+    },
+    {
+      "digest": "50b5f656eb7b701647aed097c46815bbc79756971034d52544fa95e4838e1b3d",
+      "evidence_sha256": "b6294b87be53ac510e443bfb398109677a5b6c9f61c9e852c03824d2118f9245",
+      "key": 19,
+      "record_id": "activation-0031"
+    },
+    {
+      "digest": "597ec173635729f02e3a0d2c8bb473f43d909b6ac155e045ccc62462947c2d41",
+      "evidence_sha256": "9d98a027fed881793e03f7a34645d2f5376c446e205a7d92d0825747de88fd10",
+      "key": 19,
+      "record_id": "activation-0032"
+    },
+    {
+      "digest": "e16bcbe93b0b8a77ea796e7298eb522180edfd15ca44b085b6c5c4735bcaecf5",
+      "evidence_sha256": "7cafc99bf42b39e3a6dd11c04c9b5a04e096167ef0f9ce367beeff01ac6af07c",
+      "key": 20,
+      "record_id": "activation-0033"
+    },
+    {
+      "digest": "a1b0ba5c809ff48b07565ec8a16c0390f8cd3802e120e8d887b730027a3814b2",
+      "evidence_sha256": "c44c69315a2a512a76035a3fd68e6fa0ccd48732fed1c465a1eff3b558cb2941",
+      "key": 21,
+      "record_id": "activation-0034"
+    },
+    {
+      "digest": "8bf61f924aa679b533aca45f3f4f43c02d439981400e660365d1a48e9a174a27",
+      "evidence_sha256": "c820f763bbd3a6662b1c911fd26dde1c352d2149f515a34ce44436583bc57238",
+      "key": 21,
+      "record_id": "activation-0035"
+    },
+    {
+      "digest": "a5bac3c11ad674f1353be212fdec757f442da1ea099cc99a3b537033a30851cc",
+      "evidence_sha256": "bba2de38091e8d2ec5acad9c2851b95a44f8ecf321d04c3fa5b70fae1de21aed",
+      "key": 22,
+      "record_id": "activation-0036"
+    },
+    {
+      "digest": "8f5be3b40345d6116525380b588373940d72db933d0dd38ca6e2fd234e29879c",
+      "evidence_sha256": "6d7db4e9a4f064300ad4dee68b9583ed845af06a073fe21812985090e47e9311",
+      "key": 24,
+      "record_id": "activation-0037"
+    },
+    {
+      "digest": "7ceb7c8853668099cd1500cb4a3e429215ce4aa7887ae5cacdd6458f18c91383",
+      "evidence_sha256": "ae37d56973ba94d573dc1b01a67ca00b79c30526bd26905d765e70fe16caf7b2",
+      "key": 25,
+      "record_id": "activation-0038"
+    },
+    {
+      "digest": "0d0153828eebe5f449b365b7b3a3c43e87f3118770a2f76dfb98637a6eed6d9e",
+      "evidence_sha256": "feb5bb0a3b38e9e3cdcead48c4c41e593fc458da2b8ea61718588a7f1e716a43",
+      "key": 26,
+      "record_id": "activation-0039"
+    }
+  ],
+  "current_lease": {
+    "authority_sha256": "cf3226d57dc49d5f84fed5d8eb79676c2fd215c082de214202b9a368571be5e9",
+    "digest": "d0884ffa6bf8d98807d20ab9ee8a7a0c2821bb08d0cc6376fb87a6db605cf0fb",
+    "holder": "release/v0.1.0",
+    "key": 27
+  },
+  "previous_activation_id": "activation-0039",
+  "schema_version": 1
+}

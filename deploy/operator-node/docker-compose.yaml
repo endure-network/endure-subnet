@@ -1,0 +1,100 @@
+name: endure-subnet
+
+x-ops: &ops
+  restart: unless-stopped
+  init: true
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+x-validator-wallet-mount: &validator-wallet-mount "${VALIDATOR_WALLET_ROOT:?set VALIDATOR_WALLET_ROOT to the validator-only wallet directory}:/root/.bittensor/wallets:ro"
+x-miner-wallet-mount: &miner-wallet-mount "${MINER_WALLET_ROOT:?set MINER_WALLET_ROOT to the miner-only wallet directory}:/root/.bittensor/wallets:ro"
+
+volumes:
+  validator-data:
+  miner-1-state:
+
+services:
+  validator:
+    <<: *ops
+    image: "${VALIDATOR_IMAGE:?set VALIDATOR_IMAGE to an immutable registry digest}"
+    pull_policy: always
+    environment:
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - *validator-wallet-mount
+      - validator-data:/data
+    ports:
+      - "8091:8091"
+      - "127.0.0.1:8714:8714"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request as u; u.urlopen('http://localhost:8714/live', timeout=5).read()",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 180s
+    command:
+      [
+        "--netuid", "${NETUID:?set NETUID}",
+        "--subtensor.network", "${CHAIN:?set CHAIN}",
+        "--wallet.name", "${WALLET_NAME:?set WALLET_NAME}",
+        "--wallet.hotkey", "${VALIDATOR_HOTKEY:?set VALIDATOR_HOTKEY}",
+        "--endure.active_schema", "risk.v1.subnet_alpha",
+        "--endure.serving_stage", "${SERVING_STAGE:?set SERVING_STAGE}",
+        "--endure.market_data_endpoint", "${MARKET_DATA_ENDPOINT:-wss://archive.chain.opentensor.ai:443}",
+        "--endure.database_url", "sqlite:////data/validator-live.db",
+        "--endure.api_port", "8714",
+        "--endure.api_host", "0.0.0.0",
+        "--endure.min_miner_stake", "${MIN_MINER_STAKE:-0}",
+        "--axon.port", "8091",
+        "--axon.external_ip", "${EXTERNAL_IP:?set EXTERNAL_IP}",
+        "--neuron.epoch_length", "${EPOCH_LENGTH:-100}",
+        "--logging.info",
+      ]
+
+  miner-1:
+    <<: *ops
+    image: "${MINER_IMAGE:?set MINER_IMAGE to an immutable registry digest}"
+    pull_policy: always
+    environment:
+      PYTHONUNBUFFERED: "1"
+      MINER_AXON_PORT: "8092"
+    volumes:
+      - *miner-wallet-mount
+      - miner-1-state:/root/.bittensor/miners
+    ports:
+      - "8092:8092"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import os, socket; s=socket.create_connection(('127.0.0.1', int(os.environ['MINER_AXON_PORT'])), timeout=5); s.close()",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 180s
+    command:
+      [
+        "--netuid", "${NETUID:?set NETUID}",
+        "--subtensor.network", "${CHAIN:?set CHAIN}",
+        "--wallet.name", "${WALLET_NAME:?set WALLET_NAME}",
+        "--wallet.hotkey", "${MINER_HOTKEY:?set MINER_HOTKEY}",
+        "--endure.active_schema", "risk.v1.subnet_alpha",
+        "--endure.serving_stage", "${SERVING_STAGE:?set SERVING_STAGE}",
+        "--endure.market_data_endpoint", "${MARKET_DATA_ENDPOINT:-wss://archive.chain.opentensor.ai:443}",
+        "--endure.validator_axon_overrides", "${VALIDATOR_AXON_OVERRIDES:-}",
+        "--axon.port", "8092",
+        "--axon.external_ip", "${EXTERNAL_IP:?set EXTERNAL_IP}",
+        "--logging.info",
+      ]
