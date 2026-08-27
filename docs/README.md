@@ -6,6 +6,10 @@
 - [Mining](mining.md) — testnet miner path and incentive truth.
 - [Validating](validating.md) — testnet validator path.
 - [Testnet runbook](running_on_testnet.md) — clone-to-run sequence.
+- [Consumer guide](consuming.md) — validator discovery, units, signature
+  verification, and acceptance boundaries.
+- [Economic limitations](economic-limitations.md) — calibration evidence and
+  stable/mainnet blockers.
 - [Single-host operator deployment](deploy/operator-node.md) — immutable-image
   deploy, backup, verification, and rollback without a control plane.
 - [Staging](running_on_staging.md) — provider-neutral release-candidate branch
@@ -13,6 +17,7 @@
 - [Mainnet status](running_on_mainnet.md) — explicit prohibition.
 - [Protocol activation history](protocol_versions.md) — retired assignments and
   the exclusive current candidate lease.
+- [v0.1.0-rc.1 notes](releases/v0.1.0-rc.1.md) — prerelease scope and rollback.
 
 ## Endure team deployment
 
@@ -35,7 +40,8 @@ guidance and are not shipped here.
 
 ## Governance
 
-- [Contributing](../contrib/CONTRIBUTING.md)
+- [Contributing](../CONTRIBUTING.md)
+- [Maintainers](../MAINTAINERS.md)
 - [Code of conduct](../CODE_OF_CONDUCT.md)
 - [Security policy](../SECURITY.md)
 - [Changelog](../CHANGELOG.md)

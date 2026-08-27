@@ -1,3 +1,4 @@
+import os
 import re
 import subprocess
 import sys
@@ -123,9 +124,114 @@ def test_runtime_images_embed_oci_source_identity() -> None:
         assert "ARG ENDURE_SOURCE_REVISION" in dockerfile
         assert "ARG ENDURE_SOURCE_URL" in dockerfile
         assert "ARG ENDURE_IMAGE_VERSION" in dockerfile
+        assert "ENV ENDURE_SOURCE_REVISION=$ENDURE_SOURCE_REVISION" in dockerfile
+        assert "ENDURE_IMAGE_VERSION=$ENDURE_IMAGE_VERSION" in dockerfile
         assert "org.opencontainers.image.revision=$ENDURE_SOURCE_REVISION" in dockerfile
         assert "org.opencontainers.image.source=$ENDURE_SOURCE_URL" in dockerfile
         assert "org.opencontainers.image.version=$ENDURE_IMAGE_VERSION" in dockerfile
+
+
+def test_runtime_images_validate_release_identity_before_dependencies() -> None:
+    for dockerfile_name in ("validator.Dockerfile", "miner.Dockerfile"):
+        dockerfile = (ROOT / "docker" / dockerfile_name).read_text()
+
+        check_at = dockerfile.index("RUN sh check-release-identity.sh")
+        assert check_at < dockerfile.index("uv export --locked")
+        assert "COPY docker/check-release-identity.sh" in dockerfile
+
+
+def _release_identity_check(env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["sh", str(ROOT / "docker" / "check-release-identity.sh")],
+        env={"PATH": os.environ["PATH"], **env},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def test_release_identity_check_passes_dev_builds_without_args() -> None:
+    assert _release_identity_check({}).returncode == 0
+    assert _release_identity_check({"ENDURE_IMAGE_VERSION": "dev"}).returncode == 0
+
+
+def test_release_identity_check_accepts_a_full_matching_revision() -> None:
+    sha = "ab" * 20
+    result = _release_identity_check(
+        {"ENDURE_SOURCE_REVISION": sha, "ENDURE_IMAGE_VERSION": f"sha-{sha}"}
+    )
+
+    assert result.returncode == 0
+
+
+def test_release_identity_check_refuses_an_abbreviated_revision() -> None:
+    result = _release_identity_check(
+        {"ENDURE_SOURCE_REVISION": "abcdef1", "ENDURE_IMAGE_VERSION": "sha-abcdef1"}
+    )
+
+    assert result.returncode == 1
+    assert "full 40-hex commit" in result.stderr
+
+
+def test_release_identity_check_refuses_partial_dev_metadata() -> None:
+    for revision in ("abcdef1", "ab" * 20):
+        result = _release_identity_check({"ENDURE_SOURCE_REVISION": revision})
+
+        assert result.returncode == 1
+        assert "requires the matching ENDURE_IMAGE_VERSION" in result.stderr
+
+
+def test_release_identity_check_refuses_a_mismatched_version() -> None:
+    sha = "ab" * 20
+    result = _release_identity_check(
+        {"ENDURE_SOURCE_REVISION": sha, "ENDURE_IMAGE_VERSION": "sha-" + "cd" * 20}
+    )
+
+    assert result.returncode == 1
+    assert f"must be sha-{sha}" in result.stderr
+
+
+def test_coolify_soak_compose_passes_exact_identity_as_build_args() -> None:
+    expected = {
+        "ENDURE_SOURCE_REVISION": "${ENDURE_SOURCE_REVISION:-unknown}",
+        "ENDURE_IMAGE_VERSION": "${ENDURE_IMAGE_VERSION:-dev}",
+    }
+    for relative_path, service in (
+        ("deploy/soak/docker-compose.yaml", "validator"),
+        ("deploy/soak-miners/docker-compose.yaml", "miner-1"),
+    ):
+        compose = yaml.safe_load((ROOT / relative_path).read_text())
+
+        assert compose["services"][service]["build"]["args"] == expected
+
+
+def test_coolify_wallet_initializers_use_the_pinned_runtime_base() -> None:
+    expected = (
+        "python:3.12-slim@sha256:"
+        "57cd7c3a7a273101a6485ba99423ee568157882804b1124b4dd04266317710de"
+    )
+    for relative_path in (
+        "deploy/soak/docker-compose.yaml",
+        "deploy/soak-miners/docker-compose.yaml",
+    ):
+        compose = yaml.safe_load((ROOT / relative_path).read_text())
+        wallet_init = compose["services"]["wallet-init"]
+
+        assert wallet_init["image"] == expected
+        assert "WALLETS_TAR_B64" in wallet_init["environment"]
+        assert "wallets:/wallets" in wallet_init["volumes"]
+
+
+def test_soak_probe_requires_readiness_and_exact_release_identity() -> None:
+    workflow = (ROOT / ".github/workflows/soak-health-probe.yml").read_text()
+
+    assert "https://api.testnet.endure.network/health" in workflow
+    assert "https://api.testnet.endure.network/live" not in workflow
+    assert "vars.SOAK_EXPECTED_SHA" in workflow
+    assert '.status == "ok"' in workflow
+    assert '.schema_id == "risk.v1.subnet_alpha"' in workflow
+    assert ".protocol_version_key == 29" in workflow
+    assert ".source_revision == $sha" in workflow
 
 
 def test_release_workflow_publishes_only_a_green_staging_sha() -> None:
@@ -142,6 +248,10 @@ def test_release_workflow_publishes_only_a_green_staging_sha() -> None:
     assert "repos/$GITHUB_REPOSITORY/git/ref/heads/staging" in workflow
     assert 'test "$staging_sha" = "$SOURCE_SHA"' in workflow
     assert workflow.count('test "$staging_sha" = "$SOURCE_SHA"') == 3
+    assert "ghcr.io/$owner/endure-subnet-validator:sha-$SOURCE_SHA" in workflow
+    assert "ghcr.io/$owner/endure-subnet-miner:sha-$SOURCE_SHA" in workflow
+    assert "ghcr.io/$owner/endure-validator:sha-$SOURCE_SHA" not in workflow
+    assert "ghcr.io/$owner/endure-miner:sha-$SOURCE_SHA" not in workflow
     assert "for _ in {1..360}; do" in workflow
     assert "sleep 10" in workflow
     assert (

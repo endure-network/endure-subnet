@@ -27,8 +27,8 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_ROOT"
 
-BTCLI="${BTCLI:-$REPO_ROOT/.venv/bin/btcli}"
-PY="${PY:-$REPO_ROOT/.venv/bin/python}"
+BTCLI="${BTCLI:-$REPO_ROOT/.venv-seeder/bin/btcli}"
+PY="${PY:-$REPO_ROOT/.venv-seeder/bin/python}"
 WP="${WALLET_PATH:-$HOME/.bittensor/wallets}"
 NET="${CHAIN_ENDPOINT:-ws://127.0.0.1:9946}"
 SUBNET_NAME="${SUBNET_NAME:-endure-dev}"
@@ -39,7 +39,7 @@ VALIDATOR_STAKE_TAO="${VALIDATOR_STAKE_TAO:-5000}"
 
 if [[ ! -x "$BTCLI" ]]; then
   echo "missing: $BTCLI" >&2
-  echo "hint: run '.venv/bin/pip install bittensor-cli'" >&2
+  echo "hint: run 'make seeder-install'" >&2
   exit 1
 fi
 

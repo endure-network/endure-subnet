@@ -7,7 +7,9 @@ This is the public validator path: [README](../README.md) → this guide →
 [testnet runbook](running_on_testnet.md). Forge lending remains a documented reference
 vertical; it is not the served operator path.
 
-Install with the testnet runbook's Python 3.12 and uv `0.11.32` flow.
+Install with the testnet runbook's flow: `make bootstrap` (pinned uv `0.11.32`
+and Gitleaks, needs a Python 3.12 executable) followed by `make dev-install`,
+or `make install` for an operator who needs no test tooling.
 `make dev-install` performs `uv sync --locked --extra dev`; do not replace the
 locked Endure installation with `pip install`.
 
@@ -52,9 +54,15 @@ readiness after startup and every restart. Confirm the expected schema through
 or `registered_unserved`. Inspect rounds/submissions through `/rounds`, and check
 the signed consumer feed at `/risk/v1/subnets`. A signature authenticates the
 publishing validator, not its market-data source or a minimum independent-miner
-quorum. Inspect `n_submitters`, cross-check multiple validators, and inspect the
-chain separately. Back up the database before upgrades and test a restore before
+quorum. Only one public validator endpoint currently exists, so consumers
+cannot yet establish an independent-validator quorum. Inspect `n_submitters`
+and the chain separately. Back up the database before upgrades and test a restore before
 calling a deployment durable.
+
+The Endure-operated endpoint is `https://api.testnet.endure.network`, signed by
+hotkey `5E2bM6DXxyraVJCDjWBcixudbzYXToDnNcsDBB4hoJdCuwTi` on Bittensor testnet
+netuid `504`. See the [consumer guide](consuming.md) for the distinction between
+metagraph axon discovery and consumer HTTP discovery.
 
 Alpha Risk intentionally keeps rounds open until both the 5-day and 30-day
 horizons resolve, so a steady-state backlog is expected. `/health` separates

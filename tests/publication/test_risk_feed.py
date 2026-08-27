@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
 from endure.assessment.coordinates import (
@@ -33,13 +33,17 @@ NOW = datetime(2026, 6, 9, 21, 0, tzinfo=UTC).isoformat()
 
 
 def _open_risk_round(
-    storage: Storage, round_id: str = ROUND, tickers: tuple[str, ...] = ("8",)
+    storage: Storage,
+    round_id: str = ROUND,
+    tickers: tuple[str, ...] = ("8",),
+    publication_available_at: datetime | None = None,
 ) -> None:
     storage.open_round(
         windows=compute_windows(date.fromisoformat(round_id), offsets=DEFAULT_OFFSETS),
         schema_id=RISK_SCHEMA_ID,
         universe=UniverseSnapshot(round_id=round_id, tickers=tickers, source_hash="h"),
         now_iso=NOW,
+        publication_available_at=publication_available_at,
     )
 
 
@@ -143,6 +147,42 @@ def test_risk_feed_shape_round_trips_canonically(migrated_storage: Storage) -> N
     assert subnet["consensus"][0]["median"] == "700"
     assert "tier_round_id" not in signed["payload"]
     assert "tier_as_of" not in signed["payload"]
+
+
+def test_risk_feed_keeps_previous_round_until_publication_boundary(
+    migrated_storage: Storage,
+) -> None:
+    storage = migrated_storage
+    _open_risk_round(storage, OLDER_ROUND)
+    storage.publish_assessment_consensus_and_reveal(
+        OLDER_ROUND,
+        RISK_SCHEMA_ID,
+        [_row(8, HORIZON_5D_SECONDS, RiskOutput.MAX_DRAWDOWN, 700)],
+        now_iso=NOW,
+    )
+    newer_windows = compute_windows(
+        date.fromisoformat(NEWER_ROUND), offsets=DEFAULT_OFFSETS
+    )
+    publication_available_at = newer_windows.commit_close + timedelta(days=1)
+    _open_risk_round(
+        storage,
+        NEWER_ROUND,
+        publication_available_at=publication_available_at,
+    )
+    storage.publish_assessment_consensus_and_reveal(
+        NEWER_ROUND,
+        RISK_SCHEMA_ID,
+        [_row(8, HORIZON_5D_SECONDS, RiskOutput.MAX_DRAWDOWN, 800)],
+        now_iso=NOW,
+    )
+
+    at_boundary = build_signed_risk_feed(storage, now=publication_available_at)
+    after_boundary = build_signed_risk_feed(
+        storage, now=publication_available_at + timedelta(microseconds=1)
+    )
+
+    assert at_boundary["payload"]["round_id"] == OLDER_ROUND
+    assert after_boundary["payload"]["round_id"] == NEWER_ROUND
 
 
 def test_risk_feed_is_unrated_without_resolved_thirty_day_targets(

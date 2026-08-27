@@ -205,11 +205,12 @@ def _fully_decayed_hotkeys(
 class AssessmentScoringOrchestrator:
     """Resolve targets, score the expected scoring set, and maintain EMAs.
 
-    Fairness-deltas spec §1: the scoring set is ``active-EMA hotkeys ∪
-    current submitters`` — absence is a zero observation per resolved
-    coordinate, so skipping a round is never better than submitting a bad
-    prediction and a dormant miner's stale EMA decays instead of earning
-    forever. Registration state is deliberately NOT intersected into the
+    Fairness-deltas spec §1: the scoring set is ``current submitters ∪
+    (active-EMA hotkeys ∩ historically eligible hotkeys)`` — absence is a zero
+    observation per resolved coordinate only after a miner's first accepted
+    round. Skipping is never better than submitting a bad prediction, while a
+    later joiner cannot be charged retroactively when long horizons resolve out
+    of order. Registration state is deliberately NOT intersected into the
     scoring set; it is carried separately (``registered_hotkeys``) and used
     only for weight eligibility, so a hotkey missing from a single stale
     metagraph snapshot still receives its zero observation while archival
@@ -282,7 +283,10 @@ class AssessmentScoringOrchestrator:
             for state in self._storage.assessment_ema_states(self._config.schema_id)
         }
         previously_active = {hotkey for hotkey, _coordinate in previous_emas}
-        scoring_set = previously_active | set(accepted_values)
+        historically_eligible = self._storage.assessment_hotkeys_eligible_for_round(
+            self._config.schema_id, round_id
+        )
+        scoring_set = (previously_active & historically_eligible) | set(accepted_values)
 
         output_scores: list[AssessmentOutputScore] = []
         ema_updates: list[AssessmentEmaState] = []

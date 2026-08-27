@@ -2836,7 +2836,7 @@ class TestSetWeightsAttemptWrapping:
         assert neuron.spec_version == 1000
         assert attempt.protocol_version_key == CURRENT_VERSION_KEY
         assert attempt.intent_hash is not None
-        assert attempt.intent_hash.startswith("27:")
+        assert attempt.intent_hash.startswith(f"{CURRENT_VERSION_KEY}:")
         assert attempt.confirmation_state == "submitted"
         assert attempt.submission_mode == "cr4"
         assert attempt.commitment_hash == "abcd"

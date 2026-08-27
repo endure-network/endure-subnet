@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import stat
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -99,6 +100,7 @@ def test_alembic_upgrade_head_runs_against_temp_sqlite_db(tmp_path: Path) -> Non
     command.upgrade(config, "head")
 
     assert database_path.exists()
+    assert stat.S_IMODE(database_path.stat().st_mode) == 0o600
 
 
 def test_alembic_upgrade_head_creates_missing_sqlite_parent_dir(
@@ -118,6 +120,8 @@ def test_alembic_upgrade_head_creates_missing_sqlite_parent_dir(
     command.upgrade(config, "head")
 
     assert (tmp_path / "var" / "endure.db").exists()
+    assert stat.S_IMODE((tmp_path / "var").stat().st_mode) == 0o700
+    assert stat.S_IMODE((tmp_path / "var" / "endure.db").stat().st_mode) == 0o600
 
 
 def test_alembic_downgrade_base_then_upgrade_head_round_trips(
@@ -825,6 +829,52 @@ def test_head_drops_legacy_scoring_tables_and_keeps_every_shared_table(
     tables = set(inspect(engine).get_table_names())
     assert tables.isdisjoint(DROPPED_TABLES)
     assert set(RETAINED_TABLES) <= tables
+
+
+def test_0015_backfills_and_requires_publication_boundary(tmp_path: Path) -> None:
+    config, engine = _alembic_config(tmp_path, "publication-embargo")
+    command.upgrade(config, "0014_drop_kre_tables")
+    reveal_close = "2026-08-27T00:00:00+00:00"
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO rounds (
+                    round_id, schema_id, state, universe_stale, degraded,
+                    commit_open_at, commit_close_at, reveal_open_at,
+                    reveal_close_at, t0_close_at, created_at, updated_at
+                ) VALUES (
+                    '2026-08-26', :schema_id, 'revealed', 0, 0,
+                    '2026-08-26T11:00:00+00:00',
+                    '2026-08-26T19:30:00+00:00',
+                    '2026-08-26T20:30:00+00:00', :reveal_close,
+                    '2026-08-26T20:00:00+00:00', :reveal_close, :reveal_close
+                )
+                """
+            ),
+            {"schema_id": RISK_SCHEMA_ID, "reveal_close": reveal_close},
+        )
+
+    command.upgrade(config, "head")
+
+    columns = {
+        column["name"]: column for column in inspect(engine).get_columns("rounds")
+    }
+    assert columns["publication_available_at"]["nullable"] is False
+    with engine.connect() as connection:
+        publication_available_at = connection.execute(
+            text(
+                "SELECT publication_available_at FROM rounds "
+                "WHERE round_id = '2026-08-26' AND schema_id = :schema_id"
+            ),
+            {"schema_id": RISK_SCHEMA_ID},
+        ).scalar_one()
+    assert publication_available_at == reveal_close
+
+    command.downgrade(config, "0014_drop_kre_tables")
+    assert "publication_available_at" not in {
+        column["name"] for column in inspect(engine).get_columns("rounds")
+    }
 
 
 def test_0014_preserves_shared_rows_while_deleting_legacy_tables(

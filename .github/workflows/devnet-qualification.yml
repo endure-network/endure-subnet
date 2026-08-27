@@ -114,13 +114,7 @@ jobs:
           make dev-install
 
       - name: Install pinned seeder toolchain
-        run: |
-          set -euo pipefail
-          python -m venv .venv-seeder
-          .venv-seeder/bin/python -m pip install --upgrade pip
-          .venv-seeder/bin/python -m pip install --no-cache-dir \
-            --require-hashes -r scripts/dev/seeder-requirements.txt
-          .venv-seeder/bin/btcli --version
+        run: make seeder-install
 
       - name: Seed the local chain
         id: seed

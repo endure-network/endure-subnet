@@ -22,6 +22,7 @@
 
 x-ops: &ops
   restart: unless-stopped
+  stop_grace_period: 45s
   init: true
   logging:
     driver: json-file

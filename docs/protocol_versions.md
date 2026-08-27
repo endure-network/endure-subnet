@@ -7,10 +7,10 @@ An activation is the first appearance of a distinct current protocol key and
 digest pair on the first-parent staging lineage. Historical keys may repeat or
 skip because each distinct activated assignment is recorded chronologically.
 
-Public activation evidence and lease authority are opaque lowercase SHA-256
-receipts. Their private preimages and source mappings remain in the release
-evidence ledger and are not published, except where a lease explicitly records
-a public reproducible preimage, as key `27` does below. The protocol contract
+Public activation evidence and lease authority are lowercase SHA-256 receipts.
+Historical private preimages remain in the release evidence ledger; the clean
+public root and every post-public lease publish reproducible authority preimages.
+The protocol contract
 pins both the canonical activation-history digest and the complete registry
 byte digest.
 The protocol-version guard also reconstructs first appearances from the
@@ -60,17 +60,42 @@ a unique higher current lease, and update the contract's previous-assignment and
 registry digest constants. The new lease can then follow the same promotion
 cycle. Never append the leased tail before its staging merge commit exists.
 
-Protocol key `27` is leased exclusively to the v0.1.0 candidate but is not yet
-an activated history record. The previous activation is key `26` with digest
-`0d0153828eebe5f449b365b7b3a3c43e87f3118770a2f76dfb98637a6eed6d9e`, recorded as
-`activation-0039` from its staging promotion merge
-`f19f579fb3996289465616c537afbf95f17e2e7b`.
-
-Key `27` carries the complete deletion of the legacy bank-risk reference
-vertical. Its watched-tree digest is
+Protocol key `27` is the clean public-history trust root and is recorded as
+`activation-0040` with digest
 `d0884ffa6bf8d98807d20ab9ee8a7a0c2821bb08d0cc6376fb87a6db605cf0fb`.
-Unlike earlier leases, its authority receipt has a public preimage: SHA-256 over
-the UTF-8 lines `LEASE_AUTHORITY`, `PREVIOUS_RECEIPT=<previous activation's
-evidence_sha256>`, `CURRENT_VERSION_KEY=27`, and `CURRENT_VERSION_DIGEST=<the
-digest above>`, each terminated by one LF byte. Anyone can recompute it from
-this repository; no private ledger value is involved.
+Its public root commit has a synthetic identity rather than the private staging
+promotion identity, so the lineage guard exempts only that root receipt while
+still requiring its key and digest exactly.
+
+Key `28` is recorded as `activation-0041`. It carries the bounded live-sampling
+fix, missing-timestamp settlement, round-aware miner eligibility, and the
+next-commit-close publication embargo. Its watched-tree digest is
+`05da1df37dc67de435d0954d9b102be45922c6956822643ff1dcc7a892176e26`.
+It first appeared on the public first-parent staging lineage in commit
+`d56bcc7fac2f4966568526446f1491156da4c753`; applying the source-bound receipt
+format above produces
+`be858c97c085aba909bcb0784b09e268474e32991444404435970c8f64241aed`.
+
+The original key-`28` lease authority was also publicly reproducible: SHA-256
+over the UTF-8 lines `LEASE_AUTHORITY`,
+`PREVIOUS_RECEIPT=cf3226d57dc49d5f84fed5d8eb79676c2fd215c082de214202b9a368571be5e9`,
+`CURRENT_VERSION_KEY=28`, and
+`CURRENT_VERSION_DIGEST=05da1df37dc67de435d0954d9b102be45922c6956822643ff1dcc7a892176e26`,
+each terminated by one LF byte, produces
+`fa41045b844d60c22340a5ed0fd8118cc53c83031490eea755c2cdb05c9ccd71`.
+
+Key `29` is leased exclusively to the final `v0.1.0-rc.1` candidate. It removes
+stale source citations and an obsolete reference-miner roadmap promise, and
+consensus publication now skips an accepted bundle that no longer parses — the
+policy scoring already applied — instead of leaving the round open. Wire
+formats, scoring math, and the aggregation of parseable bundles are unchanged.
+Its watched-tree digest is
+`d3b9126c2bad0045e497e6f5f7362309c004d340f927cc91638d4df84344379b`.
+Its public lease authority receipt is SHA-256 over the UTF-8 lines
+`LEASE_AUTHORITY`,
+`PREVIOUS_RECEIPT=fa41045b844d60c22340a5ed0fd8118cc53c83031490eea755c2cdb05c9ccd71`,
+`CURRENT_VERSION_KEY=29`, and
+`CURRENT_VERSION_DIGEST=d3b9126c2bad0045e497e6f5f7362309c004d340f927cc91638d4df84344379b`,
+each terminated by one LF byte. The resulting receipt is
+`c4aa1b087b26039b30524093943467ae5074939aaf35c43c87fcb79ffc66ae13`.
+No private ledger value is involved in either lease authority receipt.

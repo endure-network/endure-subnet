@@ -1,9 +1,9 @@
 # Endure Subnet
 
-> **Experimental testnet alpha — unreleased `v0.1.0` candidate.** Endure is not
+> **Experimental testnet alpha — `v0.1.0-rc.1` candidate.** Endure is not
 > production software, is not economically ready, and must not be used for
 > mainnet operation. Alpha Risk serving is code-gated to testnet pending the soak gate.
-> The current protocol key is `27` ([contract](endure/protocol/version_contract.py));
+> The current protocol key is `29` ([contract](endure/protocol/version_contract.py));
 > activated and retired leases are tracked in the [version registry](docs/protocol_versions.md).
 
 Endure is a Bittensor risk-intelligence subnet: miners submit falsifiable
@@ -21,6 +21,7 @@ It does not originate loans, custody collateral, or liquidate positions.
 - [Run a validator](#run-a-validator)
 - [Register on testnet](#register-on-testnet)
 - [Read the API](#read-the-api)
+- [Repository history](#repository-history)
 - [Contribute and report security issues](#contribute-and-report-security-issues)
 
 ## Alpha Risk incentive loop
@@ -32,13 +33,13 @@ and emit Bittensor weights. The signed read API publishes the resulting A–E
 risk tier. See [mining](docs/mining.md) for the protocol and [the current
 scope](docs/specs/2026-07-06-alpha-risk-v1-scope.md) for the product contract.
 
-Known limitations: this is a testnet soak with limited independent validator
-evidence; outcomes and feeds can diverge between validators; interfaces and
+Known limitations: this is a testnet soak with one public validator endpoint;
+outcomes and feeds can diverge between validators; interfaces and
 internals may change before a later release. Source builds are supported on the
 environment below. Each qualified `staging` commit also publishes candidate
 Linux/amd64 validator and miner images; deploy them only by immutable digest
-using the [single-host operator guide](docs/deploy/operator-node.md). `v0.1.0`
-is not yet tagged, so no stable semantic-version image exists yet.
+using the [single-host operator guide](docs/deploy/operator-node.md). No stable
+semantic-version image exists yet.
 
 Supported source environment: Python `>=3.12,<3.13` and Bittensor `>=10.5,<11`
 (see [pyproject.toml](pyproject.toml)). Endure does not perform GPU computation;
@@ -47,21 +48,22 @@ soak produces enough measurements for an honest recommendation.
 
 ## Install from source
 
-Use Python 3.12. The checked-in `uv.lock` is authoritative. Bootstrap the pinned
-development tools before any locked command:
+The checked-in `uv.lock` is authoritative. Bootstrap the pinned development
+tools before any locked command.
+
+Prerequisites:
+
+- A Python 3.12 executable (macOS: `brew install python@3.12` or
+  `uv python install 3.12`; Debian: `apt install python3.12 python3.12-venv`).
+  If it is not on `PATH` as `python3.12`, pass
+  `make bootstrap BOOTSTRAP_PYTHON=/path/to/python3.12`.
+- Node.js 22 or newer (`make verify` installs the integrity-locked jscpd toolchain
+  with `npm ci --ignore-scripts`).
+- Docker, only for the localnet container fast path.
 
 ```bash
 git clone https://github.com/endure-network/endure-subnet.git
 cd endure-subnet
-```
-
-On Debian or Ubuntu, install the venv prerequisite first:
-
-```bash
-sudo apt install python3.12-venv
-```
-
-```bash
 make bootstrap     # installs hash-pinned uv and Gitleaks in the local tool cache
 make install       # uv sync --locked --no-dev, creating .venv as needed
 # or, for contributors and testnet operators:
@@ -114,7 +116,8 @@ Mainnet operation is prohibited.
 
 ## Register on testnet
 
-Use a funded testnet wallet and the documented `btcli` registration commands in
+Endure runs on Bittensor testnet netuid `504`. Use a funded testnet wallet and
+the documented `btcli` registration commands in
 the [testnet runbook](docs/running_on_testnet.md). Registration, stake, permit,
 and fee requirements are chain-controlled; check their current values before
 launching.
@@ -123,17 +126,27 @@ launching.
 
 Validators expose process liveness at `/live`, operational readiness at
 `/health`, plus `/schemas`, `/rounds`, `/miners`, and
-`/risk/v1/subnets`; consumers should cross-check signed results from more than
-one validator. `/schemas` labels each known schema as `served` or
+`/risk/v1/subnets`. The current public consumer endpoint is
+`https://api.testnet.endure.network`; only one public validator endpoint exists,
+so independent-validator quorum is not available. `/schemas` labels each known schema as `served` or
 `registered_unserved`; only Alpha Risk is served. A feed signature authenticates
 the publishing validator, not the independence or correctness of its market-data
 source or a minimum miner quorum. Consumers should inspect `n_submitters` and
-apply their own quorum policy. See [validating](docs/validating.md) for safe
-exposure guidance.
+apply their own acceptance policy. See the [consumer guide](docs/consuming.md)
+and [economic limitations](docs/economic-limitations.md).
+
+## Repository history
+
+This repository intentionally begins with a history-free public snapshot. The
+private engineering history was excluded to avoid leaking infrastructure and
+operator context; the root snapshot was scanned, signed, and reviewed before
+publication. Protocol lineage is independently recorded in the
+[activation registry](docs/protocol_versions.md). Public development continues
+normally from this snapshot through reviewed pull requests.
 
 ## Contribute and report security issues
 
-Read the [documentation index](docs/README.md), [contribution guide](contrib/CONTRIBUTING.md),
+Read the [documentation index](docs/README.md), [contribution guide](CONTRIBUTING.md),
 [code of conduct](CODE_OF_CONDUCT.md), and [security policy](SECURITY.md).
 Non-sensitive bug and operator support use the issue forms; security reports go
 privately to `hello@endure.network`.

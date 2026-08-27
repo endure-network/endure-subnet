@@ -141,7 +141,7 @@ class RiskScoringOrchestrator(AssessmentScoringOrchestrator):
                 window_end_block = self._window_end_block_lookup(
                     windows.reveal_close + timedelta(seconds=scoring_horizon)
                 )
-        except (AlphaMarketDataError, ConnectionError):
+        except (AlphaMarketDataError, ConnectionError, LookupError):
             if not void_unavailable_targets:
                 raise
             force_void_unavailable_targets = True

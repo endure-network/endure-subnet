@@ -36,9 +36,11 @@ from endure.assessment.coordinates import (
     AssessmentRealizedTarget,
     AssessmentScoreHistoryRow,
 )
-from endure.assessment.registry import default_registry
+from endure.assessment.registry import SchemaRegistryEntry, default_registry
 from endure.assessment.schemas.subnet_alpha_risk import RISK_HORIZONS
+from endure.protocol.version_contract import CURRENT_VERSION_KEY
 from endure.publication.risk_feed import Signer, build_signed_risk_feed
+from endure.runtime.identity import runtime_identity
 from endure.scoring.context import TR_CONTEXT
 from endure.scoring.weights import normalize_weights
 from endure.storage.repository import (
@@ -134,20 +136,20 @@ def _schema_parameter_names(schema: object) -> list[str]:
     return names
 
 
-def _schema_summary(schema: object, *, serving_status: str) -> dict[str, object]:
+def _schema_summary(entry: SchemaRegistryEntry) -> dict[str, object]:
+    schema = entry.schema
     schema_id = getattr(schema, "schema_id", None)
     if not isinstance(schema_id, str):
         raise TypeError("registered schema must expose schema_id")
     context = getattr(schema, "context", None)
-    horizons = getattr(context, "horizons", ())
     benchmark = getattr(context, "benchmark", None)
     if benchmark is None:
         benchmark = getattr(context, "context_id", None)
     return {
         "schema_id": schema_id,
-        "serving_status": serving_status,
+        "serving_status": entry.serving_status,
         "benchmark": benchmark,
-        "horizons_trading_days": list(horizons),
+        "horizons_seconds": list(entry.horizons_seconds),
         "parameters": _schema_parameter_names(schema),
     }
 
@@ -265,10 +267,28 @@ def _round_meta_or_404(
     return meta
 
 
+def _embargo_lifted(meta: dict[str, object]) -> bool:
+    if meta["state"] not in POST_EMBARGO_ROUND_STATES:
+        return False
+    available_raw = meta.get("publication_available_at")
+    if not isinstance(available_raw, str):
+        return False
+    try:
+        available_at = datetime.fromisoformat(available_raw)
+    except ValueError:
+        return False
+    return available_at.tzinfo is not None and _utc_now() > available_at
+
+
 def _ensure_embargo_lifted(meta: dict[str, object]) -> None:
     state = meta["state"]
     if state in POST_EMBARGO_ROUND_STATES:
-        return
+        if _embargo_lifted(meta):
+            return
+        raise HTTPException(
+            status_code=403,
+            detail="round data remains embargoed until the next commit window closes",
+        )
     if state == ROUND_STATE_OPEN:
         raise HTTPException(
             status_code=403,
@@ -302,6 +322,8 @@ def _register_core_routes(
             "status": "ok",
             "schema_id": schema_id,
             "version": __version__,
+            "protocol_version_key": CURRENT_VERSION_KEY,
+            **runtime_identity(),
             "unfinished_round_count": len(unfinished),
             "unfinished_rounds": unfinished[:_HEALTH_ROUNDS_SAMPLE],
         }
@@ -353,9 +375,7 @@ def _register_core_routes(
         payload: list[dict[str, object]] = []
         for registered_id in registry.schema_ids():
             entry = registry.get(registered_id)
-            payload.append(
-                _schema_summary(entry.schema, serving_status=entry.serving_status)
-            )
+            payload.append(_schema_summary(entry))
         return payload
 
     @app.get("/rounds")
@@ -374,7 +394,13 @@ def _register_core_routes(
 
     @app.get("/rounds/{round_id}")
     def round_meta(round_id: str) -> dict[str, object]:
-        return _round_meta_or_404(storage, schema_id, round_id)
+        meta = _round_meta_or_404(storage, schema_id, round_id)
+        if not _embargo_lifted(meta):
+            # Keep windows and frozen inputs readable for miners, but do not
+            # disclose reveal participation while miners can still adapt their
+            # decision to reveal or abort.
+            meta = {**meta, "accepted_submissions": None}
+        return meta
 
     @app.get("/rounds/{round_id}/universe")
     def universe(round_id: str) -> dict[str, object]:
@@ -467,6 +493,7 @@ def _register_risk_routes(
             storage,
             signer=publication_identity.signer,
             signed_by=publication_identity.hotkey,
+            now=_utc_now(),
         )
 
 

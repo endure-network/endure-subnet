@@ -66,6 +66,28 @@ EPOCH = datetime(2026, 6, 9, 12, 0, tzinfo=UTC)
 PERIOD = 100
 
 
+def _record_accepted_submission(
+    storage: Storage, round_id: str, hotkey: str, *, now_iso: str
+) -> None:
+    storage.record_commit(
+        round_id,
+        FORGE_LENDING_SCHEMA_ID,
+        hotkey,
+        "ab" * 32,
+        now_iso=now_iso,
+    )
+    storage.record_reveal(
+        round_id,
+        FORGE_LENDING_SCHEMA_ID,
+        hotkey,
+        bundle_json="{}",
+        nonce_hex="cd" * 16,
+        accepted=True,
+        rejection_code=None,
+        now_iso=now_iso,
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class _AssessmentSpec:
     grace_band: int
@@ -949,6 +971,12 @@ class TestValidatorRoundService:
         service.tick(expected_miners=())
         windows = storage.round_windows(round_id, FORGE_LENDING_SCHEMA_ID)
         assert windows is not None
+        _record_accepted_submission(
+            storage,
+            round_id,
+            "hk-gone",
+            now_iso=now_holder["now"].isoformat(),
+        )
         now_holder["now"] = windows.reveal_close + timedelta(seconds=6)
         storage.set_round_state(
             round_id,
@@ -1057,6 +1085,12 @@ class TestValidatorRoundService:
             now_iso=now_holder["now"].isoformat(),
         )
         for miner_hotkey in ("hk-active", "hk-gone"):
+            _record_accepted_submission(
+                storage,
+                old_round,
+                miner_hotkey,
+                now_iso=now_holder["now"].isoformat(),
+            )
             storage.upsert_assessment_ema(
                 FORGE_LENDING_SCHEMA_ID,
                 AssessmentEmaState(

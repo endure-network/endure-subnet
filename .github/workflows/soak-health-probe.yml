@@ -7,11 +7,24 @@ on:
 
 jobs:
   health:
-    name: Testnet liveness endpoint
+    name: Testnet readiness and release identity
     runs-on: ubuntu-latest
     steps:
-      - name: Fail when the public validator liveness endpoint is unavailable
-        run: >-
-          curl --fail --show-error --silent --retry 3 --retry-all-errors
-          --retry-delay 5 --connect-timeout 10 --max-time 20
-          https://api.testnet.endure.network/live
+      - name: Require the deployed staging identity to be healthy
+        env:
+          SOAK_EXPECTED_SHA: ${{ vars.SOAK_EXPECTED_SHA }}
+        run: |
+          set -euo pipefail
+          [[ "$SOAK_EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          body="$(
+            curl --fail --show-error --silent --retry 3 --retry-all-errors \
+              --retry-delay 5 --connect-timeout 10 --max-time 20 \
+              https://api.testnet.endure.network/health
+          )"
+          jq --exit-status --arg sha "$SOAK_EXPECTED_SHA" '
+            .status == "ok"
+            and .schema_id == "risk.v1.subnet_alpha"
+            and .protocol_version_key == 29
+            and .source_revision == $sha
+            and .image_version == ("sha-" + $sha)
+          ' <<<"$body"

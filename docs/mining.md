@@ -10,10 +10,12 @@ generic query.
 
 ## Before you start
 
-1. Clone the release tag, use Python 3.12, and create the environment with uv
-   `0.11.32` (`uv venv --python 3.12 .venv`).
-2. Install development dependencies with `make dev-install`; this runs
-   `uv sync --locked --extra dev` against the checked-in lockfile. Then run
+1. Clone the public repository and, with a Python 3.12 executable available,
+   run `make bootstrap` to install the pinned uv `0.11.32` and Gitleaks. The
+   signed `v0.1.0-rc.1` tag is created only after live candidate acceptance.
+2. Install the locked environment with `make dev-install` (`uv sync --locked
+   --extra dev`; operators who need no test tooling can use `make install`
+   instead). Then run
    `make verify`. Do not substitute `pip install` for the locked Endure install.
 3. Create and fund a **testnet-only** wallet, register its hotkey, and retain
    the wallet locally. Do not put mnemonic words, coldkeys, hotkey files, seeds,
@@ -22,14 +24,16 @@ generic query.
 
 ## Start the reference miner
 
-Use the command shape in [the testnet runbook](running_on_testnet.md). Supply
-your netuid, wallet name/hotkey, a reachable axon address, and
+Use the command shape in [the testnet runbook](running_on_testnet.md). Endure's
+testnet netuid is `504`; supply your wallet name/hotkey, a reachable axon address, and
 `--endure.serving_stage testnet`. Alpha Risk obtains market data through
 `--endure.market_data_endpoint`; do not supply a private endpoint in a public
 report. The miner entry point is [neurons/miner.py](../neurons/miner.py).
 Live miner axons accept requests only from registered hotkeys carrying a
 validator permit. Mock/local development keeps the configurable permissive
 behavior, but live operation ignores attempts to allow unregistered callers.
+The reference miner discovers permitted validator axons through the netuid-504
+metagraph. The separately hosted consumer API is not a miner routing endpoint.
 
 Persist the miner's state directory across restarts. The persisted commit/reveal
 state is required to reveal the same bundle and nonce after a restart.

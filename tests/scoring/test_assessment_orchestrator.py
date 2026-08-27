@@ -200,6 +200,32 @@ def test_scoring_pass_idempotency_is_per_horizon(storage: Storage) -> None:
 def test_active_ema_hotkey_is_zero_filled_when_it_skips_a_submission(
     storage: Storage,
 ) -> None:
+    previous_round = "2026-07-02"
+    storage.open_round(
+        windows=compute_windows(date(2026, 7, 2), offsets=DEFAULT_OFFSETS),
+        schema_id=FORGE_LENDING_SCHEMA_ID,
+        universe=StaticLendingUniverseProvider(netuids=(44,)).fetch_universe(
+            previous_round
+        ),
+        now_iso=NOW,
+    )
+    storage.record_commit(
+        previous_round,
+        FORGE_LENDING_SCHEMA_ID,
+        "hk-active",
+        "ab" * 32,
+        now_iso=NOW,
+    )
+    storage.record_reveal(
+        previous_round,
+        FORGE_LENDING_SCHEMA_ID,
+        "hk-active",
+        bundle_json="{}",
+        nonce_hex="cd" * 16,
+        accepted=True,
+        rejection_code=None,
+        now_iso=NOW,
+    )
     _open_round(storage)
     coordinate = _coordinate("alpha", 5)
     storage.upsert_assessment_ema(

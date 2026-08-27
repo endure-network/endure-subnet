@@ -131,7 +131,7 @@ def require_serving_stage_allowed(
 
     raise DevOnlyConfigError(
         "risk.v1.subnet_alpha serving is blocked until the R7 soak gate passes "
-        "(AGENTS.md / risk scope §R7); mainnet serving requires a code change "
+        "(risk scope §R7); mainnet serving requires a code change "
         f"after soak approval. Configured endpoint {endpoint!r} is refused"
     )
 
@@ -145,6 +145,25 @@ def require_dev_only_runtime(config: "bt.Config", *, feature: str) -> None:
         f"{feature} is dev-only and requires mock or ws://127.0.0.1 subtensor; "
         f"configured endpoint {endpoint!r} is not allowed "
         "(risk scope §Dev-only time compression)"
+    )
+
+
+def require_explicit_netuid(config: "bt.Config") -> None:
+    """Refuse the argparse ``--netuid`` default outside mock/local chains.
+
+    The default keeps mock runs and tests terse, but on a live network a
+    defaulted netuid silently registers, serves and weighs against whatever
+    subnet carries that id, so the operator must name it. bt.Config records
+    which parameters the command line supplied, so the default itself can
+    stay untouched.
+    """
+    if permits_dev_only_runtime(config) or config.is_set("netuid"):
+        return
+    endpoint = safe_endpoint_label(_effective_chain(config)[0])
+    raise DevOnlyConfigError(
+        "--netuid was not provided; pass --netuid explicitly on live networks "
+        "(the default is accepted only for mock or local chains; configured "
+        f"endpoint {endpoint!r})"
     )
 
 
@@ -181,9 +200,9 @@ def _positive_int(value: str) -> int:
 
 
 def _unit_interval_decimal(value: str) -> Decimal:
-    # EMA alpha is a score-affecting weight (spec §8): parse as Decimal (not
-    # float, per the Decimal policy) and reject anything outside [0, 1], since
-    # alpha > 1 inverts the moving average and NaN/negative corrupts scores.
+    # EMA alpha affects scoring: parse it as Decimal (not float, per the
+    # Decimal policy) and reject anything outside [0, 1], since alpha > 1
+    # inverts the moving average and NaN/negative corrupts scores.
     try:
         parsed = Decimal(value)
     except (InvalidOperation, ValueError) as exc:

@@ -55,6 +55,11 @@ MARKDOWN_PATHS = (Path("."),)
 MARKDOWN_LINK_PATTERN = re.compile(
     r"!?\[[^\]]*\]\((?P<target><[^>]+>|[^\s)]+)(?:\s+[^)]*)?\)"
 )
+SPEC_REFERENCE_MANIFEST = Path("docs/specs/module_references.json")
+SPEC_REFERENCE_PATTERN = re.compile(
+    r"^(?P<path>docs/specs/[a-zA-Z0-9._/-]+\.md)#(?P<anchor>[a-z0-9_-]+)$"
+)
+MARKDOWN_HEADING_PATTERN = re.compile(r"^#{1,6}\s+(?P<heading>.+?)\s*$", re.MULTILINE)
 
 
 def _reject_non_finite(token: str) -> float:
@@ -193,20 +198,146 @@ def find_missing_spec_references(
     repo_root: Path = REPO_ROOT,
     paths: Sequence[Path] = DOMAIN_PATHS,
 ) -> list[Violation]:
-    violations: list[Violation] = []
-    for path in iter_text_files(repo_root, paths):
-        if path.suffix != ".py":
+    source_paths = [
+        path for path in iter_text_files(repo_root, paths) if path.suffix == ".py"
+    ]
+    if not source_paths:
+        return []
+    manifest_path = repo_root / SPEC_REFERENCE_MANIFEST
+    raw_rules, violations = _load_spec_reference_rules(manifest_path)
+    if raw_rules is None:
+        return violations
+    valid_rules: list[tuple[Path, tuple[str, ...]]] = []
+    for index, raw_rule in enumerate(raw_rules, start=1):
+        rule, rule_violations = _validated_spec_rule(
+            repo_root, manifest_path, index, raw_rule
+        )
+        violations.extend(rule_violations)
+        if rule is None:
             continue
-        contents = path.read_text(encoding="utf-8")
-        if "spec §" not in contents:
+        valid_rules.append(rule)
+        _prefix, references = rule
+        for reference in references:
+            violations.extend(
+                _spec_reference_target_violations(
+                    repo_root, manifest_path, index, reference
+                )
+            )
+
+    for path in source_paths:
+        relative = path.relative_to(repo_root)
+        matched = [
+            references
+            for prefix, references in valid_rules
+            if relative == prefix or prefix in relative.parents
+        ]
+        if not matched:
             violations.append(
                 Violation(
                     path=path,
                     line=1,
-                    message="critical module is missing a spec reference",
+                    message="critical module has no resolvable spec-reference rule",
                 )
             )
     return violations
+
+
+def _load_spec_reference_rules(
+    manifest_path: Path,
+) -> tuple[list[object] | None, list[Violation]]:
+    if not manifest_path.is_file():
+        return None, [Violation(manifest_path, 1, "spec-reference manifest is missing")]
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as error:
+        return None, [
+            Violation(
+                manifest_path,
+                1,
+                f"spec-reference manifest is unreadable: {error}",
+            )
+        ]
+    raw_rules = manifest.get("rules") if isinstance(manifest, dict) else None
+    if not isinstance(raw_rules, list):
+        return None, [
+            Violation(
+                manifest_path,
+                1,
+                "spec-reference manifest rules must be a list",
+            )
+        ]
+    return raw_rules, []
+
+
+def _validated_spec_rule(
+    repo_root: Path,
+    manifest_path: Path,
+    index: int,
+    raw_rule: object,
+) -> tuple[tuple[Path, tuple[str, ...]] | None, list[Violation]]:
+    _ = repo_root
+    if not isinstance(raw_rule, dict):
+        return None, [
+            Violation(manifest_path, index, "spec-reference rule must be an object")
+        ]
+    raw_prefix = raw_rule.get("path_prefix")
+    raw_references = raw_rule.get("references")
+    if not isinstance(raw_prefix, str) or not raw_prefix.startswith("endure/"):
+        return None, [
+            Violation(manifest_path, index, "rule path_prefix must be under endure/")
+        ]
+    if (
+        not isinstance(raw_references, list)
+        or not raw_references
+        or not all(isinstance(reference, str) for reference in raw_references)
+    ):
+        return None, [
+            Violation(
+                manifest_path,
+                index,
+                "rule references must be non-empty strings",
+            )
+        ]
+    return (Path(raw_prefix), tuple(raw_references)), []
+
+
+def _spec_reference_target_violations(
+    repo_root: Path,
+    manifest_path: Path,
+    index: int,
+    reference: str,
+) -> list[Violation]:
+    match = SPEC_REFERENCE_PATTERN.fullmatch(reference)
+    if match is None:
+        return [
+            Violation(
+                manifest_path,
+                index,
+                f"bare or malformed spec reference: {reference}",
+            )
+        ]
+    target = repo_root / match.group("path")
+    if not target.is_file():
+        return [
+            Violation(manifest_path, index, f"spec file does not exist: {reference}")
+        ]
+    anchors = {
+        _markdown_heading_anchor(heading.group("heading"))
+        for heading in MARKDOWN_HEADING_PATTERN.finditer(
+            target.read_text(encoding="utf-8")
+        )
+    }
+    if match.group("anchor") not in anchors:
+        return [
+            Violation(manifest_path, index, f"spec heading does not exist: {reference}")
+        ]
+    return []
+
+
+def _markdown_heading_anchor(heading: str) -> str:
+    without_markup = heading.replace("`", "").strip().lower()
+    github_text = re.sub(r"[^\w\- ]", "", without_markup)
+    return github_text.replace(" ", "-")
 
 
 def find_broken_markdown_links(
@@ -332,7 +463,15 @@ def _run_protocol_version() -> int:
     trusted_activations: tuple[tuple[int, str, str], ...] | None = None
     lineage_failure: str | None = None
     if isinstance(activations, str):
-        lineage_failure = activations
+        # Forks and shallow clones usually lack the staging ref; say how to fetch
+        # the official lineage and select that exact ref for this gate.
+        lineage_failure = (
+            f"{activations} (ref {lineage_ref!r}); fetch the upstream staging branch "
+            "with `git fetch https://github.com/endure-network/endure-subnet.git "
+            "staging:refs/remotes/upstream/staging`, then run the gate with "
+            "`ENDURE_ACTIVATION_LINEAGE_REF=upstream/staging` (or another "
+            "explicit trusted staging ref)"
+        )
     else:
         trusted_activations = tuple(
             (activation.key, activation.digest, activation.evidence_sha256)

@@ -34,6 +34,7 @@ from endure.assessment.schemas.subnet_alpha_risk import (
     RISK_SCHEMA_ID,
 )
 from endure.assessment.subnet_alpha_universe import StaticAlphaRiskUniverseProvider
+from endure.base.shutdown import install_shutdown_handlers, join_thread_or_raise
 from endure.base.validator import (
     WEIGHT_EMISSION_FINALITY_MARGIN_BLOCKS,
     WEIGHT_EMISSION_PERIOD_BLOCKS,
@@ -56,6 +57,7 @@ from endure.protocol.synapses import SubmitCommit, SubmitReveal
 from endure.protocol.validator_service import ValidatorRoundService
 from endure.protocol.version_contract import CURRENT_VERSION_KEY
 from endure.protocol.vertical import AssessmentRoundProgram, VerticalRuntime
+from endure.runtime.identity import runtime_identity
 from endure.runtime.resolve import resolve_runtime_provider
 from endure.scoring.market_data import recorded_mainnet_fixture_provider
 from endure.scoring.policy import DEFAULT_PAYOUT_HALF_LIFE_ROUNDS
@@ -67,12 +69,14 @@ from endure.storage.repository import (
     WeightEmissionChainSnapshot,
     WeightEmissionRow,
     WeightRevealEvidence,
+    ensure_sqlite_parent_dir,
 )
 from endure.utils.config import (
     DevOnlyConfigError,
     active_runtime_schema_id,
     permits_dev_only_runtime,
     require_compression_runtime_allowed,
+    require_explicit_netuid,
     require_serving_stage_allowed,
 )
 from endure.utils.logging import safe_endpoint_label, safe_error
@@ -120,6 +124,7 @@ def _run_migrations(database_url: str) -> None:
         "script_location", str(repo_root / "endure/storage/migrations")
     )
     config.set_main_option("sqlalchemy.url", database_url)
+    ensure_sqlite_parent_dir(database_url)
     alembic_command.upgrade(config, "head")
 
 
@@ -129,6 +134,7 @@ class Validator(BaseValidatorNeuron):
     def __init__(self, config: bt.Config | None = None) -> None:
         resolved_config = config or type(self).build_config()
         require_serving_stage_allowed(resolved_config)
+        require_explicit_netuid(resolved_config)
         if (
             active_runtime_schema_id(resolved_config) == RISK_SCHEMA_ID
             and int(resolved_config.neuron.num_concurrent_forwards) != 1
@@ -181,16 +187,16 @@ class Validator(BaseValidatorNeuron):
         self._api_thread: threading.Thread | None = None
         self._attach_handlers()
         self._start_api()
-        # D1=B: the code default stays 0; the soak/coolify config sets the floor.
-        # Warn loudly when a live network runs with no stake gate — any
+        # D1=B: the code default stays 0; the operator's deployment sets the
+        # floor. Warn loudly when a live network runs with no stake gate — any
         # registered hotkey can then impose commit/reveal load.
         if str(self.config.runtime.mode) != "mock" and (
             self.config.endure.min_miner_stake <= 0
         ):
             bt.logging.warning(
                 "endure.min_miner_stake is 0 on a live network — any registered "
-                "hotkey can impose commit/reveal load; set a non-zero stake "
-                "floor in the soak/coolify config"
+                "hotkey can impose commit/reveal load; pass "
+                "--endure.min_miner_stake with a positive TAO floor"
             )
 
     def runtime_health(self) -> RuntimeHealth:
@@ -371,12 +377,39 @@ class Validator(BaseValidatorNeuron):
     def stop_run_thread(self) -> None:
         """Signal the read-API server to exit alongside the round loop, so a
         shutdown doesn't leave the uvicorn thread bound to the port."""
+        self.should_exit = True
+        self._shutdown_event.set()
         if self._api_server is not None:
             self._api_server.should_exit = True
-        if self._api_thread is not None:
-            self._api_thread.join(5)
-            self._api_thread = None
-        super().stop_run_thread()
+        failures: list[Exception] = []
+        try:
+            super().stop_run_thread()
+        except Exception as error:  # noqa: BLE001 - every worker still gets joined.
+            failures.append(error)
+        api_thread = self._api_thread
+        if api_thread is not None:
+            try:
+                join_thread_or_raise(api_thread, name="validator read API")
+            except RuntimeError as error:
+                failures.append(error)
+            else:
+                self._api_thread = None
+                self._api_server = None
+        if failures:
+            raise RuntimeError("validator shutdown incomplete") from failures[0]
+
+    def close_transport_resources(self) -> None:
+        failures: list[Exception] = []
+        try:
+            self._storage.close()
+        except Exception as error:  # noqa: BLE001 - close every resource.
+            failures.append(error)
+        try:
+            super().close_transport_resources()
+        except Exception as error:  # noqa: BLE001 - preserve every cleanup failure.
+            failures.append(error)
+        if failures:
+            raise RuntimeError("validator resource cleanup incomplete") from failures[0]
 
     def _build_service(self) -> ValidatorRoundService:
         if self._schema_id == RISK_SCHEMA_ID:
@@ -872,7 +905,10 @@ class Validator(BaseValidatorNeuron):
             # Throttle every tick — success and failure alike — to the configured
             # cadence. tick() is wall-clock gated, so spinning faster resolves no
             # rounds sooner and just burns CPU/disk (each step re-saves state).
-            await asyncio.sleep(int(self.config.endure.tick_seconds))
+            await asyncio.to_thread(
+                self._shutdown_event.wait,
+                int(self.config.endure.tick_seconds),
+            )
 
 
 def _recorded_fixture_block(_reveal_close: datetime) -> int:
@@ -974,14 +1010,23 @@ def _build_forge_vertical_runtime(validator: Validator) -> VerticalRuntime:
 
 def main() -> None:
     try:
+        identity = runtime_identity()
+        bt.logging.info(
+            "runtime identity "
+            f"source_revision={identity['source_revision']} "
+            f"image_version={identity['image_version']} "
+            f"protocol_version_key={CURRENT_VERSION_KEY}"
+        )
+        stop = install_shutdown_handlers()
         validator = Validator()
         with validator:
-            while True:
+            while not stop.is_set():
                 if (reason := validator.watchdog_exit_reason()) is not None:
                     bt.logging.error(f"validator watchdog exiting: {reason}")
                     raise SystemExit(1)
                 bt.logging.info(f"Validator running... {time.time()}")
-                time.sleep(5)
+                stop.wait(5)
+        bt.logging.info("validator stopped on shutdown signal")
     except DevOnlyConfigError as error:
         bt.logging.error(f"validator refused to start: {safe_error(error)}")
         raise SystemExit(1) from None

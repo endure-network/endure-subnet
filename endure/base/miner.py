@@ -19,7 +19,6 @@ import argparse
 import asyncio
 import sys
 import threading
-import time
 import traceback
 from abc import abstractmethod
 from typing import Union
@@ -27,6 +26,7 @@ from typing import Union
 import bittensor as bt
 
 from endure.base.neuron import BaseNeuron
+from endure.base.shutdown import join_thread_or_raise
 from endure.runtime.types import RuntimeProvider
 from endure.utils.config import add_miner_args
 from endure.utils.logging import safe_endpoint_label, safe_error
@@ -73,6 +73,7 @@ class BaseMinerNeuron(BaseNeuron):
         self.should_exit: bool = False
         self.is_running: bool = False
         self.thread: Union[threading.Thread, None] = None
+        self._shutdown_event = threading.Event()
         self.lock = asyncio.Lock()
 
     @abstractmethod
@@ -102,9 +103,11 @@ class BaseMinerNeuron(BaseNeuron):
         try:
             # Check registration and advertise the configured axon.
             self.sync()
+            # Name the endpoint the axon is actually served through: in mock
+            # mode that is the in-process chain, not the configured default.
             bt.logging.info(
                 f"Serving miner axon on network "
-                f"{safe_endpoint_label(self.config.subtensor.chain_endpoint)} "
+                f"{safe_endpoint_label(self.subtensor.chain_endpoint)} "
                 f"with netuid {self.config.netuid}"
             )
             self.axon.serve(netuid=self.config.netuid, subtensor=self.subtensor)
@@ -126,8 +129,8 @@ class BaseMinerNeuron(BaseNeuron):
             while not self.should_exit:
                 try:
                     while not self._due_for_sync(last_sync_block):
-                        # Wait before checking again.
-                        time.sleep(1)
+                        # Wake immediately when process teardown requests exit.
+                        self._shutdown_event.wait(1)
 
                         # Check if we should exit.
                         if self.should_exit:
@@ -154,7 +157,7 @@ class BaseMinerNeuron(BaseNeuron):
                     # A failed sync leaves last_sync_block stale, so the wait
                     # loop's sleep is skipped and the retry would otherwise
                     # hammer a dead endpoint in a hot loop — throttle it here.
-                    time.sleep(1)
+                    self._shutdown_event.wait(1)
 
         # If someone intentionally stops the miner, it'll safely terminate operations.
         except KeyboardInterrupt:
@@ -167,6 +170,7 @@ class BaseMinerNeuron(BaseNeuron):
         if not self.is_running:
             bt.logging.debug("Starting miner in background thread.")
             self.should_exit = False
+            self._shutdown_event.clear()
             self.thread = threading.Thread(target=self.run, daemon=True)
             self.thread.start()
             self.is_running = True
@@ -177,9 +181,19 @@ class BaseMinerNeuron(BaseNeuron):
         if self.is_running:
             bt.logging.debug("Stopping miner in background thread.")
             self.should_exit = True
-            if self.thread is not None:
-                self.thread.join(5)
+            self._shutdown_event.set()
+            transport_error: Exception | None = None
+            try:
+                self.axon.stop()
+            except Exception as error:  # noqa: BLE001 - finish joining before surfacing.
+                transport_error = error
+            if self.thread is None:
+                raise RuntimeError("is_running True but thread unset")
+            join_thread_or_raise(self.thread, name="miner loop")
+            self.thread = None
             self.is_running = False
+            if transport_error is not None:
+                raise RuntimeError("miner axon failed to stop") from transport_error
             bt.logging.debug("Stopped")
 
     def __enter__(self):
@@ -187,9 +201,29 @@ class BaseMinerNeuron(BaseNeuron):
         self.run_in_background_thread()
         return self
 
+    def close_transport_resources(self) -> None:
+        """Close non-serving network clients after every worker has stopped."""
+        failures: list[Exception] = []
+        dendrite = getattr(self, "dendrite", None)
+        close_dendrite = getattr(dendrite, "close_session", None)
+        if callable(close_dendrite):
+            try:
+                close_dendrite()
+            except Exception as error:  # noqa: BLE001 - close every resource.
+                failures.append(error)
+        close_subtensor = getattr(self.subtensor, "close", None)
+        if callable(close_subtensor):
+            try:
+                close_subtensor()
+            except Exception as error:  # noqa: BLE001 - close every resource.
+                failures.append(error)
+        if failures:
+            raise RuntimeError("miner transport cleanup incomplete") from failures[0]
+
     def __exit__(self, exc_type, exc_value, traceback):
         """Stop the background loop when leaving the context."""
         self.stop_run_thread()
+        self.close_transport_resources()
 
     def resync_metagraph(self):
         """Refresh the miner's metagraph view."""
@@ -197,3 +231,4 @@ class BaseMinerNeuron(BaseNeuron):
 
         # Sync the metagraph.
         self.metagraph.sync(subtensor=self.subtensor)
+        self.refresh_uid()

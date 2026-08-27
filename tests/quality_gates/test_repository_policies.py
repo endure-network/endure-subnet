@@ -5,6 +5,7 @@ from pathlib import Path
 
 def test_contributing_owns_the_complete_human_workflow() -> None:
     repo_root = Path(__file__).resolve().parents[2]
+    root_contributing = (repo_root / "CONTRIBUTING.md").read_text(encoding="utf-8")
     contributing = (repo_root / "contrib" / "CONTRIBUTING.md").read_text(
         encoding="utf-8"
     )
@@ -17,6 +18,46 @@ def test_contributing_owns_the_complete_human_workflow() -> None:
     assert "docs/..." in contributing
     assert "no-commit-to-branch" in contributing
     assert "make format" in contributing
+    assert "squash-merge" in root_contributing
+    assert "squash-merge" in contributing
+    assert "merge commits" in root_contributing
+    assert "merge commits" in contributing
+
+
+def test_onboarding_uses_the_pinned_seeder_without_unpinned_pip_upgrade() -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    makefile = (repo_root / "Makefile").read_text(encoding="utf-8")
+    testnet = (repo_root / "docs" / "running_on_testnet.md").read_text(encoding="utf-8")
+
+    target = makefile.split("seeder-install:", maxsplit=1)[1].split(
+        "\nensure-uv:", maxsplit=1
+    )[0]
+    assert "ensure-bootstrap-python" in target
+    assert "$(BOOTSTRAP_PYTHON) -m venv --clear .venv-seeder" in target
+    assert "--require-hashes" in target
+    assert "pip install --upgrade pip" not in target
+    assert "make seeder-install" in testnet
+    assert testnet.count(".venv-seeder/bin/btcli") >= 3
+
+
+def test_duplication_gate_uses_an_integrity_locked_node_toolchain() -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    makefile = (repo_root / "Makefile").read_text(encoding="utf-8")
+    package = (repo_root / "package.json").read_text(encoding="utf-8")
+    lock = (repo_root / "package-lock.json").read_text(encoding="utf-8")
+
+    assert "npx" not in makefile
+    assert "$(NPM) ci --ignore-scripts" in makefile
+    assert "JSCPD_VERSION := 5.0.16" in makefile
+    assert '"jscpd": "5.0.16"' in package
+    assert '"lockfileVersion": 3' in lock
+
+
+def test_devnet_wallet_path_is_quoted_in_every_make_target() -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    makefile = (repo_root / "Makefile").read_text(encoding="utf-8")
+
+    assert makefile.count('--wallet-path "$(WALLET_PATH)"') == 4
 
 
 def test_operator_runbooks_do_not_instruct_users_to_use_template_repo() -> None:

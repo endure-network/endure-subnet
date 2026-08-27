@@ -68,6 +68,10 @@ def _unavailable_reveal_close_block(_reveal_close: datetime) -> int:
     raise AlphaMarketDataUnavailable("archive unavailable")
 
 
+def _missing_archive_timestamp(_timestamp: datetime) -> int:
+    raise LookupError("archive missing Timestamp.Now")
+
+
 def _coordinate(netuid: int, output: RiskOutput, horizon: int) -> AssessmentCoordinate:
     return AssessmentCoordinate.subnet_asset(
         netuid=netuid, horizon_seconds=horizon, output=output.value
@@ -357,6 +361,75 @@ class TestRiskScoringOrchestrator:
             ROUND, RISK_SCHEMA_ID, HORIZON_5D_SECONDS
         )
 
+    @pytest.mark.parametrize("missing_boundary", ["start", "end"])
+    def test_missing_archive_timestamp_voids_after_grace(
+        self, storage: Storage, missing_boundary: str
+    ) -> None:
+        # Given: a historical block exists, but its Timestamp.Now value is
+        # permanently absent at either deterministic window boundary.
+        provider = _provider((44,))
+        _open_round(storage, (44,))
+        windows = storage.round_windows(ROUND, RISK_SCHEMA_ID)
+        assert windows is not None
+        resolution_due_at = windows.reveal_close + timedelta(seconds=1)
+        after_grace = resolution_due_at + timedelta(seconds=VOID_GRACE_SECONDS + 1)
+        orchestrator = RiskScoringOrchestrator(
+            storage=storage,
+            price_provider=provider,
+            half_life_rounds=2,
+            reveal_close_block=(
+                _missing_archive_timestamp
+                if missing_boundary == "start"
+                else lambda _timestamp: WINDOW_START_BLOCK
+            ),
+            window_end_block=(
+                _missing_archive_timestamp if missing_boundary == "end" else None
+            ),
+        )
+
+        result = orchestrator.resolve_and_score(
+            ROUND,
+            HORIZON_5D_SECONDS,
+            now_iso=after_grace.isoformat(),
+            resolution_due_at=resolution_due_at,
+        )
+
+        targets = storage.assessment_realized_targets_for(ROUND, RISK_SCHEMA_ID)
+        assert result == {}
+        assert len(targets) == len(tuple(RiskOutput))
+        assert {target.status for target in targets} == {"voided"}
+        assert storage.has_assessment_resolution_marker(
+            ROUND, RISK_SCHEMA_ID, HORIZON_5D_SECONDS
+        )
+
+    @pytest.mark.parametrize("missing_boundary", ["start", "end"])
+    def test_missing_archive_timestamp_defers_within_grace(
+        self, storage: Storage, missing_boundary: str
+    ) -> None:
+        provider = _provider((44,))
+        _open_round(storage, (44,))
+        orchestrator = RiskScoringOrchestrator(
+            storage=storage,
+            price_provider=provider,
+            half_life_rounds=2,
+            reveal_close_block=(
+                _missing_archive_timestamp
+                if missing_boundary == "start"
+                else lambda _timestamp: WINDOW_START_BLOCK
+            ),
+            window_end_block=(
+                _missing_archive_timestamp if missing_boundary == "end" else None
+            ),
+        )
+
+        with pytest.raises(LookupError, match="Timestamp.Now"):
+            orchestrator.resolve_and_score(ROUND, HORIZON_5D_SECONDS, now_iso=NOW)
+
+        assert not storage.assessment_realized_targets_for(ROUND, RISK_SCHEMA_ID)
+        assert not storage.has_assessment_resolution_marker(
+            ROUND, RISK_SCHEMA_ID, HORIZON_5D_SECONDS
+        )
+
     def test_partial_resolution_defers_marker_until_missing_coordinate_recovers(
         self, storage: Storage
     ) -> None:
@@ -638,6 +711,45 @@ class TestAbsenceAwareScoring:
         }
         assert hotkeys == {"hk-a", "hk-b"}
         assert orchestrator.blended_scores().keys() == {"hk-a", "hk-b"}
+
+    def test_later_joiner_is_not_zero_filled_into_an_older_long_horizon(
+        self, storage: Storage
+    ) -> None:
+        provider = _provider((44,))
+        orchestrator = _fast_decay_orchestrator(storage, provider)
+        old_round, old_now = _round_for(7)
+        _open_round_for(storage, old_round, (44,))
+        _accept_bundle_for_round(
+            storage,
+            old_round,
+            old_now,
+            hotkey="hk-incumbent",
+            netuids=(44,),
+            provider=provider,
+        )
+
+        join_round, join_now = _round_for(8)
+        _open_round_for(storage, join_round, (44,))
+        for hotkey in ("hk-incumbent", "hk-newcomer"):
+            _accept_bundle_for_round(
+                storage,
+                join_round,
+                join_now,
+                hotkey=hotkey,
+                netuids=(44,),
+                provider=provider,
+            )
+        orchestrator.resolve_and_score(join_round, HORIZON_5D_SECONDS, now_iso=join_now)
+
+        round_scores = orchestrator.resolve_and_score(
+            old_round, RISK_HORIZONS[1], now_iso=old_now
+        )
+
+        assert "hk-newcomer" not in round_scores
+        old_history = storage.assessment_score_history_for_round(
+            old_round, RISK_SCHEMA_ID
+        )
+        assert not [row for row in old_history if row.miner_hotkey == "hk-newcomer"]
 
     def test_staggered_horizon_absence_decays_only_resolved_horizon(
         self, storage: Storage

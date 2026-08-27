@@ -55,9 +55,10 @@ class ValidatorRoundService:
         # one round failed to resolve, reset once a tick clears with none.
         self._resolution_failures = 0
         self._last_resolution_error: str | None = None
-        # A round revealing with zero accepted submissions trips no failure
-        # counter, yet it is how a wedged miner fleet collects nothing for days;
-        # count consecutive empties so /health degrades past a threshold.
+        # A round revealing with zero usable accepted submissions trips no
+        # failure counter, yet it is how a wedged miner fleet collects nothing
+        # for days; count consecutive empties so /health degrades past a
+        # threshold.
         self._empty_scored_rounds = 0
         self._last_empty_round: str | None = None
 
@@ -95,7 +96,7 @@ class ValidatorRoundService:
         self._empty_scored_rounds += 1
         self._last_empty_round = round_id
         bt.logging.warning(
-            f"round {round_id} revealed with zero accepted submissions "
+            f"round {round_id} revealed with zero usable accepted submissions "
             f"(consecutive empty scored rounds: {self._empty_scored_rounds})"
         )
 
@@ -142,6 +143,7 @@ class ValidatorRoundService:
             schema_id=self._schema_id,
             universe=universe,
             now_iso=now.isoformat(),
+            publication_available_at=self._scheduler.publication_available_at(window),
         )
         self._universe_failures = 0
         self._last_universe_error = None
