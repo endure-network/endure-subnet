@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import os
+import stat
 from datetime import UTC, date, datetime
+from pathlib import Path
 
 import pytest
 from sqlalchemy import event, insert, select, update
@@ -11,7 +14,7 @@ from endure.assessment.coordinates import AssessmentConsensusRow
 from endure.assessment.registry import UniverseSnapshot
 from endure.assessment.schemas.subnet_alpha_risk import RISK_SCHEMA_ID
 from endure.protocol.round_engine import DEFAULT_OFFSETS, compute_windows
-from endure.storage.repository import Storage
+from endure.storage.repository import Storage, ensure_sqlite_parent_dir
 from endure.storage.tables import (
     assessment_consensus,
     consensus_bundle_snapshots,
@@ -579,3 +582,93 @@ class TestCoordinateRowMapping:
 
         with pytest.raises(TypeError, match="n_submitters must be integer"):
             storage.assessment_consensus_for(round_id, RISK_SCHEMA_ID)
+
+
+class TestSqliteParentDirectory:
+    def test_from_url_creates_missing_cwd_relative_parent(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        assert not (tmp_path / "var").exists()
+
+        Storage.from_url("sqlite:///var/endure.db")
+
+        assert (tmp_path / "var").is_dir()
+        assert stat.S_IMODE((tmp_path / "var").stat().st_mode) == 0o700
+        assert stat.S_IMODE((tmp_path / "var" / "endure.db").stat().st_mode) == 0o600
+
+    def test_from_url_creates_missing_absolute_parent(self, tmp_path: Path) -> None:
+        target = tmp_path / "nested" / "deeper" / "endure.db"
+
+        Storage.from_url(f"sqlite:///{target}")
+
+        assert target.parent.is_dir()
+        assert stat.S_IMODE(target.parent.stat().st_mode) == 0o700
+        assert stat.S_IMODE(target.stat().st_mode) == 0o600
+
+    def test_from_url_tightens_an_existing_database(self, tmp_path: Path) -> None:
+        target = tmp_path / "endure.db"
+        target.touch(mode=0o644)
+        target.chmod(0o644)
+
+        Storage.from_url(f"sqlite:///{target}")
+
+        assert stat.S_IMODE(target.stat().st_mode) == 0o600
+
+    def test_from_url_rejects_a_database_symlink(self, tmp_path: Path) -> None:
+        target = tmp_path / "target.db"
+        target.touch()
+        link = tmp_path / "linked.db"
+        link.symlink_to(target)
+
+        with pytest.raises(ValueError, match="symbolic link"):
+            Storage.from_url(f"sqlite:///{link}")
+
+    @pytest.mark.parametrize(
+        "url",
+        (
+            "sqlite://",
+            "sqlite:///:memory:",
+            "sqlite:///file::memory:?cache=shared&uri=true",
+        ),
+    )
+    def test_memory_urls_touch_no_directory(
+        self, url: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+
+        ensure_sqlite_parent_dir(url)
+
+        assert list(tmp_path.iterdir()) == []
+
+    def test_file_uri_database_is_owner_only(self, tmp_path: Path) -> None:
+        target = tmp_path / "uri.db"
+
+        Storage.from_url(f"sqlite:///file:{target}?uri=true")
+
+        assert target.is_file()
+        assert stat.S_IMODE(target.stat().st_mode) == 0o600
+
+    def test_memory_mode_file_uri_touches_no_directory(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+
+        ensure_sqlite_parent_dir(
+            "sqlite:///file:ignored.db?mode=memory&cache=shared&uri=true"
+        )
+
+        assert list(tmp_path.iterdir()) == []
+
+    def test_owner_only_modes_do_not_depend_on_process_umask(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        previous_umask = os.umask(0o022)
+        try:
+            Storage.from_url("sqlite:///secure/endure.db")
+        finally:
+            os.umask(previous_umask)
+
+        assert stat.S_IMODE((tmp_path / "secure").stat().st_mode) == 0o700
+        assert stat.S_IMODE((tmp_path / "secure" / "endure.db").stat().st_mode) == 0o600

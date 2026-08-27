@@ -67,16 +67,35 @@ Its public root commit has a synthetic identity rather than the private staging
 promotion identity, so the lineage guard exempts only that root receipt while
 still requiring its key and digest exactly.
 
-Key `28` is leased exclusively to `release/v0.1.0-rc.1`. It carries the bounded
-live-sampling fix, missing-timestamp settlement, round-aware miner eligibility,
-and the next-commit-close publication embargo. Its watched-tree digest is
+Key `28` is recorded as `activation-0041`. It carries the bounded live-sampling
+fix, missing-timestamp settlement, round-aware miner eligibility, and the
+next-commit-close publication embargo. Its watched-tree digest is
 `05da1df37dc67de435d0954d9b102be45922c6956822643ff1dcc7a892176e26`.
+It first appeared on the public first-parent staging lineage in commit
+`d56bcc7fac2f4966568526446f1491156da4c753`; applying the source-bound receipt
+format above produces
+`be858c97c085aba909bcb0784b09e268474e32991444404435970c8f64241aed`.
 
-The key-`28` authority receipt is publicly reproducible: SHA-256 over the UTF-8
-lines `LEASE_AUTHORITY`,
+The original key-`28` lease authority was also publicly reproducible: SHA-256
+over the UTF-8 lines `LEASE_AUTHORITY`,
 `PREVIOUS_RECEIPT=cf3226d57dc49d5f84fed5d8eb79676c2fd215c082de214202b9a368571be5e9`,
 `CURRENT_VERSION_KEY=28`, and
 `CURRENT_VERSION_DIGEST=05da1df37dc67de435d0954d9b102be45922c6956822643ff1dcc7a892176e26`,
-each terminated by one LF byte. The resulting receipt is
+each terminated by one LF byte, produces
 `fa41045b844d60c22340a5ed0fd8118cc53c83031490eea755c2cdb05c9ccd71`.
-No private ledger value is involved.
+
+Key `29` is leased exclusively to the final `v0.1.0-rc.1` candidate. It removes
+stale source citations and an obsolete reference-miner roadmap promise, and
+consensus publication now skips an accepted bundle that no longer parses — the
+policy scoring already applied — instead of leaving the round open. Wire
+formats, scoring math, and the aggregation of parseable bundles are unchanged.
+Its watched-tree digest is
+`d3b9126c2bad0045e497e6f5f7362309c004d340f927cc91638d4df84344379b`.
+Its public lease authority receipt is SHA-256 over the UTF-8 lines
+`LEASE_AUTHORITY`,
+`PREVIOUS_RECEIPT=fa41045b844d60c22340a5ed0fd8118cc53c83031490eea755c2cdb05c9ccd71`,
+`CURRENT_VERSION_KEY=29`, and
+`CURRENT_VERSION_DIGEST=d3b9126c2bad0045e497e6f5f7362309c004d340f927cc91638d4df84344379b`,
+each terminated by one LF byte. The resulting receipt is
+`c4aa1b087b26039b30524093943467ae5074939aaf35c43c87fcb79ffc66ae13`.
+No private ledger value is involved in either lease authority receipt.

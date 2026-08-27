@@ -24,7 +24,7 @@ jobs:
           jq --exit-status --arg sha "$SOAK_EXPECTED_SHA" '
             .status == "ok"
             and .schema_id == "risk.v1.subnet_alpha"
-            and .protocol_version_key == 28
+            and .protocol_version_key == 29
             and .source_revision == $sha
             and .image_version == ("sha-" + $sha)
           ' <<<"$body"

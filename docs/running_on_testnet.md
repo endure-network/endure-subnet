@@ -1,6 +1,6 @@
 # Running Endure on Testnet
 
-> **Experimental testnet alpha, `v0.1.0-rc.1` candidate, protocol key `28`.** This is
+> **Experimental testnet alpha, `v0.1.0-rc.1` candidate, protocol key `29`.** This is
 > not a mainnet guide. The authoritative compatibility value is
 > [version_contract.py](../endure/protocol/version_contract.py).
 
@@ -11,6 +11,7 @@ git clone https://github.com/endure-network/endure-subnet.git
 cd endure-subnet
 make bootstrap
 make dev-install
+make seeder-install  # installs the hash-locked btcli used below
 make verify
 ```
 
@@ -20,8 +21,8 @@ local user cache, which every Endure locked target verifies before its command.
 Do not replace `make bootstrap` or `make dev-install` with `pip install`.
 
 Use only funded **testnet** wallets. Create/register the validator and miner
-hotkeys with your installed `btcli`; registration, stake, permits, fees, and
-the testnet endpoint are chain-controlled and must be checked at execution.
+hotkeys with the pinned `.venv-seeder/bin/btcli`; registration, stake, permits,
+fees, and the testnet endpoint are chain-controlled and must be checked at execution.
 Keep coldkeys and mnemonics off servers. Provision only the required testnet
 hotkey plus `coldkeypub.txt` through the documented operator path, and never
 copy wallet material into an issue or log.
@@ -30,14 +31,13 @@ Endure's current Bittensor testnet netuid is `504`. Substitute wallet names and
 hotkeys, then check the prompted fee and chain state before confirming:
 
 ```bash
-btcli subnet register --netuid 504 --wallet.name <wallet-name> \
-  --wallet.hotkey <validator-hotkey> --subtensor.network test
-btcli stake add --netuid 504 --amount <tao> --wallet.name <wallet-name> \
-  --wallet.hotkey <validator-hotkey> --subtensor.network test
+.venv-seeder/bin/btcli subnets register --netuid 504 --wallet-name <wallet-name> \
+  --hotkey <validator-hotkey> --network test
+.venv-seeder/bin/btcli stake add --netuid 504 --amount <tao> --wallet-name <wallet-name> \
+  --hotkey <validator-hotkey> --network test
 ```
 
-Register and stake the miner hotkey the same way. `btcli` changes independently
-of Endure; use its installed `--help` output if these option names differ.
+Register and stake the miner hotkey the same way.
 
 ## Validator first
 
@@ -93,7 +93,3 @@ The [`staging` contract](running_on_staging.md) describes the release-candidate
 branch and environment independently of any deployment provider.
 
 Mainnet serving remains prohibited until the soak gate and a later code change.
-
-Compressed synthetic rounds are now reached through
-`--endure.devnet_time_compression` and `--endure.synthetic_epoch`; there is no
-fixture path to replace.

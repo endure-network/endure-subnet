@@ -267,14 +267,24 @@ def _round_meta_or_404(
     return meta
 
 
+def _embargo_lifted(meta: dict[str, object]) -> bool:
+    if meta["state"] not in POST_EMBARGO_ROUND_STATES:
+        return False
+    available_raw = meta.get("publication_available_at")
+    if not isinstance(available_raw, str):
+        return False
+    try:
+        available_at = datetime.fromisoformat(available_raw)
+    except ValueError:
+        return False
+    return available_at.tzinfo is not None and _utc_now() > available_at
+
+
 def _ensure_embargo_lifted(meta: dict[str, object]) -> None:
     state = meta["state"]
     if state in POST_EMBARGO_ROUND_STATES:
-        available_raw = meta.get("publication_available_at")
-        if isinstance(available_raw, str):
-            available_at = datetime.fromisoformat(available_raw)
-            if available_at.tzinfo is not None and _utc_now() > available_at:
-                return
+        if _embargo_lifted(meta):
+            return
         raise HTTPException(
             status_code=403,
             detail="round data remains embargoed until the next commit window closes",
@@ -384,7 +394,13 @@ def _register_core_routes(
 
     @app.get("/rounds/{round_id}")
     def round_meta(round_id: str) -> dict[str, object]:
-        return _round_meta_or_404(storage, schema_id, round_id)
+        meta = _round_meta_or_404(storage, schema_id, round_id)
+        if not _embargo_lifted(meta):
+            # Keep windows and frozen inputs readable for miners, but do not
+            # disclose reveal participation while miners can still adapt their
+            # decision to reveal or abort.
+            meta = {**meta, "accepted_submissions": None}
+        return meta
 
     @app.get("/rounds/{round_id}/universe")
     def universe(round_id: str) -> dict[str, object]:

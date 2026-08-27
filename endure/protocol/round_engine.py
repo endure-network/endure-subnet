@@ -1,4 +1,4 @@
-"""Round windows + phase machine (spec §2).
+"""Round windows and the deterministic phase machine.
 
 All boundaries are offsets from the official NYSE close, so half-days shift
 automatically and localnet runs compress a round into minutes by swapping the
@@ -18,7 +18,7 @@ from endure.scoring.oracle.trading_days import is_trading_session, session_close
 
 @dataclass(frozen=True, slots=True)
 class WindowOffsets:
-    """Close-relative round boundaries; defaults per design §2."""
+    """Close-relative boundaries used by session-based schedulers."""
 
     commit_open_before_close: timedelta
     commit_close_before_close: timedelta

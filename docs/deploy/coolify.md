@@ -26,9 +26,11 @@ team-operated Coolify soak and its documented testnet-only wallet bootstrap.
 - Publish axon ports `8091`–`8096` directly on stable public IP addresses and
   set `EXTERNAL_IP` to the relevant host address. Bittensor advertises an IP and
   port on-chain; do not place axons behind an HTTP reverse proxy.
-- Route validator port `8714` through TLS and rate limiting. The container
-  healthcheck uses `/live` for process liveness; monitor `/health` separately
-  for operational readiness.
+- Route validator port `8714` through Coolify's private Compose network, TLS,
+  and rate limiting. The soak compose file does not publish that port on the
+  host, so the proxy is the only external path. The container healthcheck uses
+  `/live` for process liveness; monitor `/health` separately for operational
+  readiness.
 - Run the validator and miners on separate hosts. This avoids local public-IP
   hairpin failures and separates their archive-node request budgets.
 
@@ -45,6 +47,13 @@ Optional settings are `CHAIN` (default `test`), `MARKET_DATA_ENDPOINT`,
 `EPOCH_LENGTH`, and the validator's `MIN_MINER_STAKE`. A credential-bearing RPC
 URL must be stored as a Coolify secret and must use a host accepted by the
 runtime serving-stage guard.
+
+The compose files pass `ENDURE_SOURCE_REVISION` and `ENDURE_IMAGE_VERSION`
+through as Docker build arguments. Configure both as Coolify build-time
+variables, not runtime-only variables: use the full 40-hex source commit and
+`sha-<that commit>` respectively. Omitting both produces a local `dev` image;
+supplying only one fails the image build, and the soak health probe rejects a
+dev image.
 
 ### Testnet wallet exception
 

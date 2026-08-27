@@ -46,6 +46,7 @@ from endure.protocol.weight_intent import (
     WeightIntentPayload,
     canonical_weight_intent_hash,
 )
+from endure.storage.sqlite_security import ensure_secure_sqlite_path
 from endure.storage.tables import (
     assessment_consensus,
     assessment_horizon_resolutions,
@@ -696,6 +697,17 @@ def _coordinate_from_mapping(row: RowMapping) -> AssessmentCoordinate:
     )
 
 
+def ensure_sqlite_parent_dir(url: str) -> None:
+    """Prepare owner-only storage for a file-backed SQLite database.
+
+    The default URL is CWD-relative (``sqlite:///var/endure.db``). SQLite
+    creates the file but never its directory and otherwise inherits the process
+    umask. Pre-creation protects embargoed bundle and nonce contents at rest.
+    In-memory, URI, and non-SQLite URLs are left alone.
+    """
+    ensure_secure_sqlite_path(url)
+
+
 def _apply_sqlite_pragmas(engine: Engine) -> None:
     """Production hardening for the embedded store: WAL keeps the axon, tick,
     and API threads from blocking each other; the busy timeout absorbs writer
@@ -716,6 +728,10 @@ class Storage:
     def __init__(self, engine: Engine) -> None:
         self._engine = engine
 
+    def close(self) -> None:
+        """Release pooled SQLite connections after validator workers stop."""
+        self._engine.dispose()
+
     @classmethod
     def from_url(cls, url: str) -> Storage:
         # SQLite-only by design: the store leans on the WAL/foreign-key pragmas
@@ -727,6 +743,7 @@ class Storage:
             raise ValueError(
                 f"Storage supports SQLite only, got backend {backend!r} from URL"
             )
+        ensure_sqlite_parent_dir(url)
         engine = create_engine(url)
         _apply_sqlite_pragmas(engine)
         return cls(engine)

@@ -7,7 +7,9 @@ This is the public validator path: [README](../README.md) → this guide →
 [testnet runbook](running_on_testnet.md). Forge lending remains a documented reference
 vertical; it is not the served operator path.
 
-Install with the testnet runbook's Python 3.12 and uv `0.11.32` flow.
+Install with the testnet runbook's flow: `make bootstrap` (pinned uv `0.11.32`
+and Gitleaks, needs a Python 3.12 executable) followed by `make dev-install`,
+or `make install` for an operator who needs no test tooling.
 `make dev-install` performs `uv sync --locked --extra dev`; do not replace the
 locked Endure installation with `pip install`.
 

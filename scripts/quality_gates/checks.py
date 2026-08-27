@@ -463,7 +463,15 @@ def _run_protocol_version() -> int:
     trusted_activations: tuple[tuple[int, str, str], ...] | None = None
     lineage_failure: str | None = None
     if isinstance(activations, str):
-        lineage_failure = activations
+        # Forks and shallow clones usually lack the staging ref; say how to fetch
+        # the official lineage and select that exact ref for this gate.
+        lineage_failure = (
+            f"{activations} (ref {lineage_ref!r}); fetch the upstream staging branch "
+            "with `git fetch https://github.com/endure-network/endure-subnet.git "
+            "staging:refs/remotes/upstream/staging`, then run the gate with "
+            "`ENDURE_ACTIVATION_LINEAGE_REF=upstream/staging` (or another "
+            "explicit trusted staging ref)"
+        )
     else:
         trusted_activations = tuple(
             (activation.key, activation.digest, activation.evidence_sha256)
