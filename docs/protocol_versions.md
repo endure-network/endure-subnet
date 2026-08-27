@@ -90,12 +90,12 @@ consensus publication now skips an accepted bundle that no longer parses — the
 policy scoring already applied — instead of leaving the round open. Wire
 formats, scoring math, and the aggregation of parseable bundles are unchanged.
 Its watched-tree digest is
-`2a3054efe774950d35f951100dd4e9912de8091cf8371814d516e75f99c562c9`.
+`d3b9126c2bad0045e497e6f5f7362309c004d340f927cc91638d4df84344379b`.
 Its public lease authority receipt is SHA-256 over the UTF-8 lines
 `LEASE_AUTHORITY`,
 `PREVIOUS_RECEIPT=fa41045b844d60c22340a5ed0fd8118cc53c83031490eea755c2cdb05c9ccd71`,
 `CURRENT_VERSION_KEY=29`, and
-`CURRENT_VERSION_DIGEST=2a3054efe774950d35f951100dd4e9912de8091cf8371814d516e75f99c562c9`,
+`CURRENT_VERSION_DIGEST=d3b9126c2bad0045e497e6f5f7362309c004d340f927cc91638d4df84344379b`,
 each terminated by one LF byte. The resulting receipt is
-`d3d1f3295eb33720f6825b504d760be94a4dc370d033965ca51bf62a0879cf80`.
+`c4aa1b087b26039b30524093943467ae5074939aaf35c43c87fcb79ffc66ae13`.
 No private ledger value is involved in either lease authority receipt.

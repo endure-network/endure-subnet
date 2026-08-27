@@ -71,6 +71,7 @@ class AssessmentRoundProgram:
 
     def publish_consensus(self, round_id: str, now: datetime) -> bool:
         blends = self.orchestrator.blended_scores()
+        parseable_hotkeys: set[str] = set()
 
         def consensus_rows(
             accepted_bundles: list[tuple[str, str]],
@@ -79,6 +80,7 @@ class AssessmentRoundProgram:
             for hotkey, bundle_json in accepted_bundles:
                 try:
                     bundles[hotkey] = self.bundle_model.model_validate_json(bundle_json)
+                    parseable_hotkeys.add(hotkey)
                 except ValidationError as error:
                     # An accepted bundle that no longer parses (a schema tightened
                     # under a later key, or a corrupted row) must not keep the
@@ -91,7 +93,7 @@ class AssessmentRoundProgram:
                     )
             return compute_assessment_consensus(bundles, blends) if bundles else []
 
-        bundles, rows = (
+        _, rows = (
             self.storage.publish_assessment_consensus_from_accepted_bundles_and_reveal(
                 round_id,
                 self.schema_id,
@@ -103,7 +105,7 @@ class AssessmentRoundProgram:
             bt.logging.info(
                 f"assessment consensus published for round {round_id}: {len(rows)} rows"
             )
-        return bool(bundles)
+        return bool(parseable_hotkeys)
 
     def resolve_due(
         self,

@@ -16,6 +16,7 @@ from endure.assessment.schemas.subnet_alpha_risk import (
 from endure.assessment.universe import UniverseSnapshot
 from endure.protocol.round_engine import RoundWindows
 from endure.protocol.schedulers import SyntheticScheduler
+from endure.protocol.validator_service import ValidatorRoundService
 from endure.protocol.vertical import (
     AssessmentRoundProgram,
     RoundProgram,
@@ -162,13 +163,7 @@ def _record_accepted(storage, round_id: str, hotkey: str, bundle_json: str) -> N
     )
 
 
-def test_publish_consensus_skips_an_accepted_bundle_that_no_longer_parses(
-    storage,
-) -> None:
-    # Given: an open round holding one parseable accepted bundle and one that
-    # was accepted under an earlier contract but no longer satisfies the model.
-    round_id = "2026-08-12"
-    anchor = datetime(2026, 8, 12, 20, 0, tzinfo=UTC)
+def _open_risk_round(storage, round_id: str, anchor: datetime) -> None:
     windows = RoundWindows(
         round_id=round_id,
         commit_open=anchor,
@@ -183,11 +178,10 @@ def test_publish_consensus_skips_an_accepted_bundle_that_no_longer_parses(
         universe=UniverseSnapshot(round_id=round_id, tickers=(), source_hash="u"),
         now_iso=anchor.isoformat(),
     )
-    _record_accepted(storage, round_id, "miner", _risk_bundle_json(round_id))
-    _record_accepted(
-        storage, round_id, "stale", '{"schema_id": "risk.v1.subnet_alpha"}'
-    )
-    program = AssessmentRoundProgram(
+
+
+def _assessment_program(storage) -> AssessmentRoundProgram:
+    return AssessmentRoundProgram(
         storage=storage,
         schema_id=RISK_SCHEMA_ID,
         bundle_model=RiskSubmissionBundle,
@@ -196,11 +190,91 @@ def test_publish_consensus_skips_an_accepted_bundle_that_no_longer_parses(
         due_seconds_by_horizon={},
     )
 
+
+def test_publish_consensus_skips_an_accepted_bundle_that_no_longer_parses(
+    storage,
+) -> None:
+    # Given: an open round holding one parseable accepted bundle and one that
+    # was accepted under an earlier contract but no longer satisfies the model.
+    round_id = "2026-08-12"
+    anchor = datetime(2026, 8, 12, 20, 0, tzinfo=UTC)
+    _open_risk_round(storage, round_id, anchor)
+    _record_accepted(storage, round_id, "miner", _risk_bundle_json(round_id))
+    _record_accepted(
+        storage, round_id, "stale", '{"schema_id": "risk.v1.subnet_alpha"}'
+    )
+    program = _assessment_program(storage)
+
     # When: consensus is published for the round.
     published = program.publish_consensus(round_id, anchor + timedelta(hours=2))
 
     # Then: the round reveals on the parseable bundle instead of wedging open.
     assert published is True
+    assert storage.round_state(round_id, RISK_SCHEMA_ID) == "revealed"
     rows = storage.assessment_consensus_for(round_id, RISK_SCHEMA_ID)
     assert rows
     assert {row.n_submitters for row in rows} == {1}
+
+
+def test_publish_consensus_reports_no_usable_submissions_when_all_bundles_fail(
+    storage,
+) -> None:
+    # Given: an open round whose only accepted bundle no longer satisfies the
+    # active model.
+    round_id = "2026-08-12"
+    anchor = datetime(2026, 8, 12, 20, 0, tzinfo=UTC)
+    _open_risk_round(storage, round_id, anchor)
+    _record_accepted(
+        storage, round_id, "stale", '{"schema_id": "risk.v1.subnet_alpha"}'
+    )
+
+    # When: consensus publication contains the invalid row and reveals the
+    # round for liveness.
+    published = _assessment_program(storage).publish_consensus(
+        round_id, anchor + timedelta(hours=2)
+    )
+
+    # Then: it reports no usable submissions so validator health can count the
+    # empty round instead of falsely resetting its degradation signal.
+    assert published is False
+    assert storage.round_state(round_id, RISK_SCHEMA_ID) == "revealed"
+    assert storage.assessment_consensus_for(round_id, RISK_SCHEMA_ID) == []
+
+
+def test_all_invalid_rounds_accumulate_validator_empty_round_health(storage) -> None:
+    # Given: a validator program and two rounds containing only accepted
+    # bundles that no longer satisfy the active model.
+    anchor = datetime(2026, 8, 12, 20, 0, tzinfo=UTC)
+    program = _assessment_program(storage)
+    service = ValidatorRoundService(
+        storage=storage,
+        scheduler=SyntheticScheduler(
+            sessions=(anchor.date(),), epoch=anchor, period_seconds=60
+        ),
+        universe_provider=_EmptyUniverseProvider(),
+        schema_id=RISK_SCHEMA_ID,
+        horizons=(1,),
+        now_fn=lambda: anchor,
+        round_program=program,
+    )
+
+    for offset in range(2):
+        round_anchor = anchor + timedelta(days=offset)
+        round_id = round_anchor.date().isoformat()
+        _open_risk_round(storage, round_id, round_anchor)
+        _record_accepted(
+            storage,
+            round_id,
+            f"stale-{offset}",
+            '{"schema_id": "risk.v1.subnet_alpha"}',
+        )
+
+        # When: the real service publishes each invalid-only round.
+        service._publish_consensus_and_reveal(
+            round_id, round_anchor + timedelta(hours=2)
+        )
+
+    # Then: both rounds are live-complete but count toward the /health
+    # degradation threshold instead of being misreported as populated.
+    assert service.consecutive_empty_scored_rounds == 2
+    assert service.last_empty_scored_round == "2026-08-13"
