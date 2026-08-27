@@ -1,4 +1,4 @@
-"""Shared consensus-critical scoring defaults (spec §8)."""
+"""Shared consensus-critical Alpha Risk scoring defaults."""
 
 from typing import Final
 

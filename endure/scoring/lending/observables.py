@@ -1,4 +1,4 @@
-"""Realized-optimal observables for lending outputs (Forge MVP v2 spec §8.1.2)."""
+"""Realized-optimal observables for dormant Forge lending outputs."""
 
 from __future__ import annotations
 

@@ -200,9 +200,9 @@ def _positive_int(value: str) -> int:
 
 
 def _unit_interval_decimal(value: str) -> Decimal:
-    # EMA alpha is a score-affecting weight (spec §8): parse as Decimal (not
-    # float, per the Decimal policy) and reject anything outside [0, 1], since
-    # alpha > 1 inverts the moving average and NaN/negative corrupts scores.
+    # EMA alpha affects scoring: parse it as Decimal (not float, per the
+    # Decimal policy) and reject anything outside [0, 1], since alpha > 1
+    # inverts the moving average and NaN/negative corrupts scores.
     try:
         parsed = Decimal(value)
     except (InvalidOperation, ValueError) as exc:

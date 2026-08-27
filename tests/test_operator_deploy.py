@@ -213,7 +213,7 @@ def test_soak_probe_requires_readiness_and_exact_release_identity() -> None:
     assert "vars.SOAK_EXPECTED_SHA" in workflow
     assert '.status == "ok"' in workflow
     assert '.schema_id == "risk.v1.subnet_alpha"' in workflow
-    assert ".protocol_version_key == 28" in workflow
+    assert ".protocol_version_key == 29" in workflow
     assert ".source_revision == $sha" in workflow
 
 

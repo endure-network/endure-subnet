@@ -27,7 +27,7 @@ curl --fail https://api.testnet.endure.network/risk/v1/subnets \
 ```
 
 `/health` must report `status: ok`, schema `risk.v1.subnet_alpha`, protocol key
-`28`, and an explicit release source revision. `/schemas` reports horizons in
+`29`, and an explicit release source revision. `/schemas` reports horizons in
 seconds. Alpha Risk uses `432000` (5 days) and `2592000` (30 days).
 
 ## Verify one feed

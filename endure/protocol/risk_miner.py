@@ -1,8 +1,8 @@
-"""Reference Alpha Risk miner baseline (risk scope spec §Reference test miner).
+"""Reference Alpha Risk miner baseline.
 
 Builds the deterministic R2 baseline submission for observed whitelist members.
-R3 market-data code will satisfy the narrow latest-observation provider; missing
-observations are skipped and therefore receive the standard coverage penalty.
+The runtime supplies the narrow latest-observation provider; missing observations
+are skipped and therefore receive the standard coverage penalty.
 """
 
 from __future__ import annotations
@@ -25,8 +25,8 @@ from endure.protocol.bundles import AssembledSubmission, assemble_bundle
 
 BASELINE_REASON_CODE = "baseline_persistence"
 
-# risk scope §Reference test miner: bps outputs are constants; price/depth use
-# latest observed pool values until R3 estimators produce modeled predictions.
+# The deliberately simple public baseline uses constant bps outputs and the
+# latest observed pool values for price and depth. It is not a modeled miner.
 BASELINE_BPS_VALUES = {
     (RiskOutput.MAX_DRAWDOWN, HORIZON_5D_SECONDS): 1500,
     (RiskOutput.MAX_DRAWDOWN, HORIZON_30D_SECONDS): 3000,
