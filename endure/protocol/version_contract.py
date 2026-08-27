@@ -10,7 +10,7 @@ so constants cannot drift outside the contract again.
 from pathlib import Path
 
 ACTIVATED_VERSION_REGISTRY_DIGEST = (
-    "4cbc00edfed2ba0a0ca29ead132b7ce9c528ae88256937dacf0a096671ee7001"
+    "1c8ce3a3f1104689f0e540bfad3d9dd1449c8d425d60f615aa3ce2de4acc42f0"
 )
 ACTIVATED_VERSION_HISTORY_DIGEST = (
     "c529e9225d197b2e6cfcd4711390992d882c4903e7f0f355d81c62a992315821"
@@ -90,9 +90,11 @@ PREVIOUS_VERSION_DIGEST = (
 # the next-commit-close publication embargo. Validators and miners must deploy
 # this scoring and publication contract in lockstep.
 # 29: the RC1 public-cleanup cutover removes stale source citations and an
-# obsolete reference-miner roadmap promise. Runtime, wire, scoring, aggregation,
-# and publication behavior are unchanged, but the watched source tree changes,
-# so validators and miners still cut over in lockstep under a new key.
+# obsolete reference-miner roadmap promise, and consensus publication now skips
+# an accepted bundle that no longer parses (the policy scoring already applied)
+# instead of leaving the round open forever. Wire formats, scoring math, and
+# aggregation of parseable bundles are unchanged; validators and miners still
+# cut over in lockstep under the new key.
 #
 # 20: Alpha Risk calendar-independent daily rounds
 # (docs/specs/2026-07-18-alpha-risk-24x7-rounds.md). The served Alpha schema
@@ -109,5 +111,5 @@ PREVIOUS_VERSION_DIGEST = (
 # resolved values become identical across independent validators.
 CURRENT_VERSION_KEY = 29
 CURRENT_VERSION_DIGEST = (
-    "2df2e60e663bc480d0fe66b8187c23c15f03baf5c9e0a7d8889df91a9ee47dbb"
+    "d3b9126c2bad0045e497e6f5f7362309c004d340f927cc91638d4df84344379b"
 )

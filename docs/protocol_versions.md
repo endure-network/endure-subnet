@@ -85,14 +85,17 @@ each terminated by one LF byte, produces
 `fa41045b844d60c22340a5ed0fd8118cc53c83031490eea755c2cdb05c9ccd71`.
 
 Key `29` is leased exclusively to the final `v0.1.0-rc.1` candidate. It removes
-stale source citations and an obsolete reference-miner roadmap promise without
-changing runtime semantics. Its watched-tree digest is
-`2df2e60e663bc480d0fe66b8187c23c15f03baf5c9e0a7d8889df91a9ee47dbb`.
+stale source citations and an obsolete reference-miner roadmap promise, and
+consensus publication now skips an accepted bundle that no longer parses — the
+policy scoring already applied — instead of leaving the round open. Wire
+formats, scoring math, and the aggregation of parseable bundles are unchanged.
+Its watched-tree digest is
+`d3b9126c2bad0045e497e6f5f7362309c004d340f927cc91638d4df84344379b`.
 Its public lease authority receipt is SHA-256 over the UTF-8 lines
 `LEASE_AUTHORITY`,
 `PREVIOUS_RECEIPT=fa41045b844d60c22340a5ed0fd8118cc53c83031490eea755c2cdb05c9ccd71`,
 `CURRENT_VERSION_KEY=29`, and
-`CURRENT_VERSION_DIGEST=2df2e60e663bc480d0fe66b8187c23c15f03baf5c9e0a7d8889df91a9ee47dbb`,
+`CURRENT_VERSION_DIGEST=d3b9126c2bad0045e497e6f5f7362309c004d340f927cc91638d4df84344379b`,
 each terminated by one LF byte. The resulting receipt is
-`af16319c994c85a5faf7072b7fa14584507be2a47ee4b0d81fb67b0497ebb6af`.
+`c4aa1b087b26039b30524093943467ae5074939aaf35c43c87fcb79ffc66ae13`.
 No private ledger value is involved in either lease authority receipt.
