@@ -12,6 +12,15 @@ scope beyond Alpha Risk V1, open an issue and discuss it first.
 
 ## Set Up
 
+Prerequisites:
+
+- A Python 3.12 executable (macOS: `brew install python@3.12` or
+  `uv python install 3.12`; Debian: `apt install python3.12 python3.12-venv`).
+  If it is not on `PATH` as `python3.12`, pass
+  `make bootstrap BOOTSTRAP_PYTHON=/path/to/python3.12`.
+- Node.js 22 or newer (`make verify` runs `npx jscpd`).
+- Docker, only for the localnet container fast path.
+
 ```bash
 make bootstrap     # pinned tooling in the local cache
 make dev-install   # uv sync --locked --extra dev
@@ -31,7 +40,8 @@ Optional local hooks:
 
 - `develop` is the integration branch. Branch from it with a focused
   `feat/...`, `fix/...`, `chore/...`, or `docs/...` branch, and open your PR
-  against `develop`.
+  against `develop`. Maintainers squash-merge those focused pull requests into
+  `develop`.
 - `staging` is the auto-deploy branch; `main` is the stable checkpoint.
   Promotions (`develop` → `staging` → `main`) use merge commits and are never
   squashed, rebased, or fast-forwarded.

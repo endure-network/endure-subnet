@@ -430,4 +430,8 @@ def test_protocol_version_command_defaults_to_staging_lineage(
 
     assert exit_code == 1
     assert seen == ["origin/staging"]
-    assert "lineage sentinel" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert "lineage sentinel" in output
+    assert "git fetch https://github.com/endure-network/endure-subnet.git" in output
+    assert "staging:refs/remotes/upstream/staging" in output
+    assert "ENDURE_ACTIVATION_LINEAGE_REF=upstream/staging" in output

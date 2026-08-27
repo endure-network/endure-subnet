@@ -4,9 +4,9 @@ repos:
     hooks:
       - id: ruff
         args: [--fix]
-        files: ^(endure/|neurons/|scripts/|tests/)
+        files: ^(endure/|neurons/|scripts/|tests/|verify/)
       - id: ruff-format
-        files: ^(endure/|neurons/|scripts/|tests/)
+        files: ^(endure/|neurons/|scripts/|tests/|verify/)
 
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v4.6.0

@@ -10,11 +10,12 @@ generic query.
 
 ## Before you start
 
-1. Clone the public repository, use Python 3.12, and create the environment
-   with uv `0.11.32` (`uv venv --python 3.12 .venv`). The signed
-   `v0.1.0-rc.1` tag is created only after live candidate acceptance.
-2. Install development dependencies with `make dev-install`; this runs
-   `uv sync --locked --extra dev` against the checked-in lockfile. Then run
+1. Clone the public repository and, with a Python 3.12 executable available,
+   run `make bootstrap` to install the pinned uv `0.11.32` and Gitleaks. The
+   signed `v0.1.0-rc.1` tag is created only after live candidate acceptance.
+2. Install the locked environment with `make dev-install` (`uv sync --locked
+   --extra dev`; operators who need no test tooling can use `make install`
+   instead). Then run
    `make verify`. Do not substitute `pip install` for the locked Endure install.
 3. Create and fund a **testnet-only** wallet, register its hotkey, and retain
    the wallet locally. Do not put mnemonic words, coldkeys, hotkey files, seeds,

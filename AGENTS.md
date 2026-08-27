@@ -61,6 +61,7 @@ In this subnet:
 ## Boundaries
 Always:
 - Run `make verify` before pushing; open focused PRs against `develop`.
+- Squash-merge feature, fix, chore, and documentation PRs into `develop`.
 - Promote with merge-commit PRs from `develop` → `staging` (auto-deploy) →
   `main` (stable checkpoint); never squash, rebase, or fast-forward a promotion.
 - Decimal for risk/economic values; type hints on public functions (pyright clean).
@@ -73,9 +74,9 @@ Never:
 - Put Endure product logic in the `endure/base/*` adapter.
 - `float` for risk/economic values; `# type: ignore` / `Any` / `cast()` to hide
   mismatches; placeholders without `raise NotImplementedError("spec §X.Y — …")`.
-- Import from the archived predecessor source tree — port or clean-room rewrite.
+- Copy code from earlier Endure prototypes — port or clean-room rewrite.
 - Commit `.env`, wallets, mnemonics, coldkey/hotkey JSON, or keys.
-- Mainnet-deploy before the testnet soak gate passes (design §12, M6); Alpha
+- Mainnet-deploy before the testnet soak gate passes; Alpha
   Risk serving is code-gated against mainnet until that post-soak change lands.
 
 ## Gotchas

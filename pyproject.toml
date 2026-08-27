@@ -53,8 +53,8 @@ dev = [
 
 [project.urls]
 Homepage = "https://endure.network/"
-Repository = "https://github.com/Endure-Network/endure-subnet"
-Documentation = "https://github.com/Endure-Network/endure-subnet/blob/main/docs/README.md"
+Repository = "https://github.com/endure-network/endure-subnet"
+Documentation = "https://github.com/endure-network/endure-subnet/blob/main/docs/README.md"
 
 [tool.setuptools.packages.find]
 where = ["."]

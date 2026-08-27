@@ -131,7 +131,7 @@ def require_serving_stage_allowed(
 
     raise DevOnlyConfigError(
         "risk.v1.subnet_alpha serving is blocked until the R7 soak gate passes "
-        "(AGENTS.md / risk scope §R7); mainnet serving requires a code change "
+        "(risk scope §R7); mainnet serving requires a code change "
         f"after soak approval. Configured endpoint {endpoint!r} is refused"
     )
 

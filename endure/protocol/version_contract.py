@@ -1,5 +1,4 @@
-"""Protocol version contract for cross-validator semantics (spec §6;
-bump rules inherited from the superseded spec v2 §20.1).
+"""Protocol version contract for cross-validator semantics (spec §6).
 
 Anything consensus-critical — scoring constants, validation rules, wire
 formats — must live inside WATCHED_PATHS so changing it trips the digest

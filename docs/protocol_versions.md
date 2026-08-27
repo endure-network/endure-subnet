@@ -67,7 +67,8 @@ Its public root commit has a synthetic identity rather than the private staging
 promotion identity, so the lineage guard exempts only that root receipt while
 still requiring its key and digest exactly.
 
-Key `28` is leased exclusively to `release/v0.1.0-rc.1`. It carries the bounded
+Key `28` is leased exclusively to the `v0.1.0-rc.1` release-candidate lineage
+that became `staging`. It carries the bounded
 live-sampling fix, missing-timestamp settlement, round-aware miner eligibility,
 and the next-commit-close publication embargo. Its watched-tree digest is
 `05da1df37dc67de435d0954d9b102be45922c6956822643ff1dcc7a892176e26`.
