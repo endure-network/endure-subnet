@@ -61,6 +61,7 @@ In this subnet:
 ## Boundaries
 Always:
 - Run `make verify` before pushing; open focused PRs against `develop`.
+- Squash-merge feature, fix, chore, and documentation PRs into `develop`.
 - Promote with merge-commit PRs from `develop` → `staging` (auto-deploy) →
   `main` (stable checkpoint); never squash, rebase, or fast-forward a promotion.
 - Decimal for risk/economic values; type hints on public functions (pyright clean).

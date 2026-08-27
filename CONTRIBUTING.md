@@ -2,6 +2,9 @@
 
 Endure accepts focused changes against `develop`. Install the locked
 development environment and run the full gate before opening a pull request.
+Maintainers squash-merge feature, fix, chore, and documentation pull requests
+into `develop`; promotions from `develop` to `staging` and from `staging` to
+`main` use merge commits.
 
 Prerequisites:
 

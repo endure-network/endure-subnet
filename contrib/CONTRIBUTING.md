@@ -40,7 +40,8 @@ Optional local hooks:
 
 - `develop` is the integration branch. Branch from it with a focused
   `feat/...`, `fix/...`, `chore/...`, or `docs/...` branch, and open your PR
-  against `develop`.
+  against `develop`. Maintainers squash-merge those focused pull requests into
+  `develop`.
 - `staging` is the auto-deploy branch; `main` is the stable checkpoint.
   Promotions (`develop` → `staging` → `main`) use merge commits and are never
   squashed, rebased, or fast-forwarded.

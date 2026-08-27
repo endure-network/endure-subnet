@@ -433,4 +433,5 @@ def test_protocol_version_command_defaults_to_staging_lineage(
     output = capsys.readouterr().out
     assert "lineage sentinel" in output
     assert "git fetch https://github.com/endure-network/endure-subnet.git" in output
-    assert "ENDURE_ACTIVATION_LINEAGE_REF=<ref>" in output
+    assert "staging:refs/remotes/upstream/staging" in output
+    assert "ENDURE_ACTIVATION_LINEAGE_REF=upstream/staging" in output

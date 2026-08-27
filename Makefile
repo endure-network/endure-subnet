@@ -53,9 +53,8 @@ install: ensure-uv ## Install package as editable (runtime deps only)
 dev-install: ensure-uv ## Install package with dev extras (tests, lint, types)
 	$(UV) sync --locked --extra dev
 
-seeder-install: ## Install the hash-locked btcli toolchain for scripts/dev/seed_chain.sh into .venv-seeder
-	$(PYTHON) -m venv .venv-seeder
-	.venv-seeder/bin/python -m pip install --upgrade pip
+seeder-install: ensure-bootstrap-python ## Install the hash-locked btcli toolchain for scripts/dev/seed_chain.sh into .venv-seeder
+	$(BOOTSTRAP_PYTHON) -m venv --clear .venv-seeder
 	.venv-seeder/bin/python -m pip install --no-cache-dir \
 		--require-hashes -r scripts/dev/seeder-requirements.txt
 	.venv-seeder/bin/btcli --version
@@ -159,16 +158,16 @@ dev-miner: ## Run miner in mock mode (kill with Ctrl+C)
 		wait "$$child"
 
 devnet-cycle: ## Run Alpha Risk R5 compressed full cycle against an already-running local subtensor
-	$(PYTHON) scripts/run_devnet_cycle.py --netuid $${NETUID:?set NETUID from scripts/dev/seed_chain.sh} --network $${NETWORK:-ws://127.0.0.1:9946} $(if $(WALLET_PATH),--wallet-path $(WALLET_PATH))
+	$(PYTHON) scripts/run_devnet_cycle.py --netuid $${NETUID:?set NETUID from scripts/dev/seed_chain.sh} --network $${NETWORK:-ws://127.0.0.1:9946} $(if $(WALLET_PATH),--wallet-path "$(WALLET_PATH)")
 
 devnet-fault-miner: ## Restart the Alpha miner after its commit and require full recovery
-	$(PYTHON) scripts/run_devnet_cycle.py --netuid $${NETUID:?set NETUID from scripts/dev/seed_chain.sh} --network $${NETWORK:-ws://127.0.0.1:9946} $(if $(WALLET_PATH),--wallet-path $(WALLET_PATH)) --fault miner-restart-after-commit --round-seconds 240 --timeout-seconds 720
+	$(PYTHON) scripts/run_devnet_cycle.py --netuid $${NETUID:?set NETUID from scripts/dev/seed_chain.sh} --network $${NETWORK:-ws://127.0.0.1:9946} $(if $(WALLET_PATH),--wallet-path "$(WALLET_PATH)") --fault miner-restart-after-commit --round-seconds 240 --timeout-seconds 720
 
 devnet-fault-validator: ## Restart the Alpha validator after accepting a commit and require full recovery
-	$(PYTHON) scripts/run_devnet_cycle.py --netuid $${NETUID:?set NETUID from scripts/dev/seed_chain.sh} --network $${NETWORK:-ws://127.0.0.1:9946} $(if $(WALLET_PATH),--wallet-path $(WALLET_PATH)) --fault validator-restart-after-commit --round-seconds 240 --timeout-seconds 720
+	$(PYTHON) scripts/run_devnet_cycle.py --netuid $${NETUID:?set NETUID from scripts/dev/seed_chain.sh} --network $${NETWORK:-ws://127.0.0.1:9946} $(if $(WALLET_PATH),--wallet-path "$(WALLET_PATH)") --fault validator-restart-after-commit --round-seconds 240 --timeout-seconds 720
 
 devnet-fault-miner-state-loss: ## Wipe the miner's state after its commit and require the lost round to be surfaced
-	$(PYTHON) scripts/run_devnet_cycle.py --netuid $${NETUID:?set NETUID from scripts/dev/seed_chain.sh} --network $${NETWORK:-ws://127.0.0.1:9946} $(if $(WALLET_PATH),--wallet-path $(WALLET_PATH)) --fault miner-state-loss-after-commit --round-seconds 240 --timeout-seconds 720
+	$(PYTHON) scripts/run_devnet_cycle.py --netuid $${NETUID:?set NETUID from scripts/dev/seed_chain.sh} --network $${NETWORK:-ws://127.0.0.1:9946} $(if $(WALLET_PATH),--wallet-path "$(WALLET_PATH)") --fault miner-state-loss-after-commit --round-seconds 240 --timeout-seconds 720
 
 devnet-faults: devnet-fault-miner devnet-fault-validator devnet-fault-miner-state-loss ## Run every commit/reveal fault scenario
 

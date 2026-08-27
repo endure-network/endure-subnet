@@ -11,6 +11,7 @@ git clone https://github.com/endure-network/endure-subnet.git
 cd endure-subnet
 make bootstrap
 make dev-install
+make seeder-install  # installs the hash-locked btcli used below
 make verify
 ```
 
@@ -20,8 +21,8 @@ local user cache, which every Endure locked target verifies before its command.
 Do not replace `make bootstrap` or `make dev-install` with `pip install`.
 
 Use only funded **testnet** wallets. Create/register the validator and miner
-hotkeys with your installed `btcli`; registration, stake, permits, fees, and
-the testnet endpoint are chain-controlled and must be checked at execution.
+hotkeys with the pinned `.venv-seeder/bin/btcli`; registration, stake, permits,
+fees, and the testnet endpoint are chain-controlled and must be checked at execution.
 Keep coldkeys and mnemonics off servers. Provision only the required testnet
 hotkey plus `coldkeypub.txt` through the documented operator path, and never
 copy wallet material into an issue or log.
@@ -30,9 +31,9 @@ Endure's current Bittensor testnet netuid is `504`. Substitute wallet names and
 hotkeys, then check the prompted fee and chain state before confirming:
 
 ```bash
-btcli subnets register --netuid 504 --wallet-name <wallet-name> \
+.venv-seeder/bin/btcli subnets register --netuid 504 --wallet-name <wallet-name> \
   --hotkey <validator-hotkey> --network test
-btcli stake add --netuid 504 --amount <tao> --wallet-name <wallet-name> \
+.venv-seeder/bin/btcli stake add --netuid 504 --amount <tao> --wallet-name <wallet-name> \
   --hotkey <validator-hotkey> --network test
 ```
 
