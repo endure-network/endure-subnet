@@ -249,8 +249,8 @@
     }
   ],
   "current_lease": {
-    "authority_sha256": "af16319c994c85a5faf7072b7fa14584507be2a47ee4b0d81fb67b0497ebb6af",
-    "digest": "2df2e60e663bc480d0fe66b8187c23c15f03baf5c9e0a7d8889df91a9ee47dbb",
+    "authority_sha256": "d3d1f3295eb33720f6825b504d760be94a4dc370d033965ca51bf62a0879cf80",
+    "digest": "2a3054efe774950d35f951100dd4e9912de8091cf8371814d516e75f99c562c9",
     "holder": "release/v0.1.0-rc.1",
     "key": 29
   },
