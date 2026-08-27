@@ -173,6 +173,14 @@ def test_release_identity_check_refuses_an_abbreviated_revision() -> None:
     assert "full 40-hex commit" in result.stderr
 
 
+def test_release_identity_check_refuses_partial_dev_metadata() -> None:
+    for revision in ("abcdef1", "ab" * 20):
+        result = _release_identity_check({"ENDURE_SOURCE_REVISION": revision})
+
+        assert result.returncode == 1
+        assert "requires the matching ENDURE_IMAGE_VERSION" in result.stderr
+
+
 def test_release_identity_check_refuses_a_mismatched_version() -> None:
     sha = "ab" * 20
     result = _release_identity_check(
@@ -181,6 +189,20 @@ def test_release_identity_check_refuses_a_mismatched_version() -> None:
 
     assert result.returncode == 1
     assert f"must be sha-{sha}" in result.stderr
+
+
+def test_coolify_soak_compose_passes_exact_identity_as_build_args() -> None:
+    expected = {
+        "ENDURE_SOURCE_REVISION": "${ENDURE_SOURCE_REVISION:-unknown}",
+        "ENDURE_IMAGE_VERSION": "${ENDURE_IMAGE_VERSION:-dev}",
+    }
+    for relative_path, service in (
+        ("deploy/soak/docker-compose.yaml", "validator"),
+        ("deploy/soak-miners/docker-compose.yaml", "miner-1"),
+    ):
+        compose = yaml.safe_load((ROOT / relative_path).read_text())
+
+        assert compose["services"][service]["build"]["args"] == expected
 
 
 def test_soak_probe_requires_readiness_and_exact_release_identity() -> None:

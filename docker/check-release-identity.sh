@@ -10,6 +10,10 @@ version="${ENDURE_IMAGE_VERSION:-dev}"
 revision="${ENDURE_SOURCE_REVISION:-unknown}"
 
 if [ "$version" = "dev" ]; then
+  if [ "$revision" != "unknown" ]; then
+    echo "release build refused: ENDURE_SOURCE_REVISION requires the matching ENDURE_IMAGE_VERSION=sha-<commit>; omit both arguments for a dev build" >&2
+    exit 1
+  fi
   exit 0
 fi
 

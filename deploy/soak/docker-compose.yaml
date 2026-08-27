@@ -65,7 +65,12 @@ services:
 
   validator:
     <<: *ops
-    build: { context: ../.., dockerfile: docker/validator.Dockerfile }
+    build:
+      context: ../..
+      dockerfile: docker/validator.Dockerfile
+      args:
+        ENDURE_SOURCE_REVISION: ${ENDURE_SOURCE_REVISION:-unknown}
+        ENDURE_IMAGE_VERSION: ${ENDURE_IMAGE_VERSION:-dev}
     image: endure-validator:soak
     environment:
       PYTHONUNBUFFERED: "1"
