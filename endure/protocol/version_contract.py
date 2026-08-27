@@ -10,10 +10,10 @@ so constants cannot drift outside the contract again.
 from pathlib import Path
 
 ACTIVATED_VERSION_REGISTRY_DIGEST = (
-    "6ce6bcbc4a7dd52d66de42351bdb1a3c48393b368a041aead334dd2541899c32"
+    "4cbc00edfed2ba0a0ca29ead132b7ce9c528ae88256937dacf0a096671ee7001"
 )
 ACTIVATED_VERSION_HISTORY_DIGEST = (
-    "5ca4cd4f9c0ea99d100db12a9b35b4ceb7477355b93345affdc4d4e34c5da75d"
+    "c529e9225d197b2e6cfcd4711390992d882c4903e7f0f355d81c62a992315821"
 )
 
 WATCHED_PATHS = (
@@ -27,9 +27,9 @@ WATCHED_PATHS = (
 # Previous accepted protocol snapshot. When watched paths change, promote the
 # current values into the previous fields, then write the new digest and bump
 # the current version key.
-PREVIOUS_VERSION_KEY = 27
+PREVIOUS_VERSION_KEY = 28
 PREVIOUS_VERSION_DIGEST = (
-    "d0884ffa6bf8d98807d20ab9ee8a7a0c2821bb08d0cc6376fb87a6db605cf0fb"
+    "05da1df37dc67de435d0954d9b102be45922c6956822643ff1dcc7a892176e26"
 )
 
 # Production serving status and CURRENT_VERSION_KEY stay unchanged until R6.
@@ -89,6 +89,10 @@ PREVIOUS_VERSION_DIGEST = (
 # later joiners from receiving retroactive absence observations, and persists
 # the next-commit-close publication embargo. Validators and miners must deploy
 # this scoring and publication contract in lockstep.
+# 29: the RC1 public-cleanup cutover removes stale source citations and an
+# obsolete reference-miner roadmap promise. Runtime, wire, scoring, aggregation,
+# and publication behavior are unchanged, but the watched source tree changes,
+# so validators and miners still cut over in lockstep under a new key.
 #
 # 20: Alpha Risk calendar-independent daily rounds
 # (docs/specs/2026-07-18-alpha-risk-24x7-rounds.md). The served Alpha schema
@@ -103,7 +107,7 @@ PREVIOUS_VERSION_DIGEST = (
 # defers horizon resolution (24h grace before voiding) instead of permanently
 # voiding it. Wire formats, scoring math, and tier thresholds are unchanged;
 # resolved values become identical across independent validators.
-CURRENT_VERSION_KEY = 28
+CURRENT_VERSION_KEY = 29
 CURRENT_VERSION_DIGEST = (
-    "05da1df37dc67de435d0954d9b102be45922c6956822643ff1dcc7a892176e26"
+    "2df2e60e663bc480d0fe66b8187c23c15f03baf5c9e0a7d8889df91a9ee47dbb"
 )

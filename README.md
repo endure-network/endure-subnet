@@ -3,7 +3,7 @@
 > **Experimental testnet alpha — `v0.1.0-rc.1` candidate.** Endure is not
 > production software, is not economically ready, and must not be used for
 > mainnet operation. Alpha Risk serving is code-gated to testnet pending the soak gate.
-> The current protocol key is `28` ([contract](endure/protocol/version_contract.py));
+> The current protocol key is `29` ([contract](endure/protocol/version_contract.py));
 > activated and retired leases are tracked in the [version registry](docs/protocol_versions.md).
 
 Endure is a Bittensor risk-intelligence subnet: miners submit falsifiable
