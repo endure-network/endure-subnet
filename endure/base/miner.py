@@ -102,9 +102,11 @@ class BaseMinerNeuron(BaseNeuron):
         try:
             # Check registration and advertise the configured axon.
             self.sync()
+            # Name the endpoint the axon is actually served through: in mock
+            # mode that is the in-process chain, not the configured default.
             bt.logging.info(
                 f"Serving miner axon on network "
-                f"{safe_endpoint_label(self.config.subtensor.chain_endpoint)} "
+                f"{safe_endpoint_label(self.subtensor.chain_endpoint)} "
                 f"with netuid {self.config.netuid}"
             )
             self.axon.serve(netuid=self.config.netuid, subtensor=self.subtensor)
@@ -197,3 +199,4 @@ class BaseMinerNeuron(BaseNeuron):
 
         # Sync the metagraph.
         self.metagraph.sync(subtensor=self.subtensor)
+        self.refresh_uid()

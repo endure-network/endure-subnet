@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, date, datetime
+from pathlib import Path
 
 import pytest
 from sqlalchemy import event, insert, select, update
@@ -11,7 +12,7 @@ from endure.assessment.coordinates import AssessmentConsensusRow
 from endure.assessment.registry import UniverseSnapshot
 from endure.assessment.schemas.subnet_alpha_risk import RISK_SCHEMA_ID
 from endure.protocol.round_engine import DEFAULT_OFFSETS, compute_windows
-from endure.storage.repository import Storage
+from endure.storage.repository import Storage, ensure_sqlite_parent_dir
 from endure.storage.tables import (
     assessment_consensus,
     consensus_bundle_snapshots,
@@ -579,3 +580,32 @@ class TestCoordinateRowMapping:
 
         with pytest.raises(TypeError, match="n_submitters must be integer"):
             storage.assessment_consensus_for(round_id, RISK_SCHEMA_ID)
+
+
+class TestSqliteParentDirectory:
+    def test_from_url_creates_missing_cwd_relative_parent(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        assert not (tmp_path / "var").exists()
+
+        Storage.from_url("sqlite:///var/endure.db")
+
+        assert (tmp_path / "var").is_dir()
+
+    def test_from_url_creates_missing_absolute_parent(self, tmp_path: Path) -> None:
+        target = tmp_path / "nested" / "deeper" / "endure.db"
+
+        Storage.from_url(f"sqlite:///{target}")
+
+        assert target.parent.is_dir()
+
+    @pytest.mark.parametrize("url", ("sqlite://", "sqlite:///:memory:"))
+    def test_memory_urls_touch_no_directory(
+        self, url: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+
+        ensure_sqlite_parent_dir(url)
+
+        assert list(tmp_path.iterdir()) == []

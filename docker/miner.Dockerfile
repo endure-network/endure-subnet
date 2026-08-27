@@ -17,6 +17,11 @@ LABEL org.opencontainers.image.revision=$ENDURE_SOURCE_REVISION \
 
 WORKDIR /app
 
+# Refuse a release build the runtime identity check would reject, before any
+# dependency work happens.
+COPY docker/check-release-identity.sh ./check-release-identity.sh
+RUN sh check-release-identity.sh && rm check-release-identity.sh
+
 COPY pyproject.toml uv.lock README.md docker/build-requirements.txt docker/uv-bootstrap-requirements.txt ./
 
 RUN python -m venv /opt/uv \

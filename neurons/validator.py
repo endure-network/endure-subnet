@@ -34,6 +34,7 @@ from endure.assessment.schemas.subnet_alpha_risk import (
     RISK_SCHEMA_ID,
 )
 from endure.assessment.subnet_alpha_universe import StaticAlphaRiskUniverseProvider
+from endure.base.shutdown import install_shutdown_handlers
 from endure.base.validator import (
     WEIGHT_EMISSION_FINALITY_MARGIN_BLOCKS,
     WEIGHT_EMISSION_PERIOD_BLOCKS,
@@ -68,12 +69,14 @@ from endure.storage.repository import (
     WeightEmissionChainSnapshot,
     WeightEmissionRow,
     WeightRevealEvidence,
+    ensure_sqlite_parent_dir,
 )
 from endure.utils.config import (
     DevOnlyConfigError,
     active_runtime_schema_id,
     permits_dev_only_runtime,
     require_compression_runtime_allowed,
+    require_explicit_netuid,
     require_serving_stage_allowed,
 )
 from endure.utils.logging import safe_endpoint_label, safe_error
@@ -121,6 +124,7 @@ def _run_migrations(database_url: str) -> None:
         "script_location", str(repo_root / "endure/storage/migrations")
     )
     config.set_main_option("sqlalchemy.url", database_url)
+    ensure_sqlite_parent_dir(database_url)
     alembic_command.upgrade(config, "head")
 
 
@@ -130,6 +134,7 @@ class Validator(BaseValidatorNeuron):
     def __init__(self, config: bt.Config | None = None) -> None:
         resolved_config = config or type(self).build_config()
         require_serving_stage_allowed(resolved_config)
+        require_explicit_netuid(resolved_config)
         if (
             active_runtime_schema_id(resolved_config) == RISK_SCHEMA_ID
             and int(resolved_config.neuron.num_concurrent_forwards) != 1
@@ -182,16 +187,16 @@ class Validator(BaseValidatorNeuron):
         self._api_thread: threading.Thread | None = None
         self._attach_handlers()
         self._start_api()
-        # D1=B: the code default stays 0; the soak/coolify config sets the floor.
-        # Warn loudly when a live network runs with no stake gate — any
+        # D1=B: the code default stays 0; the operator's deployment sets the
+        # floor. Warn loudly when a live network runs with no stake gate — any
         # registered hotkey can then impose commit/reveal load.
         if str(self.config.runtime.mode) != "mock" and (
             self.config.endure.min_miner_stake <= 0
         ):
             bt.logging.warning(
                 "endure.min_miner_stake is 0 on a live network — any registered "
-                "hotkey can impose commit/reveal load; set a non-zero stake "
-                "floor in the soak/coolify config"
+                "hotkey can impose commit/reveal load; pass "
+                "--endure.min_miner_stake with a positive TAO floor"
             )
 
     def runtime_health(self) -> RuntimeHealth:
@@ -982,14 +987,16 @@ def main() -> None:
             f"image_version={identity['image_version']} "
             f"protocol_version_key={CURRENT_VERSION_KEY}"
         )
+        stop = install_shutdown_handlers()
         validator = Validator()
         with validator:
-            while True:
+            while not stop.is_set():
                 if (reason := validator.watchdog_exit_reason()) is not None:
                     bt.logging.error(f"validator watchdog exiting: {reason}")
                     raise SystemExit(1)
                 bt.logging.info(f"Validator running... {time.time()}")
-                time.sleep(5)
+                stop.wait(5)
+        bt.logging.info("validator stopped on shutdown signal")
     except DevOnlyConfigError as error:
         bt.logging.error(f"validator refused to start: {safe_error(error)}")
         raise SystemExit(1) from None

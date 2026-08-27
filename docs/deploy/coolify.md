@@ -46,6 +46,13 @@ Optional settings are `CHAIN` (default `test`), `MARKET_DATA_ENDPOINT`,
 URL must be stored as a Coolify secret and must use a host accepted by the
 runtime serving-stage guard.
 
+The compose files pass `ENDURE_SOURCE_REVISION` and `ENDURE_IMAGE_VERSION`
+through as Docker build arguments. Configure both as Coolify build-time
+variables, not runtime-only variables: use the full 40-hex source commit and
+`sha-<that commit>` respectively. Omitting both produces a local `dev` image;
+supplying only one fails the image build, and the soak health probe rejects a
+dev image.
+
 ### Testnet wallet exception
 
 `WALLETS_TAR_B64` is a deliberate exception for this team-operated testnet

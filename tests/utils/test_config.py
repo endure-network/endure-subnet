@@ -35,6 +35,7 @@ from endure.utils.config import (
     permits_dev_only_runtime,
     require_compression_runtime_allowed,
     require_dev_only_runtime,
+    require_explicit_netuid,
     require_serving_stage_allowed,
 )
 
@@ -654,3 +655,43 @@ class TestNumericArgGuards:
         dests = {a.dest for a in parser._actions}
         assert "neuron.sample_size" not in dests
         assert "neuron.timeout" not in dests
+
+
+class TestRequireExplicitNetuid:
+    @staticmethod
+    def _parsed(args: list[str]) -> bt.Config:
+        parser = argparse.ArgumentParser()
+        bt.Wallet.add_args(parser)
+        bt.Subtensor.add_args(parser)
+        bt.logging.add_args(parser)
+        bt.Axon.add_args(parser)
+        add_args(None, parser)
+        add_validator_args(None, parser)
+        return bt.Config(parser, args=args)
+
+    _LIVE = ["--runtime.mode", "live", "--subtensor.network", "finney"]
+
+    def test_mock_runtime_accepts_the_default(self) -> None:
+        require_explicit_netuid(self._parsed(["--runtime.mode", "mock"]))
+
+    def test_local_chain_accepts_the_default(self) -> None:
+        # Keyed as --subtensor.network: bittensor's resolution drops
+        # --subtensor.chain_endpoint (see _TESTNET_HOSTS in the module).
+        cfg = self._parsed(
+            ["--runtime.mode", "live", "--subtensor.network", "ws://127.0.0.1:9944"]
+        )
+        require_explicit_netuid(cfg)
+
+    @pytest.mark.parametrize("form", (["--netuid", "1"], ["--netuid=1"]))
+    def test_live_network_accepts_an_explicit_netuid(self, form: list[str]) -> None:
+        require_explicit_netuid(self._parsed([*form, *self._LIVE]))
+
+    def test_live_network_refuses_the_default(self) -> None:
+        with pytest.raises(RuntimeError, match="pass --netuid explicitly"):
+            require_explicit_netuid(self._parsed(self._LIVE))
+
+    def test_explicitness_survives_merge_into_a_freshly_built_config(self) -> None:
+        # BaseNeuron builds its own config and merges the supplied one in.
+        built = self._parsed([])
+        built.merge(self._parsed(["--netuid", "1", *self._LIVE]))
+        require_explicit_netuid(built)

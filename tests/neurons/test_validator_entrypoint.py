@@ -1,5 +1,7 @@
+import argparse
 import asyncio
 import logging
+import threading
 from collections.abc import Iterator
 from contextlib import ExitStack, contextmanager
 from decimal import Decimal
@@ -165,6 +167,40 @@ def test_validator_refuses_served_risk_schema_on_finney(
         Validator(config=production_validator_config)
 
 
+def test_validator_refuses_defaulted_netuid_on_live_network(tmp_path: Path) -> None:
+    from endure.utils.config import add_args, add_validator_args
+    from neurons.validator import Validator
+
+    parser = argparse.ArgumentParser()
+    bt.Wallet.add_args(parser)
+    bt.Subtensor.add_args(parser)
+    bt.logging.add_args(parser)
+    bt.Axon.add_args(parser)
+    add_args(None, parser)
+    add_validator_args(None, parser)
+    # Testnet with its serving acknowledgement passes every other gate, so
+    # the defaulted netuid is the only thing left to refuse.
+    config = bt.Config(
+        parser,
+        args=[
+            "--runtime.mode",
+            "live",
+            "--subtensor.network",
+            "test",
+            "--endure.serving_stage",
+            "testnet",
+            "--neuron.dont_save_events",
+        ],
+    )
+    config.logging.logging_dir = str(tmp_path)
+
+    with (
+        _patched_chain(),
+        pytest.raises(RuntimeError, match="pass --netuid explicitly"),
+    ):
+        Validator(config=config)
+
+
 def test_validator_serving_gate_prevents_axon_creation_on_finney(
     production_validator_config: bt.Config,
 ) -> None:
@@ -209,6 +245,19 @@ def test_validator_bootstraps_in_mock_mode_dev_path(
     assert trap_external_ip["count"] == 0
     assert "Failed to serve Axon" not in caplog.text
     assert "Subnet mechanism" not in caplog.text
+
+
+def test_migrations_create_missing_sqlite_parent_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from neurons.validator import _run_migrations
+
+    monkeypatch.chdir(tmp_path)
+    assert not (tmp_path / "var").exists()
+
+    _run_migrations("sqlite:///var/endure.db")
+
+    assert (tmp_path / "var" / "endure.db").is_file()
 
 
 def test_migrations_preserve_bittensor_logger(tmp_path: Path) -> None:
@@ -440,6 +489,26 @@ def test_runtime_health_reports_unstarted_background_thread_as_not_alive(
     assert validator.runtime_health()["validator_loop_alive"] is False
 
 
+def test_main_stops_cleanly_when_the_shutdown_event_is_set() -> None:
+    from neurons.validator import main
+
+    validator = MagicMock()
+    validator.watchdog_exit_reason.return_value = None
+    context = MagicMock()
+    context.__enter__.return_value = validator
+    stop = threading.Event()
+    stop.set()
+
+    with (
+        patch("neurons.validator.install_shutdown_handlers", return_value=stop),
+        patch("neurons.validator.Validator", return_value=context),
+    ):
+        main()
+
+    context.__exit__.assert_called_once()
+    validator.watchdog_exit_reason.assert_not_called()
+
+
 def test_main_exits_nonzero_and_cleans_up_on_watchdog_failure() -> None:
     from neurons.validator import main
 
@@ -449,6 +518,10 @@ def test_main_exits_nonzero_and_cleans_up_on_watchdog_failure() -> None:
     context.__enter__.return_value = validator
 
     with (
+        patch(
+            "neurons.validator.install_shutdown_handlers",
+            return_value=threading.Event(),
+        ),
         patch("neurons.validator.Validator", return_value=context),
         pytest.raises(SystemExit) as exit_info,
     ):
@@ -467,6 +540,10 @@ def test_main_redacts_runtime_endpoint_credentials() -> None:
     error_log = MagicMock()
 
     with (
+        patch(
+            "neurons.validator.install_shutdown_handlers",
+            return_value=threading.Event(),
+        ),
         patch("neurons.validator.Validator", side_effect=RuntimeError(credential_url)),
         patch("neurons.validator.bt.logging.error", error_log),
         pytest.raises(SystemExit) as exit_info,

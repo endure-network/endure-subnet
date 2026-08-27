@@ -67,7 +67,12 @@ services:
 
   miner-1:
     <<: *miner
-    build: { context: ../.., dockerfile: docker/miner.Dockerfile }
+    build:
+      context: ../..
+      dockerfile: docker/miner.Dockerfile
+      args:
+        ENDURE_SOURCE_REVISION: ${ENDURE_SOURCE_REVISION:-unknown}
+        ENDURE_IMAGE_VERSION: ${ENDURE_IMAGE_VERSION:-dev}
     image: endure-miner:soak
     depends_on:
       wallet-init:

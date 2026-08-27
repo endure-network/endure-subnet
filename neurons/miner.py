@@ -21,6 +21,7 @@ from endure.assessment.schemas.forge_lending import FORGE_LENDING_SCHEMA_ID
 from endure.assessment.schemas.subnet_alpha_risk import RISK_SCHEMA_ID
 from endure.assessment.subnet_alpha_universe import ALPHA_RISK_WHITELISTED_NETUIDS
 from endure.base.miner import BaseMinerNeuron
+from endure.base.shutdown import install_shutdown_handlers
 from endure.live.alpha_market_data import (
     LiveAlphaPriceProvider,
     LiveAlphaPriceProviderConfig,
@@ -41,6 +42,7 @@ from endure.utils.config import (
     active_runtime_schema_id,
     permits_dev_only_runtime,
     require_compression_runtime_allowed,
+    require_explicit_netuid,
     require_serving_stage_allowed,
 )
 from endure.utils.logging import safe_error
@@ -94,6 +96,7 @@ class Miner(BaseMinerNeuron):
         if not permits_dev_only_runtime(resolved_config):
             resolved_config.blacklist.force_validator_permit = True
             resolved_config.blacklist.allow_non_registered = False
+        require_explicit_netuid(resolved_config)
         super().__init__(
             config=resolved_config,
             runtime_provider=resolve_runtime_provider(resolved_config),
@@ -317,13 +320,15 @@ def main() -> None:
             f"image_version={identity['image_version']} "
             f"protocol_version_key={CURRENT_VERSION_KEY}"
         )
+        stop = install_shutdown_handlers()
         with Miner() as miner:
-            while True:
+            while not stop.is_set():
                 if miner.thread is None or not miner.thread.is_alive():
                     bt.logging.error("miner watchdog exiting: miner loop thread exited")
                     raise SystemExit(1)
                 bt.logging.info(f"Miner running... {time.time()}")
-                time.sleep(5)
+                stop.wait(5)
+        bt.logging.info("miner stopped on shutdown signal")
     except Exception as error:  # noqa: BLE001 - CLI boundary must redact SDK errors.
         bt.logging.error(f"miner failed: {type(error).__name__}: {safe_error(error)}")
         raise SystemExit(1) from None

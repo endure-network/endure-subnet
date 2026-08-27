@@ -800,6 +800,7 @@ class BaseValidatorNeuron(BaseNeuron):
 
         # Sync the metagraph.
         self.metagraph.sync(subtensor=self.subtensor)
+        self.refresh_uid()
         self._on_metagraph_synced()
 
         # Check if the metagraph axon info has changed.

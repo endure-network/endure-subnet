@@ -9,6 +9,7 @@ Note: `from __future__ import annotations` is deliberately NOT used
 introspection reason).
 """
 
+import dataclasses
 import logging
 from collections.abc import Callable
 from decimal import Decimal
@@ -398,6 +399,47 @@ class TestResyncMetagraph:
         # Original values preserved in the overlap region, zeros past.
         assert validator.scores[:3] == [Decimal("1"), Decimal("2"), Decimal("3")]
         assert all(score == Decimal("0") for score in validator.scores[3:])
+
+    def test_uid_follows_hotkey_when_it_moves_across_resync(
+        self, validator: _ConcreteValidator, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        own_hotkey = validator.wallet.hotkey.ss58_address
+        # Sliding a stranger in front shifts our hotkey to a new uid; a real
+        # resync would surface this after a deregister/re-register cycle.
+        # metagraph.hotkeys is derived from the axon list, so shift the axons.
+        stranger = dataclasses.replace(
+            validator.metagraph.axons[0], hotkey="stranger-hotkey"
+        )
+        shifted_axons = [stranger, *validator.metagraph.axons]
+        original_uid = validator.uid
+
+        def fake_sync(*, subtensor: object = None, **kwargs: object) -> None:
+            del subtensor, kwargs
+            validator.metagraph.axons = shifted_axons
+
+        monkeypatch.setattr(validator.metagraph, "sync", fake_sync)
+        validator.resync_metagraph()
+
+        assert validator.uid == validator.metagraph.hotkeys.index(own_hotkey)
+        assert validator.uid == original_uid + 1
+
+    def test_uid_unchanged_when_hotkey_leaves_metagraph(
+        self, validator: _ConcreteValidator, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        original_uid = validator.uid
+
+        stranger = dataclasses.replace(
+            validator.metagraph.axons[0], hotkey="stranger-hotkey"
+        )
+
+        def fake_sync(*, subtensor: object = None, **kwargs: object) -> None:
+            del subtensor, kwargs
+            validator.metagraph.axons = [stranger]
+
+        monkeypatch.setattr(validator.metagraph, "sync", fake_sync)
+        validator.resync_metagraph()
+
+        assert validator.uid == original_uid
 
 
 class TestContextManagerExitSafe:
