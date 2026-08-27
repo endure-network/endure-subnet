@@ -12,7 +12,8 @@ Prerequisites:
   `uv python install 3.12`; Debian: `apt install python3.12 python3.12-venv`).
   If it is not on `PATH` as `python3.12`, pass
   `make bootstrap BOOTSTRAP_PYTHON=/path/to/python3.12`.
-- Node.js 22 or newer (`make verify` runs `npx jscpd`).
+- Node.js 22 or newer (`make verify` installs the integrity-locked jscpd toolchain
+  with `npm ci --ignore-scripts`).
 - Docker, only for the localnet container fast path.
 
 ```bash

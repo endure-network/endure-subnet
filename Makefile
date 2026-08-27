@@ -22,8 +22,11 @@ export ENDURE_UV := $(UV)
 BOOTSTRAP_PYTHON ?= python3.12
 UV_BOOTSTRAP_REQUIREMENTS := docker/uv-bootstrap-requirements.txt
 PYTEST := $(PYTHON) -m pytest
+NPM ?= npm
+JSCPD_VERSION := 5.0.16
+JSCPD := $(ROOT)/node_modules/.bin/jscpd
 
-.PHONY: help ensure-bootstrap-python bootstrap seeder-install install dev-install lint format typecheck test test-ci migrations guardrails check-duplication verify verify-ci clean dev dev-miner devnet-cycle devnet-fault-miner devnet-fault-validator devnet-fault-miner-state-loss devnet-faults ensure-uv ensure-gitleaks ensure-verify-deps regen-stubs
+.PHONY: help ensure-bootstrap-python bootstrap seeder-install install dev-install lint format typecheck test test-ci migrations guardrails ensure-node-tools check-duplication verify verify-ci clean dev dev-miner devnet-cycle devnet-fault-miner devnet-fault-validator devnet-fault-miner-state-loss devnet-faults ensure-uv ensure-gitleaks ensure-verify-deps regen-stubs
 
 help:
 	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "  %-22s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -135,8 +138,12 @@ guardrails: ensure-gitleaks ## Run Endure-specific repository and domain guardra
 	$(PYTHON) -m scripts.quality_gates.public_release_scan --git-tree
 	$(PYTHON) -m scripts.quality_gates.gitleaks scan
 
-check-duplication: ## Run jscpd + pylint R0801 duplicate-code checks
-	npx --yes jscpd --config .jscpd.json endure
+ensure-node-tools:
+	$(NPM) ci --ignore-scripts --no-audit --no-fund
+	@test "$$($(JSCPD) --version)" = "cpd $(JSCPD_VERSION)"
+
+check-duplication: ensure-node-tools ## Run jscpd + pylint R0801 duplicate-code checks
+	$(JSCPD) --config .jscpd.json endure
 	PYLINTHOME=/tmp/endure-pylint $(PYTHON) -m pylint \
 		--disable=all --enable=R0801 --min-similarity-lines=10 \
 		endure/

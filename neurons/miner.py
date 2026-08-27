@@ -21,7 +21,7 @@ from endure.assessment.schemas.forge_lending import FORGE_LENDING_SCHEMA_ID
 from endure.assessment.schemas.subnet_alpha_risk import RISK_SCHEMA_ID
 from endure.assessment.subnet_alpha_universe import ALPHA_RISK_WHITELISTED_NETUIDS
 from endure.base.miner import BaseMinerNeuron
-from endure.base.shutdown import install_shutdown_handlers
+from endure.base.shutdown import install_shutdown_handlers, join_thread_or_raise
 from endure.live.alpha_market_data import (
     LiveAlphaPriceProvider,
     LiveAlphaPriceProviderConfig,
@@ -244,7 +244,7 @@ class Miner(BaseMinerNeuron):
                     loop.run_until_complete(self._round_service.tick())
                 except Exception as error:  # noqa: BLE001 — keep pushing
                     bt.logging.error(f"miner push tick failed: {safe_error(error)}")
-                time.sleep(int(self.config.endure.tick_seconds))
+                self._shutdown_event.wait(int(self.config.endure.tick_seconds))
         finally:
             loop.close()
 
@@ -255,10 +255,23 @@ class Miner(BaseMinerNeuron):
             self._push_thread.start()
 
     def stop_run_thread(self):
-        super().stop_run_thread()
-        if self._push_thread is not None:
-            self._push_thread.join(5)
-            self._push_thread = None
+        self.should_exit = True
+        self._shutdown_event.set()
+        failures: list[Exception] = []
+        try:
+            super().stop_run_thread()
+        except Exception as error:  # noqa: BLE001 - every worker still gets joined.
+            failures.append(error)
+        push_thread = self._push_thread
+        if push_thread is not None:
+            try:
+                join_thread_or_raise(push_thread, name="miner push loop")
+            except RuntimeError as error:
+                failures.append(error)
+            else:
+                self._push_thread = None
+        if failures:
+            raise RuntimeError("miner shutdown incomplete") from failures[0]
 
     async def forward(self, synapse: bt.Synapse) -> bt.Synapse:
         """Submission-driven subnet: the miner axon serves no queries."""

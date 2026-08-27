@@ -35,6 +35,7 @@ from bittensor.core.types import ExtrinsicResponse
 
 from endure.base.neuron import BaseNeuron
 from endure.base.rate_gate import GatedSubtensor, RateLimited
+from endure.base.shutdown import join_thread_or_raise
 from endure.base.utils.weight_utils import (
     coerce_decimal,
     convert_weights_and_uids_for_emit,
@@ -195,6 +196,7 @@ class BaseValidatorNeuron(BaseNeuron):
         self.should_exit: bool = False
         self.is_running: bool = False
         self.thread: Union[threading.Thread, None] = None
+        self._shutdown_event = threading.Event()
         self.lock = asyncio.Lock()
 
     def _align_state_with_current_metagraph(self) -> None:
@@ -355,6 +357,7 @@ class BaseValidatorNeuron(BaseNeuron):
         if not self.is_running:
             bt.logging.debug("Starting validator in background thread.")
             self.should_exit = False
+            self._shutdown_event.clear()
             self.thread = threading.Thread(target=self.run, daemon=True)
             self.thread.start()
             self.is_running = True
@@ -365,19 +368,49 @@ class BaseValidatorNeuron(BaseNeuron):
         if self.is_running:
             bt.logging.debug("Stopping validator in background thread.")
             self.should_exit = True
+            self._shutdown_event.set()
+            transport_error: Exception | None = None
+            axon = getattr(self, "axon", None)
+            if axon is not None:
+                try:
+                    axon.stop()
+                except Exception as error:  # noqa: BLE001 - join before surfacing.
+                    transport_error = error
             if self.thread is None:
                 raise RuntimeError("is_running True but thread unset")
-            self.thread.join(5)
+            join_thread_or_raise(self.thread, name="validator loop")
+            self.thread = None
             self.is_running = False
+            if transport_error is not None:
+                raise RuntimeError("validator axon failed to stop") from transport_error
             bt.logging.debug("Stopped")
 
     def __enter__(self):
         self.run_in_background_thread()
         return self
 
+    def close_transport_resources(self) -> None:
+        """Close non-serving network clients after every worker has stopped."""
+        failures: list[Exception] = []
+        close_dendrite = getattr(self.dendrite, "close_session", None)
+        if callable(close_dendrite):
+            try:
+                close_dendrite()
+            except Exception as error:  # noqa: BLE001 - close every resource.
+                failures.append(error)
+        try:
+            self.gated_subtensor.close()
+        except Exception as error:  # noqa: BLE001 - close every resource.
+            failures.append(error)
+        if failures:
+            raise RuntimeError("validator transport cleanup incomplete") from failures[
+                0
+            ]
+
     def __exit__(self, exc_type, exc_value, traceback):
         """Stop the background loop when leaving the context."""
         self.stop_run_thread()
+        self.close_transport_resources()
 
     def _normalized_weights(self) -> list[Decimal]:
         """Clamp negative scores to zero, then normalize to sum 1.

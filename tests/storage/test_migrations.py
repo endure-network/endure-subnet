@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import stat
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -99,6 +100,7 @@ def test_alembic_upgrade_head_runs_against_temp_sqlite_db(tmp_path: Path) -> Non
     command.upgrade(config, "head")
 
     assert database_path.exists()
+    assert stat.S_IMODE(database_path.stat().st_mode) == 0o600
 
 
 def test_alembic_upgrade_head_creates_missing_sqlite_parent_dir(
@@ -118,6 +120,8 @@ def test_alembic_upgrade_head_creates_missing_sqlite_parent_dir(
     command.upgrade(config, "head")
 
     assert (tmp_path / "var" / "endure.db").exists()
+    assert stat.S_IMODE((tmp_path / "var").stat().st_mode) == 0o700
+    assert stat.S_IMODE((tmp_path / "var" / "endure.db").stat().st_mode) == 0o600
 
 
 def test_alembic_downgrade_base_then_upgrade_head_round_trips(

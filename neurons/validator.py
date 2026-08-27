@@ -34,7 +34,7 @@ from endure.assessment.schemas.subnet_alpha_risk import (
     RISK_SCHEMA_ID,
 )
 from endure.assessment.subnet_alpha_universe import StaticAlphaRiskUniverseProvider
-from endure.base.shutdown import install_shutdown_handlers
+from endure.base.shutdown import install_shutdown_handlers, join_thread_or_raise
 from endure.base.validator import (
     WEIGHT_EMISSION_FINALITY_MARGIN_BLOCKS,
     WEIGHT_EMISSION_PERIOD_BLOCKS,
@@ -377,12 +377,39 @@ class Validator(BaseValidatorNeuron):
     def stop_run_thread(self) -> None:
         """Signal the read-API server to exit alongside the round loop, so a
         shutdown doesn't leave the uvicorn thread bound to the port."""
+        self.should_exit = True
+        self._shutdown_event.set()
         if self._api_server is not None:
             self._api_server.should_exit = True
-        if self._api_thread is not None:
-            self._api_thread.join(5)
-            self._api_thread = None
-        super().stop_run_thread()
+        failures: list[Exception] = []
+        try:
+            super().stop_run_thread()
+        except Exception as error:  # noqa: BLE001 - every worker still gets joined.
+            failures.append(error)
+        api_thread = self._api_thread
+        if api_thread is not None:
+            try:
+                join_thread_or_raise(api_thread, name="validator read API")
+            except RuntimeError as error:
+                failures.append(error)
+            else:
+                self._api_thread = None
+                self._api_server = None
+        if failures:
+            raise RuntimeError("validator shutdown incomplete") from failures[0]
+
+    def close_transport_resources(self) -> None:
+        failures: list[Exception] = []
+        try:
+            self._storage.close()
+        except Exception as error:  # noqa: BLE001 - close every resource.
+            failures.append(error)
+        try:
+            super().close_transport_resources()
+        except Exception as error:  # noqa: BLE001 - preserve every cleanup failure.
+            failures.append(error)
+        if failures:
+            raise RuntimeError("validator resource cleanup incomplete") from failures[0]
 
     def _build_service(self) -> ValidatorRoundService:
         if self._schema_id == RISK_SCHEMA_ID:
@@ -878,7 +905,10 @@ class Validator(BaseValidatorNeuron):
             # Throttle every tick — success and failure alike — to the configured
             # cadence. tick() is wall-clock gated, so spinning faster resolves no
             # rounds sooner and just burns CPU/disk (each step re-saves state).
-            await asyncio.sleep(int(self.config.endure.tick_seconds))
+            await asyncio.to_thread(
+                self._shutdown_event.wait,
+                int(self.config.endure.tick_seconds),
+            )
 
 
 def _recorded_fixture_block(_reveal_close: datetime) -> int:

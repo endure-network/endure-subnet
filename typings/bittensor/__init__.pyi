@@ -7,8 +7,8 @@ needed. Primary purpose: catch pre-v10 lowercase-API drift
 
 from typing import Any
 
-from .utils.btlogging import logging as logging
 from . import mock as mock
+from .utils.btlogging import logging as logging
 
 class Wallet:
     hotkey: Any
@@ -72,6 +72,8 @@ class Dendrite:
     # __call__ delegates to aquery: broadcast a synapse to a list of axons.
     async def __call__(self, *args: Any, **kwargs: Any) -> Any: ...
     async def forward(self, *args: Any, **kwargs: Any) -> Any: ...
+    def close_session(self, using_new_loop: bool = ...) -> None: ...
+    async def aclose_session(self) -> None: ...
     def preprocess_synapse_for_request(
         self, *args: Any, **kwargs: Any
     ) -> "Synapse": ...

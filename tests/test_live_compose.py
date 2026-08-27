@@ -48,6 +48,28 @@ def test_validator_container_liveness_does_not_use_degraded_readiness() -> None:
         assert "http://localhost:8714/health" not in compose
 
 
+def test_every_runtime_compose_allows_bounded_graceful_shutdown() -> None:
+    root = Path(__file__).resolve().parents[1]
+    compose_files = (
+        root / "docker-compose.yml",
+        root / "deploy/operator-node/docker-compose.yaml",
+        root / "deploy/soak/docker-compose.yaml",
+        root / "deploy/soak-miners/docker-compose.yaml",
+    )
+
+    for compose_file in compose_files:
+        services = yaml.safe_load(compose_file.read_text())["services"]
+        runtime_services = [
+            service
+            for name, service in services.items()
+            if name == "validator" or name.startswith("miner-")
+        ]
+        assert runtime_services
+        assert all(
+            service["stop_grace_period"] == "45s" for service in runtime_services
+        )
+
+
 def test_every_miner_compose_service_has_axon_healthcheck() -> None:
     root = Path(__file__).resolve().parents[1]
     compose_files = (
@@ -93,3 +115,17 @@ def test_soak_compose_keeps_named_data_volume_and_host_backed_snapshots() -> Non
         "- type: bind\n        source: /var/lib/endure-soak/backups\n        target: /data/backups"
         in compose
     )
+
+
+def test_soak_read_api_is_reachable_only_through_the_proxy() -> None:
+    root = Path(__file__).resolve().parents[1]
+    soak = yaml.safe_load((root / "deploy/soak/docker-compose.yaml").read_text())
+    validator = soak["services"]["validator"]
+
+    assert validator["ports"] == ["8091:8091"]
+    assert validator["expose"] == ["8714"]
+
+    ci_override = yaml.safe_load(
+        (root / ".github/compose/soak-assembly.override.yaml").read_text()
+    )
+    assert ci_override["services"]["validator"]["ports"] == ["127.0.0.1:8714:8714"]

@@ -40,6 +40,19 @@ def test_onboarding_uses_the_pinned_seeder_without_unpinned_pip_upgrade() -> Non
     assert testnet.count(".venv-seeder/bin/btcli") >= 3
 
 
+def test_duplication_gate_uses_an_integrity_locked_node_toolchain() -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    makefile = (repo_root / "Makefile").read_text(encoding="utf-8")
+    package = (repo_root / "package.json").read_text(encoding="utf-8")
+    lock = (repo_root / "package-lock.json").read_text(encoding="utf-8")
+
+    assert "npx" not in makefile
+    assert "$(NPM) ci --ignore-scripts" in makefile
+    assert "JSCPD_VERSION := 5.0.16" in makefile
+    assert '"jscpd": "5.0.16"' in package
+    assert '"lockfileVersion": 3' in lock
+
+
 def test_devnet_wallet_path_is_quoted_in_every_make_target() -> None:
     repo_root = Path(__file__).resolve().parents[2]
     makefile = (repo_root / "Makefile").read_text(encoding="utf-8")

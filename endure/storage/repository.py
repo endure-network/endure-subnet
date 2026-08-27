@@ -15,7 +15,6 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
-from pathlib import Path
 
 from sqlalchemy import (
     and_,
@@ -47,6 +46,7 @@ from endure.protocol.weight_intent import (
     WeightIntentPayload,
     canonical_weight_intent_hash,
 )
+from endure.storage.sqlite_security import ensure_secure_sqlite_path
 from endure.storage.tables import (
     assessment_consensus,
     assessment_horizon_resolutions,
@@ -698,20 +698,14 @@ def _coordinate_from_mapping(row: RowMapping) -> AssessmentCoordinate:
 
 
 def ensure_sqlite_parent_dir(url: str) -> None:
-    """Create the directory holding a file-backed SQLite database.
+    """Prepare owner-only storage for a file-backed SQLite database.
 
     The default URL is CWD-relative (``sqlite:///var/endure.db``). SQLite
-    creates the file but never its directory, so a fresh checkout or container
-    without ``var/`` would fail at the first connection with an opaque
-    "unable to open database file". In-memory and non-SQLite URLs are left alone.
+    creates the file but never its directory and otherwise inherits the process
+    umask. Pre-creation protects embargoed bundle and nonce contents at rest.
+    In-memory, URI, and non-SQLite URLs are left alone.
     """
-    parsed = make_url(url)
-    database = parsed.database
-    if parsed.get_backend_name() != "sqlite" or not database:
-        return
-    if database == ":memory:" or database.startswith("file:"):
-        return
-    Path(database).expanduser().parent.mkdir(parents=True, exist_ok=True)
+    ensure_secure_sqlite_path(url)
 
 
 def _apply_sqlite_pragmas(engine: Engine) -> None:
@@ -733,6 +727,10 @@ def _apply_sqlite_pragmas(engine: Engine) -> None:
 class Storage:
     def __init__(self, engine: Engine) -> None:
         self._engine = engine
+
+    def close(self) -> None:
+        """Release pooled SQLite connections after validator workers stop."""
+        self._engine.dispose()
 
     @classmethod
     def from_url(cls, url: str) -> Storage:

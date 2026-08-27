@@ -205,6 +205,23 @@ def test_coolify_soak_compose_passes_exact_identity_as_build_args() -> None:
         assert compose["services"][service]["build"]["args"] == expected
 
 
+def test_coolify_wallet_initializers_use_the_pinned_runtime_base() -> None:
+    expected = (
+        "python:3.12-slim@sha256:"
+        "57cd7c3a7a273101a6485ba99423ee568157882804b1124b4dd04266317710de"
+    )
+    for relative_path in (
+        "deploy/soak/docker-compose.yaml",
+        "deploy/soak-miners/docker-compose.yaml",
+    ):
+        compose = yaml.safe_load((ROOT / relative_path).read_text())
+        wallet_init = compose["services"]["wallet-init"]
+
+        assert wallet_init["image"] == expected
+        assert "WALLETS_TAR_B64" in wallet_init["environment"]
+        assert "wallets:/wallets" in wallet_init["volumes"]
+
+
 def test_soak_probe_requires_readiness_and_exact_release_identity() -> None:
     workflow = (ROOT / ".github/workflows/soak-health-probe.yml").read_text()
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from decimal import Decimal
 from unittest.mock import MagicMock
 
@@ -19,6 +20,7 @@ def _wired_validator(service: MagicMock) -> Validator:
     validator._tick_failures = 0
     validator._last_tick_ok = None
     validator._last_tick_error = None
+    validator._shutdown_event = threading.Event()
     config = MagicMock()
     config.endure.tick_seconds = 0
     validator.config = config

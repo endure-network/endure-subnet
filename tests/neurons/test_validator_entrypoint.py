@@ -509,6 +509,46 @@ def test_main_stops_cleanly_when_the_shutdown_event_is_set() -> None:
     validator.watchdog_exit_reason.assert_not_called()
 
 
+def test_shutdown_timeout_keeps_api_thread_reference() -> None:
+    from neurons.validator import Validator
+
+    validator = Validator.__new__(Validator)
+    validator.should_exit = False
+    validator._shutdown_event = threading.Event()
+    validator.is_running = True
+    validator.axon = MagicMock()
+    base_thread = MagicMock(spec=threading.Thread)
+    base_thread.is_alive.return_value = False
+    validator.thread = base_thread
+    validator._api_server = MagicMock()
+    api_thread = MagicMock(spec=threading.Thread)
+    api_thread.is_alive.return_value = True
+    validator._api_thread = api_thread
+
+    with pytest.raises(RuntimeError, match="validator shutdown incomplete"):
+        validator.stop_run_thread()
+
+    assert validator._api_thread is api_thread
+    assert validator._shutdown_event.is_set()
+    assert validator._api_server.should_exit is True
+    api_thread.join.assert_called_once_with(30.0)
+
+
+def test_validator_resource_cleanup_closes_storage_and_transports() -> None:
+    from neurons.validator import Validator
+
+    validator = Validator.__new__(Validator)
+    validator._storage = MagicMock()
+    validator.dendrite = MagicMock()
+    validator.gated_subtensor = MagicMock()
+
+    validator.close_transport_resources()
+
+    validator._storage.close.assert_called_once_with()
+    validator.dendrite.close_session.assert_called_once_with()
+    validator.gated_subtensor.close.assert_called_once_with()
+
+
 def test_main_exits_nonzero_and_cleans_up_on_watchdog_failure() -> None:
     from neurons.validator import main
 
@@ -655,10 +695,9 @@ def test_validator_forward_throttles_to_avoid_busy_spin(
 
     recorded: list[float] = []
 
-    async def _spy_sleep(seconds: float) -> None:
-        recorded.append(seconds)
-
-    monkeypatch.setattr(asyncio, "sleep", _spy_sleep)
+    monkeypatch.setattr(
+        validator._shutdown_event, "wait", lambda seconds: recorded.append(seconds)
+    )
 
     asyncio.run(validator.forward())
 
@@ -690,10 +729,9 @@ def test_validator_forward_throttles_on_successful_tick(
 
     recorded: list[float] = []
 
-    async def _spy_sleep(seconds: float) -> None:
-        recorded.append(seconds)
-
-    monkeypatch.setattr(asyncio, "sleep", _spy_sleep)
+    monkeypatch.setattr(
+        validator._shutdown_event, "wait", lambda seconds: recorded.append(seconds)
+    )
 
     asyncio.run(validator.forward())
 

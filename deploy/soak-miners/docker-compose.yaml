@@ -20,6 +20,7 @@
 
 x-ops: &ops
   restart: unless-stopped
+  stop_grace_period: 45s
   init: true
   logging:
     driver: json-file
@@ -52,7 +53,7 @@ volumes:
 
 services:
   wallet-init:
-    image: python:3.12-slim
+    image: python:3.12-slim@sha256:57cd7c3a7a273101a6485ba99423ee568157882804b1124b4dd04266317710de
     restart: "no"
     environment:
       WALLETS_TAR_B64: ${WALLETS_TAR_B64:?provide base64 tar of hotkeys + coldkeypub}
