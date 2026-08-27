@@ -8,7 +8,11 @@ from collections.abc import Iterator
 
 import pytest
 
-from endure.base.shutdown import SHUTDOWN_SIGNALS, install_shutdown_handlers
+from endure.base.shutdown import (
+    SHUTDOWN_JOIN_TIMEOUT_SECONDS,
+    SHUTDOWN_SIGNALS,
+    install_shutdown_handlers,
+)
 
 
 @pytest.fixture
@@ -64,3 +68,7 @@ def test_stop_event_wakes_a_waiting_main_loop(restore_signal_handlers: None) -> 
         assert stop.wait(5) is True
     finally:
         timer.cancel()
+
+
+def test_worker_join_budget_exceeds_a_normal_dendrite_submission() -> None:
+    assert SHUTDOWN_JOIN_TIMEOUT_SECONDS > 12

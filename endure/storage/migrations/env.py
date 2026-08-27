@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 from logging.config import fileConfig
-from pathlib import Path
 
 from alembic import context
 from sqlalchemy import engine_from_config, event, pool
-from sqlalchemy.engine import make_url
 
 from endure.storage.migrations.metadata import metadata
+from endure.storage.sqlite_security import ensure_secure_sqlite_path
 
 config = context.config
 if config.config_file_name is not None:
@@ -19,15 +18,7 @@ target_metadata = metadata
 
 
 def _ensure_sqlite_parent_dir(url: str | None) -> None:
-    if url is None:
-        return
-    parsed = make_url(url)
-    if not parsed.get_backend_name().startswith("sqlite"):
-        return
-    database = parsed.database
-    if not database or database == ":memory:":
-        return
-    Path(database).parent.mkdir(parents=True, exist_ok=True)
+    ensure_secure_sqlite_path(url)
 
 
 def run_migrations_offline() -> None:

@@ -439,6 +439,58 @@ class TestEmbargo:
         assert response.status_code == 200
         assert response.json()["state"] == "open"
 
+    def test_round_meta_hides_accepted_participation_while_open(
+        self, storage: Storage, client: TestClient
+    ) -> None:
+        storage.record_reveal(
+            ROUND,
+            FORGE_LENDING_SCHEMA_ID,
+            "hk-a",
+            bundle_json='{"accepted":true}',
+            nonce_hex="01",
+            accepted=True,
+            rejection_code=None,
+            now_iso=NOW,
+        )
+
+        response = client.get(f"/rounds/{ROUND}")
+
+        assert response.status_code == 200
+        assert response.json()["accepted_submissions"] is None
+        assert client.get(f"/rounds/{ROUND}/submissions").status_code == 403
+
+    def test_round_meta_exposes_participation_only_after_strict_boundary(
+        self,
+        storage: Storage,
+        client: TestClient,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        storage.record_reveal(
+            ROUND,
+            FORGE_LENDING_SCHEMA_ID,
+            "hk-a",
+            bundle_json='{"accepted":true}',
+            nonce_hex="01",
+            accepted=True,
+            rejection_code=None,
+            now_iso=NOW,
+        )
+        storage.set_round_state(ROUND, FORGE_LENDING_SCHEMA_ID, "revealed", now_iso=NOW)
+        meta = storage.round_meta(ROUND, FORGE_LENDING_SCHEMA_ID)
+        assert meta is not None
+        publication_available_at = datetime.fromisoformat(
+            str(meta["publication_available_at"])
+        )
+
+        monkeypatch.setattr("endure.api.app._utc_now", lambda: publication_available_at)
+        assert client.get(f"/rounds/{ROUND}").json()["accepted_submissions"] is None
+
+        monkeypatch.setattr(
+            "endure.api.app._utc_now",
+            lambda: publication_available_at + timedelta(microseconds=1),
+        )
+        assert client.get(f"/rounds/{ROUND}").json()["accepted_submissions"] == 1
+
     def test_universe_is_served_while_round_is_open(self, client: TestClient) -> None:
         """Miners need the frozen universe DURING the commit window — the
         universe is round input, not submission data, so it is not

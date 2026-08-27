@@ -7,6 +7,21 @@ import threading
 from types import FrameType
 
 SHUTDOWN_SIGNALS: tuple[signal.Signals, ...] = (signal.SIGINT, signal.SIGTERM)
+# Dendrite submissions legitimately wait up to twelve seconds. Leave enough
+# room for one in-flight operation to settle before declaring teardown wedged.
+SHUTDOWN_JOIN_TIMEOUT_SECONDS = 30.0
+
+
+def join_thread_or_raise(
+    thread: threading.Thread,
+    *,
+    name: str,
+    timeout_seconds: float = SHUTDOWN_JOIN_TIMEOUT_SECONDS,
+) -> None:
+    """Join one worker and fail visibly rather than claiming a false stop."""
+    thread.join(timeout_seconds)
+    if thread.is_alive():
+        raise RuntimeError(f"{name} did not stop within {timeout_seconds:g} seconds")
 
 
 def install_shutdown_handlers() -> threading.Event:

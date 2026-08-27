@@ -22,3 +22,5 @@ services:
       - type: bind
         source: ${SCRATCH_ROOT:?set SCRATCH_ROOT}/backups
         target: /data/backups
+    ports:
+      - "127.0.0.1:8714:8714"

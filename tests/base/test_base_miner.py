@@ -9,6 +9,7 @@ annotation at runtime and calls issubclass() on it; PEP-563 lazy
 annotations turn that annotation into a string and break the check.
 """
 
+import threading
 from typing import Tuple
 from unittest.mock import MagicMock
 
@@ -141,6 +142,8 @@ class TestContextManagerWithoutRunning:
     def test_context_manager_starts_and_stops_background_thread(
         self, miner: _ConcreteMiner
     ) -> None:
+        miner.axon.stop = MagicMock()
+        miner.subtensor.close = MagicMock()
         with miner as entered:
             assert entered is miner
             assert miner.is_running is True
@@ -148,6 +151,45 @@ class TestContextManagerWithoutRunning:
 
         assert miner.should_exit is True
         assert miner.is_running is False
+        assert miner.thread is None
+        miner.axon.stop.assert_called_once_with()
+        miner.subtensor.close.assert_called_once_with()
+
+    def test_shutdown_wakes_and_joins_a_waiting_worker(
+        self, miner: _ConcreteMiner
+    ) -> None:
+        miner.axon.stop = MagicMock()
+        worker = threading.Thread(
+            target=miner._shutdown_event.wait,
+            args=(60,),
+            daemon=True,
+        )
+        miner.thread = worker
+        miner.is_running = True
+        worker.start()
+
+        miner.stop_run_thread()
+
+        assert not worker.is_alive()
+        assert miner.thread is None
+        assert miner.is_running is False
+        miner.axon.stop.assert_called_once_with()
+
+    def test_shutdown_timeout_keeps_worker_state_truthful(
+        self, miner: _ConcreteMiner
+    ) -> None:
+        miner.axon.stop = MagicMock()
+        worker = MagicMock(spec=threading.Thread)
+        worker.is_alive.return_value = True
+        miner.thread = worker
+        miner.is_running = True
+
+        with pytest.raises(RuntimeError, match="miner loop did not stop"):
+            miner.stop_run_thread()
+
+        assert miner.thread is worker
+        assert miner.is_running is True
+        miner.axon.stop.assert_called_once_with()
 
     def test_miner_set_weights_hook_is_an_explicit_noop(
         self, miner: _ConcreteMiner
@@ -281,7 +323,7 @@ class TestSyncFailureThrottle:
 
         sleeps: list[float] = []
         monkeypatch.setattr(
-            "endure.base.miner.time.sleep", lambda seconds: sleeps.append(seconds)
+            miner._shutdown_event, "wait", lambda seconds: sleeps.append(seconds)
         )
 
         calls = {"count": 0}

@@ -18,6 +18,9 @@ dependencies = [
     # whose scalecodec collides with cyscale.
     "bittensor>=10.5,<11",
     "async-substrate-interface>=2.0.4,<3",
+    # Bittensor transport dependency; keep the client-parser security floor
+    # explicit instead of allowing an older transitive lock resolution.
+    "aiohttp>=3.14.3,<4",
 
     # Data validation
     "pydantic>=2,<2.13",

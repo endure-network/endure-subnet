@@ -272,3 +272,39 @@ def test_main_stops_cleanly_when_the_shutdown_event_is_set() -> None:
 
     context.__exit__.assert_called_once()
     miner.thread.is_alive.assert_not_called()
+
+
+def test_shutdown_timeout_keeps_push_thread_reference() -> None:
+    from neurons.miner import Miner
+
+    miner = Miner.__new__(Miner)
+    miner.should_exit = False
+    miner._shutdown_event = threading.Event()
+    miner.is_running = True
+    miner.axon = MagicMock()
+    base_thread = MagicMock(spec=threading.Thread)
+    base_thread.is_alive.return_value = False
+    miner.thread = base_thread
+    push_thread = MagicMock(spec=threading.Thread)
+    push_thread.is_alive.return_value = True
+    miner._push_thread = push_thread
+
+    with pytest.raises(RuntimeError, match="miner shutdown incomplete"):
+        miner.stop_run_thread()
+
+    assert miner._push_thread is push_thread
+    assert miner._shutdown_event.is_set()
+    push_thread.join.assert_called_once_with(30.0)
+
+
+def test_miner_resource_cleanup_closes_dendrite_and_subtensor() -> None:
+    from neurons.miner import Miner
+
+    miner = Miner.__new__(Miner)
+    miner.dendrite = MagicMock()
+    miner.subtensor = MagicMock()
+
+    miner.close_transport_resources()
+
+    miner.dendrite.close_session.assert_called_once_with()
+    miner.subtensor.close.assert_called_once_with()

@@ -11,6 +11,7 @@ introspection reason).
 
 import dataclasses
 import logging
+import threading
 from collections.abc import Callable
 from decimal import Decimal
 from pathlib import Path
@@ -453,6 +454,9 @@ class TestContextManagerExitSafe:
     def test_context_manager_starts_and_stops_background_thread(
         self, validator: _ConcreteValidator
     ) -> None:
+        validator.axon = MagicMock()
+        validator.dendrite.close_session = MagicMock()
+        validator.gated_subtensor.close = MagicMock()
         with validator as entered:
             assert entered is validator
             assert validator.is_running is True
@@ -460,6 +464,46 @@ class TestContextManagerExitSafe:
 
         assert validator.should_exit is True
         assert validator.is_running is False
+        assert validator.thread is None
+        validator.axon.stop.assert_called_once_with()
+        validator.dendrite.close_session.assert_called_once_with()
+        validator.gated_subtensor.close.assert_called_once_with()
+
+    def test_shutdown_wakes_and_joins_a_waiting_worker(
+        self, validator: _ConcreteValidator
+    ) -> None:
+        validator.axon = MagicMock()
+        worker = threading.Thread(
+            target=validator._shutdown_event.wait,
+            args=(60,),
+            daemon=True,
+        )
+        validator.thread = worker
+        validator.is_running = True
+        worker.start()
+
+        validator.stop_run_thread()
+
+        assert not worker.is_alive()
+        assert validator.thread is None
+        assert validator.is_running is False
+        validator.axon.stop.assert_called_once_with()
+
+    def test_shutdown_timeout_keeps_worker_state_truthful(
+        self, validator: _ConcreteValidator
+    ) -> None:
+        validator.axon = MagicMock()
+        worker = MagicMock(spec=threading.Thread)
+        worker.is_alive.return_value = True
+        validator.thread = worker
+        validator.is_running = True
+
+        with pytest.raises(RuntimeError, match="validator loop did not stop"):
+            validator.stop_run_thread()
+
+        assert validator.thread is worker
+        assert validator.is_running is True
+        validator.axon.stop.assert_called_once_with()
 
 
 class TestRunLogging:

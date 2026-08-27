@@ -1,0 +1,11 @@
+{
+  "devDependencies": {
+    "jscpd": "5.0.16"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "name": "endure-quality-tools",
+  "private": true,
+  "version": "0.0.0"
+}

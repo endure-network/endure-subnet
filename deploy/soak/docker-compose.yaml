@@ -27,9 +27,9 @@
 # (mainnet archive for Alpha market data, default the public OpenTensor archive).
 #
 # Port 8091 is a raw host publish (the chain stores integer IPs; axons cannot
-# sit behind a proxy). 8714 is the read-only HTTP API — published raw for soak
-# verification; front it with a domain + TLS + rate limit at the proxy before
-# real consumers use it (docs/deploy/coolify.md).
+# sit behind a proxy). The read-only HTTP API stays on the private Compose
+# network at 8714 so every external request must traverse Coolify's TLS and
+# rate-limiting proxy (docs/deploy/coolify.md).
 #
 # Build the wallet payload on the operator machine (testnet wallet only):
 #   cd ~/.bittensor/wallets && \
@@ -37,6 +37,7 @@
 
 x-ops: &ops
   restart: unless-stopped
+  stop_grace_period: 45s
   init: true
   logging:
     driver: json-file
@@ -50,7 +51,7 @@ volumes:
 
 services:
   wallet-init:
-    image: python:3.12-slim
+    image: python:3.12-slim@sha256:57cd7c3a7a273101a6485ba99423ee568157882804b1124b4dd04266317710de
     restart: "no"
     environment:
       WALLETS_TAR_B64: ${WALLETS_TAR_B64:?provide base64 tar of hotkeys + coldkeypub}
@@ -86,7 +87,8 @@ services:
       - type: bind
         source: /var/lib/endure-soak/backups
         target: /data/backups
-    ports: ["8091:8091", "8714:8714"]
+    ports: ["8091:8091"]
+    expose: ["8714"]
     healthcheck:
       test:
         [
