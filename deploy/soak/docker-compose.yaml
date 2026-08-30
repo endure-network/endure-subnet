@@ -70,8 +70,11 @@ services:
       context: ../..
       dockerfile: docker/validator.Dockerfile
       args:
-        ENDURE_SOURCE_REVISION: ${ENDURE_SOURCE_REVISION:-unknown}
-        ENDURE_IMAGE_VERSION: ${ENDURE_IMAGE_VERSION:-dev}
+        # Prefer Coolify's SOURCE_COMMIT (the actually checked-out commit) so an
+        # auto-deploy can never build new code under a stale hand-typed label;
+        # fall back to the manual variables, then to the dev-image defaults.
+        ENDURE_SOURCE_REVISION: ${SOURCE_COMMIT:-${ENDURE_SOURCE_REVISION:-unknown}}
+        ENDURE_IMAGE_VERSION: ${SOURCE_COMMIT:+sha-}${SOURCE_COMMIT:-${ENDURE_IMAGE_VERSION:-dev}}
     image: endure-validator:soak
     environment:
       PYTHONUNBUFFERED: "1"
