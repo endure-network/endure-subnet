@@ -133,6 +133,7 @@ def _runtime(
             "degraded": rpc_degraded,
             "rate_limited_total": 0,
             "deferred_total": 0,
+            "abandoned_generations": 0,
         },
     }
     if assessment_due_seconds is not None:

@@ -9,6 +9,7 @@ EMAs whenever scoring happens.
 """
 
 import asyncio
+import os
 import time
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -249,6 +250,7 @@ class Validator(BaseValidatorNeuron):
         )
         weight_emission_degraded = (
             gate.degraded
+            or gate.abandoned_generations > 0
             or self._consecutive_set_weights_failures > 0
             or unresolved_unconfirmed
             or deadline_overdue
@@ -309,6 +311,7 @@ class Validator(BaseValidatorNeuron):
                 "degraded": gate.degraded,
                 "rate_limited_total": gate.rate_limited_total,
                 "deferred_total": gate.deferred_total,
+                "abandoned_generations": gate.abandoned_generations,
             },
         }
 
@@ -1021,6 +1024,12 @@ def main() -> None:
         validator = Validator()
         with validator:
             while not stop.is_set():
+                if validator.chain_rpc_restart_required() is True:
+                    bt.logging.error(
+                        "validator forcing process restart after chain RPC "
+                        "abandonment capacity was reached"
+                    )
+                    os._exit(1)
                 if (reason := validator.watchdog_exit_reason()) is not None:
                     bt.logging.error(f"validator watchdog exiting: {reason}")
                     raise SystemExit(1)

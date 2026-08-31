@@ -77,6 +77,7 @@ class RpcGateHealth(TypedDict):
     degraded: bool
     rate_limited_total: int
     deferred_total: int
+    abandoned_generations: int
 
 
 class RuntimeHealth(TypedDict):
