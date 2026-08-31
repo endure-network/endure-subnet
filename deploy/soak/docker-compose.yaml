@@ -48,6 +48,7 @@ x-ops: &ops
 volumes:
   wallets:
   validator-data:
+  validator-state:
 
 services:
   wallet-init:
@@ -82,6 +83,11 @@ services:
       wallet-init:
         condition: service_completed_successfully
     volumes:
+      # Name the neuron-state volume (scores, step counters): the Dockerfile
+      # declares VOLUME /root/.bittensor, so leaving it unnamed creates a fresh
+      # anonymous volume per deployment — state amnesia plus an unowned prune
+      # target on the host.
+      - validator-state:/root/.bittensor
       - wallets:/root/.bittensor/wallets:ro
       # Keep the primary DB on its named volume and snapshots on an independent
       # host bind. Disable unused-volume pruning on the stateful host.
