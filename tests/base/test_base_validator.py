@@ -769,6 +769,36 @@ class TestRunSubtensorReconnect:
         assert "secret" not in rendered
         assert "<redacted-endpoint>" in rendered
 
+    def test_rebuild_construction_is_bounded(
+        self,
+        validator: _ConcreteValidator,
+        mock_runtime_provider: MockRuntimeProvider,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        release = threading.Event()
+        entered = threading.Event()
+
+        def stalled_create(_config: bt.Config) -> bt.Subtensor:
+            entered.set()
+            release.wait(5)
+            return MockSubtensor(1)
+
+        monkeypatch.setattr(mock_runtime_provider, "create_subtensor", stalled_create)
+        validator.rpc_gate = AdaptiveRpcGate(operation_timeout_seconds=0.05)
+        validator.gated_subtensor = GatedSubtensor(
+            validator.gated_subtensor._delegate, validator.rpc_gate
+        )
+        validator.subtensor = validator.gated_subtensor
+        existing = validator.subtensor
+
+        try:
+            validator._reconnect_subtensor()
+            assert entered.wait(timeout=1)
+            assert validator.subtensor is existing
+            assert validator.rpc_gate.snapshot().abandoned_generations == 1
+        finally:
+            release.set()
+
     def test_failures_below_threshold_do_not_reconnect(
         self,
         validator_config: bt.Config,

@@ -15,7 +15,7 @@ from sqlalchemy.exc import IntegrityError
 
 import endure.storage.repository as storage_repository
 from endure.assessment.schemas.subnet_alpha_risk import RISK_SCHEMA_ID
-from endure.base.rate_gate import RateLimited
+from endure.base.rate_gate import ChainRpcStalled, RateLimited
 from endure.base.validator import (
     WEIGHT_EMISSION_FINALITY_MARGIN_BLOCKS,
     WEIGHT_EMISSION_PERIOD_BLOCKS,
@@ -2485,7 +2485,9 @@ class TestWeightEmissionAudit:
         validator.metagraph = MagicMock()
         validator.metagraph.__dict__["block"] = np.array([241])
         validator.rpc_gate = MagicMock()
-        validator.rpc_gate.snapshot.return_value = MagicMock(degraded=False)
+        validator.rpc_gate.snapshot.return_value = MagicMock(
+            degraded=False, abandoned_generations=0
+        )
         validator._service = MagicMock(
             consecutive_universe_failures=0,
             last_universe_error=None,
@@ -2525,7 +2527,9 @@ class TestWeightEmissionAudit:
         validator.metagraph = MagicMock()
         validator.metagraph.__dict__["block"] = np.array([241])
         validator.rpc_gate = MagicMock()
-        validator.rpc_gate.snapshot.return_value = MagicMock(degraded=False)
+        validator.rpc_gate.snapshot.return_value = MagicMock(
+            degraded=False, abandoned_generations=0
+        )
         validator._service = MagicMock(
             consecutive_universe_failures=0,
             last_universe_error=None,
@@ -2565,7 +2569,9 @@ class TestWeightEmissionAudit:
         validator.metagraph = MagicMock()
         validator.metagraph.__dict__["block"] = np.array([240, 241])
         validator.rpc_gate = MagicMock()
-        validator.rpc_gate.snapshot.return_value = MagicMock(degraded=False)
+        validator.rpc_gate.snapshot.return_value = MagicMock(
+            degraded=False, abandoned_generations=0
+        )
         validator._service = MagicMock(
             consecutive_universe_failures=0,
             last_universe_error=None,
@@ -2806,6 +2812,23 @@ class TestSetWeightsAttemptWrapping:
         validator.set_weights()
         emit.assert_not_called()
         assert validator.subtensor.set_weights.call_count == 1
+
+    def test_set_weights_timeout_stays_ambiguous_and_replaces_transport(self) -> None:
+        neuron, subtensor = _base_neuron(
+            set_weights_result=ChainRpcStalled(
+                operation_name="set_weights", timeout_seconds=90
+            )
+        )
+        reconnect = MagicMock()
+        neuron._reconnect_subtensor = reconnect
+
+        neuron.set_weights()
+
+        [attempt] = neuron.attempts
+        assert attempt.status == "error"
+        assert attempt.confirmation_state == "ambiguous"
+        assert subtensor.set_weights.call_count == 1
+        reconnect.assert_called_once_with(reason="set_weights timeout")
 
     def test_submitted_success_records_submitted_once(
         self, monkeypatch: pytest.MonkeyPatch
