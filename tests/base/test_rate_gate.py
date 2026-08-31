@@ -11,10 +11,12 @@ import pytest
 
 from endure.base.rate_gate import (
     AdaptiveRpcGate,
+    ChainRpcRestartRequired,
     ChainRpcStalled,
     GatedSubtensor,
     PacedSyncConnection,
     RateLimited,
+    RpcGenerationAlreadyBound,
     RpcLimiterInstallError,
     RpcMessageLimiter,
     RpcPriority,
@@ -57,18 +59,114 @@ class TestAdaptiveRpcGate:
         assert "0.05" in str(stall.value)
         release.set()
 
-    def test_stalled_operation_does_not_poison_subsequent_calls(self) -> None:
+    def test_stalled_generation_rejects_subsequent_calls_before_send(self) -> None:
         clock = _Clock()
         gate = AdaptiveRpcGate(
             clock=clock, sleeper=clock.sleep, operation_timeout_seconds=0.05
         )
         release = threading.Event()
+        sends = 0
+
+        def stalled_receive() -> None:
+            nonlocal sends
+            sends += 1
+            release.wait(5)
+
+        close = MagicMock(side_effect=release.set)
+        gate.bind_transport_close(close)
 
         with pytest.raises(ChainRpcStalled):
-            gate.call(RpcPriority.ESSENTIAL, lambda: release.wait(5))
+            gate.call(RpcPriority.ESSENTIAL, stalled_receive, operation_name="recv-a")
 
-        assert gate.call(RpcPriority.ESSENTIAL, lambda: "recovered") == "recovered"
+        with pytest.raises(ChainRpcStalled, match="recv-a"):
+            gate.call(
+                RpcPriority.ESSENTIAL,
+                lambda: "must-not-send",
+                operation_name="send-b",
+            )
+
+        assert sends == 1
+        assert release.wait(timeout=1)
+        close.assert_called_once_with()
+
+    def test_generation_serializes_shared_receivers(self) -> None:
+        gate = AdaptiveRpcGate(operation_timeout_seconds=1)
+        first_entered = threading.Event()
+        release_first = threading.Event()
+        second_entered = threading.Event()
+
+        def first_receive() -> str:
+            first_entered.set()
+            release_first.wait(timeout=1)
+            return "first"
+
+        first = threading.Thread(
+            target=lambda: gate.call(
+                RpcPriority.ESSENTIAL, first_receive, operation_name="recv-first"
+            )
+        )
+        second = threading.Thread(
+            target=lambda: gate.call(
+                RpcPriority.ESSENTIAL,
+                lambda: second_entered.set(),
+                operation_name="recv-second",
+            )
+        )
+        first.start()
+        assert first_entered.wait(timeout=1)
+        second.start()
+
+        assert not second_entered.wait(timeout=0.05)
+        release_first.set()
+        first.join(timeout=1)
+        second.join(timeout=1)
+        assert second_entered.is_set()
+        assert not first.is_alive()
+        assert not second.is_alive()
+
+    def test_replacement_generation_isolated_from_late_completion(self) -> None:
+        gate = AdaptiveRpcGate(operation_timeout_seconds=0.05)
+        release = threading.Event()
+        old_side_effects: list[str] = []
+
+        def late_operation() -> None:
+            release.wait(timeout=1)
+            old_side_effects.append("old")
+
+        with pytest.raises(ChainRpcStalled):
+            gate.call(RpcPriority.ESSENTIAL, late_operation, operation_name="old")
+
+        replacement = gate.replacement()
+        assert (
+            replacement.call(RpcPriority.ESSENTIAL, lambda: "new", operation_name="new")
+            == "new"
+        )
+        assert old_side_effects == []
         release.set()
+
+    def test_abandoned_generation_cap_requires_process_restart(self) -> None:
+        gate = AdaptiveRpcGate(operation_timeout_seconds=0.02)
+        release = threading.Event()
+
+        try:
+            for generation in range(3):
+                with pytest.raises(ChainRpcStalled):
+                    gate.call(
+                        RpcPriority.ESSENTIAL,
+                        lambda: release.wait(5),
+                        operation_name=f"stalled-{generation}",
+                    )
+                gate = gate.replacement()
+
+            with pytest.raises(ChainRpcRestartRequired):
+                gate.call(
+                    RpcPriority.ESSENTIAL,
+                    lambda: "must-not-run",
+                    operation_name="over-cap",
+                )
+            assert gate.snapshot().abandoned_generations == 3
+        finally:
+            release.set()
 
     def test_operation_timeout_must_be_positive(self) -> None:
         with pytest.raises(ValueError, match="operation_timeout_seconds"):
@@ -375,7 +473,14 @@ class _RecordingGate(AdaptiveRpcGate):
         self.calls: dict[str, RpcPriority] = {}
         self._calls_lock = threading.Lock()
 
-    def call[T](self, priority: RpcPriority, operation: Callable[[], T]) -> T:
+    def call[T](
+        self,
+        priority: RpcPriority,
+        operation: Callable[[], T],
+        *,
+        operation_name: str = "chain_rpc",
+    ) -> T:
+        _ = operation_name
         result = operation()
         with self._calls_lock:
             self.calls[str(result)] = priority
@@ -521,6 +626,14 @@ def test_deepcopy_gated_subtensor_memoizes_shared_transport_state() -> None:
     assert cloned_subtensor._gate is gate
     assert memo[id(delegate)] is delegate
     assert memo[id(gate)] is gate
+
+
+def test_gate_generation_rejects_a_different_transport() -> None:
+    gate = AdaptiveRpcGate()
+    GatedSubtensor(_Delegate(), gate)
+
+    with pytest.raises(RpcGenerationAlreadyBound):
+        GatedSubtensor(_Delegate(), gate)
 
 
 class TestRpcMessageLimiter:
