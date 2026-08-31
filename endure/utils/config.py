@@ -564,6 +564,18 @@ def add_miner_args(cls, parser):
         ),
     )
 
+    parser.add_argument(
+        "--endure.min_validator_stake",
+        type=_non_negative_decimal,
+        default=Decimal("1000"),
+        help=(
+            "Minimum stake (TAO) for a permit-holding peer to receive pushes; "
+            "0 disables the gate. On testnet every registered neuron holds "
+            "validator_permit, so permit alone cannot distinguish validators "
+            "from miners. Parsed as Decimal — TAO is an economic value."
+        ),
+    )
+
 
 def add_validator_args(cls, parser):
     """Add validator specific arguments to the parser."""

@@ -2,8 +2,8 @@
 
 Alpha Risk (``risk.v1.subnet_alpha``) is the served vertical. Forge lending
 remains dormant, admitted only by the dev-only unserved-schema override.
-Endure is submission-driven: this miner pushes commits and reveals to every
-validator axon via its dendrite.
+Endure is submission-driven: this miner pushes commits and reveals to eligible
+validator axons (permit + stake floor) via its dendrite.
 """
 
 import asyncio
@@ -11,6 +11,7 @@ import copy
 import threading
 import time
 from datetime import UTC, datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import Tuple
 from urllib.parse import urlsplit
@@ -55,6 +56,17 @@ def _utc_now() -> datetime:
 # Acceptance tracking is bounded; rounds beyond this are past their windows.
 _MAX_TRACKED_PUSH_ROUNDS = 20
 _MAX_TCP_PORT = 65535
+# bittensor's axon maps UnknownSynapseError to HTTP 404: the peer's axon does
+# not serve this synapse type at all (typically a permit-holding miner, not a
+# validator), so retrying it within the round can never succeed.
+_UNKNOWN_SYNAPSE_STATUS = 404
+
+
+def _rejected_as_unknown_synapse(response: bt.Synapse) -> bool:
+    dendrite = response.dendrite
+    if dendrite is None or dendrite.status_code is None:
+        return False
+    return int(dendrite.status_code) == _UNKNOWN_SYNAPSE_STATUS
 
 
 def _parse_validator_axon_overrides(raw: str) -> dict[str, tuple[str, int]]:
@@ -112,6 +124,10 @@ class Miner(BaseMinerNeuron):
         # an accepting validator burns its per-round commit rate limit). Nested
         # by round so eviction drops whole rounds (commit+reveal together).
         self._acked: dict[str, dict[str, set[str]]] = {}
+        # round_id → hotkeys whose axon rejected a push as an unknown synapse;
+        # they lack the Endure handlers entirely, so retries within the round
+        # only produce a symmetric error storm between colocated miners.
+        self._unknown_synapse: dict[str, set[str]] = {}
         self._validator_axon_overrides = _parse_validator_axon_overrides(
             str(self.config.endure.validator_axon_overrides or "")
         )
@@ -188,14 +204,16 @@ class Miner(BaseMinerNeuron):
         )
 
     async def _send(self, synapse: SubmitCommit | SubmitReveal) -> int:
-        """Push to validators that have not yet accepted; return total acked."""
+        """Push to eligible validators that have not yet accepted; return total acked."""
         round_acks = self._acked.setdefault(synapse.round_id, {})
         acked = round_acks.setdefault(type(synapse).__name__, set())
+        unknown = self._unknown_synapse.setdefault(synapse.round_id, set())
         # Evict whole oldest rounds so the bound is in rounds, not half-rounds,
         # and a round's commit/reveal sets are never split across the boundary.
         if len(self._acked) > _MAX_TRACKED_PUSH_ROUNDS:
             for stale_round in sorted(self._acked)[:-_MAX_TRACKED_PUSH_ROUNDS]:
                 del self._acked[stale_round]
+                self._unknown_synapse.pop(stale_round, None)
         targets = [
             (
                 self.metagraph.hotkeys[uid],
@@ -207,7 +225,9 @@ class Miner(BaseMinerNeuron):
             if bool(self.metagraph.validator_permit[uid])
             and uid != self.uid
             and self.metagraph.axons[uid].is_serving
+            and self._meets_validator_stake_floor(uid)
             and self.metagraph.hotkeys[uid] not in acked
+            and self.metagraph.hotkeys[uid] not in unknown
         ]
         axons = [axon for _, axon in targets]
         if not axons:
@@ -220,11 +240,20 @@ class Miner(BaseMinerNeuron):
         for (hotkey, _), response in zip(targets, responses, strict=True):
             if getattr(response, "accepted", False):
                 acked.add(hotkey)
+            elif _rejected_as_unknown_synapse(response):
+                unknown.add(hotkey)
         bt.logging.info(
             f"{type(synapse).__name__} round {synapse.round_id}: "
-            f"{len(acked)} validators hold it ({len(axons)} pushed this tick)"
+            f"{len(acked)} validators hold it ({len(axons)} pushed this tick, "
+            f"{len(unknown)} excluded as non-validators)"
         )
         return len(acked)
+
+    def _meets_validator_stake_floor(self, uid: int) -> bool:
+        min_stake = self.config.endure.min_validator_stake
+        if min_stake <= Decimal("0"):
+            return True
+        return Decimal(str(self.metagraph.S[uid])) >= min_stake
 
     def _axon_for_push(self, axon: bt.AxonInfo, hotkey: str) -> bt.AxonInfo:
         override = self._validator_axon_overrides.get(hotkey)
