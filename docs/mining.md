@@ -34,6 +34,12 @@ validator permit. Mock/local development keeps the configurable permissive
 behavior, but live operation ignores attempts to allow unregistered callers.
 The reference miner discovers permitted validator axons through the netuid-504
 metagraph. The separately hosted consumer API is not a miner routing endpoint.
+By default, every serving peer with a validator permit is eligible: the
+`--endure.min_validator_stake_weight` gate is `0` (disabled). Operators may set
+a positive floor against Bittensor's metagraph total stake weight (`S`), which
+combines alpha stake with discounted root TAO stake and is not a TAO balance.
+A positive floor can prevent low-weight validators from receiving every commit
+and reveal, so live miners emit a startup warning whenever it is active.
 
 Persist the miner's state directory across restarts. The persisted commit/reveal
 state is required to reveal the same bundle and nonce after a restart.
@@ -74,7 +80,7 @@ canonical.
 | `VERSION_MISMATCH` | Upgrade to the release matching [the protocol contract](../endure/protocol/version_contract.py). |
 | `NO_COMMIT` or `HASH_MISMATCH` | Confirm durable state, the same nonce, and the exact committed bundle. |
 | Late commit/reveal | Synchronize the host clock and read the round windows from the validator. |
-| No validator axons | Confirm registration/permit state and validator health, then allow metagraph synchronization. |
+| No validator axons | Confirm registration/permit state, validator health, and any `--endure.min_validator_stake_weight` floor, then allow metagraph synchronization. |
 
 For non-sensitive help, use the [miner support form](../.github/ISSUE_TEMPLATE/miner-support.yml)
 with commands, versions, redacted configuration, and redacted logs. Never post
