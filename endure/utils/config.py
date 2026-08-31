@@ -213,9 +213,6 @@ def _unit_interval_decimal(value: str) -> Decimal:
 
 
 def _non_negative_decimal(value: str) -> Decimal:
-    # An economic threshold (TAO stake): parse as Decimal per the Decimal
-    # policy and reject NaN/negatives at boot, so a bad --endure.min_miner_stake
-    # fails at startup rather than on the first inbound synapse.
     try:
         parsed = Decimal(value)
     except (InvalidOperation, ValueError) as exc:
@@ -565,14 +562,13 @@ def add_miner_args(cls, parser):
     )
 
     parser.add_argument(
-        "--endure.min_validator_stake",
+        "--endure.min_validator_stake_weight",
         type=_non_negative_decimal,
-        default=Decimal("1000"),
+        default=Decimal("0"),
         help=(
-            "Minimum stake (TAO) for a permit-holding peer to receive pushes; "
-            "0 disables the gate. On testnet every registered neuron holds "
-            "validator_permit, so permit alone cannot distinguish validators "
-            "from miners. Parsed as Decimal — TAO is an economic value."
+            "Minimum metagraph total stake weight (S) for a permit-holding peer "
+            "to receive pushes; 0 disables the gate. S combines alpha stake "
+            "with discounted root TAO stake and is not a TAO balance."
         ),
     )
 
