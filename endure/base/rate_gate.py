@@ -6,6 +6,8 @@ import re
 import threading
 import time
 from collections.abc import Callable, Iterator
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as _FuturesTimeout
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -20,6 +22,13 @@ _MIN_ADAPTIVE_RATE = 1.0 / 60.0
 _MAX_RETRY_AFTER_SECONDS = 60.0
 _CR4_REVEAL_EVENT_ATTRIBUTE_COUNT = 2
 _MAX_COMMITMENT_EPOCHS = 100
+# Generous per-operation ceiling: a legitimate gated operation fans out to at
+# most tens of paced websocket frames (~2/s), so anything beyond this is a
+# stalled transport, not slow work. Observed in soak 2026-08-30: one hung
+# chain RPC froze the validator loop for 25 minutes until the watchdog killed
+# the process; a bounded call instead surfaces a failure the loop's
+# consecutive-failure reconnect machinery can recover from.
+_DEFAULT_OPERATION_TIMEOUT_SECONDS = 90.0
 
 
 @runtime_checkable
@@ -148,6 +157,22 @@ class RateLimited(Exception):
         return f"chain RPC deferred until monotonic {self.retry_after_monotonic}"
 
 
+@dataclass(slots=True)
+class ChainRpcStalled(Exception):
+    """A gated operation exceeded its deadline and was abandoned.
+
+    The abandoned worker may still hold the shared websocket's receive slot,
+    so follow-up calls can fail fast until the validator loop's
+    consecutive-failure streak rebuilds the connection — that failure
+    propagation is the recovery path, not an error to suppress.
+    """
+
+    timeout_seconds: float
+
+    def __str__(self) -> str:
+        return f"chain RPC call exceeded {self.timeout_seconds}s and was abandoned"
+
+
 @dataclass(frozen=True, slots=True)
 class RateGateSnapshot:
     """Small operator-facing view of the gate's current adaptive state."""
@@ -167,9 +192,13 @@ class AdaptiveRpcGate:
         *,
         clock: Callable[[], float] = time.monotonic,
         sleeper: Callable[[float], None] = time.sleep,
+        operation_timeout_seconds: float = _DEFAULT_OPERATION_TIMEOUT_SECONDS,
     ) -> None:
+        if operation_timeout_seconds <= 0:
+            raise ValueError("operation_timeout_seconds must be positive")
         self._clock = clock
         self._sleeper = sleeper
+        self._operation_timeout_seconds = operation_timeout_seconds
         self._initial_rate = 1.0
         self._adaptive_rate = self._initial_rate
         self._next_request_monotonic = 0.0
@@ -199,7 +228,7 @@ class AdaptiveRpcGate:
                     break
             self._sleeper(pacing_delay)
         try:
-            result = operation()
+            result = self._call_bounded(operation)
         except Exception as error:
             if not _is_rate_limited(error):
                 raise
@@ -216,6 +245,24 @@ class AdaptiveRpcGate:
             with self._lock:
                 self._record_success(success_observed_at, reservation_monotonic)
         return result
+
+    def _call_bounded[T](self, operation: Callable[[], T]) -> T:
+        # One throwaway worker per call (gated calls run at <=2/s, so the
+        # thread cost is trivial): a shared worker pool would let one stalled
+        # operation strand every queued call behind it after an abandon.
+        executor = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="chain-rpc-deadline"
+        )
+        try:
+            future = executor.submit(operation)
+            try:
+                return future.result(timeout=self._operation_timeout_seconds)
+            except _FuturesTimeout:
+                raise ChainRpcStalled(
+                    timeout_seconds=self._operation_timeout_seconds
+                ) from None
+        finally:
+            executor.shutdown(wait=False)
 
     def snapshot(self) -> RateGateSnapshot:
         """Return a stable health payload without exposing mutable gate state."""

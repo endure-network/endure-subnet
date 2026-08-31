@@ -11,6 +11,7 @@ import pytest
 
 from endure.base.rate_gate import (
     AdaptiveRpcGate,
+    ChainRpcStalled,
     GatedSubtensor,
     PacedSyncConnection,
     RateLimited,
@@ -37,6 +38,42 @@ class _Clock:
 
 
 class TestAdaptiveRpcGate:
+    def test_stalled_operation_is_abandoned_with_a_typed_error(self) -> None:
+        """A hung chain RPC must surface as a failure the validator loop can
+        count toward its reconnect streak, not freeze the calling thread
+        until the watchdog kills the process (soak incident 2026-08-30)."""
+        clock = _Clock()
+        gate = AdaptiveRpcGate(
+            clock=clock, sleeper=clock.sleep, operation_timeout_seconds=0.05
+        )
+        release = threading.Event()
+
+        def stalled() -> str:
+            release.wait(5)
+            return "late"
+
+        with pytest.raises(ChainRpcStalled) as stall:
+            gate.call(RpcPriority.ESSENTIAL, stalled)
+        assert "0.05" in str(stall.value)
+        release.set()
+
+    def test_stalled_operation_does_not_poison_subsequent_calls(self) -> None:
+        clock = _Clock()
+        gate = AdaptiveRpcGate(
+            clock=clock, sleeper=clock.sleep, operation_timeout_seconds=0.05
+        )
+        release = threading.Event()
+
+        with pytest.raises(ChainRpcStalled):
+            gate.call(RpcPriority.ESSENTIAL, lambda: release.wait(5))
+
+        assert gate.call(RpcPriority.ESSENTIAL, lambda: "recovered") == "recovered"
+        release.set()
+
+    def test_operation_timeout_must_be_positive(self) -> None:
+        with pytest.raises(ValueError, match="operation_timeout_seconds"):
+            AdaptiveRpcGate(operation_timeout_seconds=0)
+
     def test_successful_calls_share_zero_burst_pacing(self) -> None:
         clock = _Clock()
         gate = AdaptiveRpcGate(clock=clock, sleeper=clock.sleep)
