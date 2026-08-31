@@ -30,6 +30,17 @@ curl --fail https://api.testnet.endure.network/risk/v1/subnets \
 `29`, and an explicit release source revision. `/schemas` reports horizons in
 seconds. Alpha Risk uses `432000` (5 days) and `2592000` (30 days).
 
+`source_revision` is attested by whoever built the image, not proven to you.
+`content_revision` is derived from the code the validator is running, so you can
+check it yourself against a checkout of the attested commit:
+
+```bash
+python -m scripts.content_revision
+```
+
+Equal values mean the endpoint is running that source. Unequal values mean it is
+not, regardless of what `source_revision` claims.
+
 ## Verify one feed
 
 From a locked repository checkout:
