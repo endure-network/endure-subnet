@@ -11,7 +11,7 @@ annotations turn that annotation into a string and break the check.
 
 import threading
 from typing import Tuple
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import bittensor as bt
 import pytest
@@ -58,6 +58,10 @@ class _FailingRuntimeMiner(BaseMinerNeuron):
         return 0.0
 
 
+def _assert_metagraph_lock(miner: BaseMinerNeuron, *, expected: bool) -> None:
+    assert miner._metagraph_lock.locked() is expected
+
+
 @pytest.fixture
 def miner(
     mock_miner_config: bt.Config,
@@ -94,10 +98,33 @@ class TestConstructor:
 
 class TestResyncMetagraph:
     def test_calls_metagraph_sync_with_subtensor(self, miner: _ConcreteMiner) -> None:
-        fake_mg = MagicMock()
-        miner.metagraph = fake_mg
-        miner.resync_metagraph()
-        fake_mg.sync.assert_called_once_with(subtensor=miner.subtensor)
+        current_metagraph = MagicMock()
+        refreshed_metagraph = MagicMock()
+        miner.metagraph = current_metagraph
+
+        with patch("endure.base.miner.copy.deepcopy", return_value=refreshed_metagraph):
+            miner.resync_metagraph()
+
+        refreshed_metagraph.sync.assert_called_once_with(subtensor=miner.subtensor)
+        assert miner.metagraph is refreshed_metagraph
+
+    def test_holds_snapshot_lock_through_sync_and_uid_refresh(
+        self, miner: _ConcreteMiner
+    ) -> None:
+        current_metagraph = MagicMock()
+        refreshed_metagraph = MagicMock()
+        refreshed_metagraph.sync.side_effect = lambda **_kwargs: _assert_metagraph_lock(
+            miner, expected=False
+        )
+        miner.metagraph = current_metagraph
+        miner.refresh_uid = MagicMock(
+            side_effect=lambda: _assert_metagraph_lock(miner, expected=True)
+        )
+
+        with patch("endure.base.miner.copy.deepcopy", return_value=refreshed_metagraph):
+            miner.resync_metagraph()
+
+        miner.refresh_uid.assert_called_once_with()
 
 
 class TestSyncPacing:

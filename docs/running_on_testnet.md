@@ -75,6 +75,13 @@ operator checks, not commit/reveal delivery.
   --axon.port <axon-port> --axon.external_ip <reachable-ip>
 ```
 
+The optional `--endure.min_validator_stake_weight <weight>` gate defaults to
+`0` (disabled). It compares Bittensor's metagraph total stake weight (`S`) —
+alpha stake plus discounted root TAO stake, not a TAO balance. Set it only when
+your routing policy intentionally excludes lower-weight validators; the
+Endure-operated soak currently passes `1000` explicitly. A live miner warns at
+startup whenever the gate is active.
+
 Wait for metagraph/permit discovery, then verify a commit and a reveal in the
 validator API/logs. Preserve miner state across restarts so its nonce survives.
 See [mining](mining.md) for the commit/reveal contract and troubleshooting.

@@ -17,6 +17,7 @@
 
 import argparse
 import asyncio
+import copy
 import sys
 import threading
 import traceback
@@ -74,6 +75,7 @@ class BaseMinerNeuron(BaseNeuron):
         self.is_running: bool = False
         self.thread: Union[threading.Thread, None] = None
         self._shutdown_event = threading.Event()
+        self._metagraph_lock = threading.Lock()
         self.lock = asyncio.Lock()
 
     @abstractmethod
@@ -229,6 +231,8 @@ class BaseMinerNeuron(BaseNeuron):
         """Refresh the miner's metagraph view."""
         bt.logging.info("resync_metagraph()")
 
-        # Sync the metagraph.
-        self.metagraph.sync(subtensor=self.subtensor)
-        self.refresh_uid()
+        refreshed_metagraph = copy.deepcopy(self.metagraph)
+        refreshed_metagraph.sync(subtensor=self.subtensor)
+        with self._metagraph_lock:
+            self.metagraph = refreshed_metagraph
+            self.refresh_uid()

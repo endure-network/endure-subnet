@@ -569,6 +569,12 @@ class TestArgValidation:
         add_validator_args(_FakeCls, parser)
         return parser
 
+    def _miner_parser(self) -> argparse.ArgumentParser:
+        parser = argparse.ArgumentParser()
+        add_args(_FakeCls, parser)
+        add_miner_args(_FakeCls, parser)
+        return parser
+
     def test_events_retention_size_parses_positive_int(self) -> None:
         ns = self._base_parser().parse_args(["--neuron.events_retention_size", "4096"])
         value = getattr(ns, "neuron.events_retention_size")
@@ -626,6 +632,31 @@ class TestArgValidation:
         # synapse the validator tries to blacklist.
         with pytest.raises(SystemExit):
             self._validator_parser().parse_args(["--endure.min_miner_stake", bad])
+
+    def test_min_validator_stake_weight_default_is_zero_decimal(self) -> None:
+        value = getattr(
+            self._miner_parser().parse_args([]),
+            "endure.min_validator_stake_weight",
+        )
+
+        assert value == Decimal("0")
+        assert isinstance(value, Decimal)
+
+    def test_min_validator_stake_weight_parses_boundary_decimal(self) -> None:
+        namespace = self._miner_parser().parse_args(
+            ["--endure.min_validator_stake_weight", "1000"]
+        )
+        value = getattr(namespace, "endure.min_validator_stake_weight")
+
+        assert value == Decimal("1000")
+        assert isinstance(value, Decimal)
+
+    @pytest.mark.parametrize("bad", ["-5", "nan", "notanumber"])
+    def test_min_validator_stake_weight_rejects_invalid(self, bad: str) -> None:
+        with pytest.raises(SystemExit):
+            self._miner_parser().parse_args(
+                ["--endure.min_validator_stake_weight", bad]
+            )
 
 
 if __name__ == "__main__":  # pragma: no cover
