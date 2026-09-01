@@ -861,6 +861,35 @@ class TestRunSubtensorReconnect:
         finally:
             release.set()
 
+    def test_late_rebuild_construction_closes_returned_transport(
+        self,
+        validator: _ConcreteValidator,
+        mock_runtime_provider: MockRuntimeProvider,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        release = threading.Event()
+        closed = threading.Event()
+        late_subtensor = MockSubtensor(10_001, n=0)
+        close = MagicMock(side_effect=closed.set)
+        monkeypatch.setattr(late_subtensor, "close", close)
+
+        def stalled_create(_config: bt.Config) -> bt.Subtensor:
+            release.wait(5)
+            return late_subtensor
+
+        monkeypatch.setattr(mock_runtime_provider, "create_subtensor", stalled_create)
+        validator.rpc_gate = AdaptiveRpcGate(operation_timeout_seconds=0.02)
+        validator.gated_subtensor = GatedSubtensor(
+            validator.gated_subtensor._delegate, validator.rpc_gate
+        )
+        validator.subtensor = validator.gated_subtensor
+
+        validator._reconnect_subtensor()
+        release.set()
+
+        assert closed.wait(timeout=1)
+        close.assert_called_once_with()
+
     def test_failures_below_threshold_do_not_reconnect(
         self,
         validator_config: bt.Config,

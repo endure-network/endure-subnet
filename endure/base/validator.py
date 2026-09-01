@@ -366,6 +366,7 @@ class BaseValidatorNeuron(BaseNeuron):
                 RpcPriority.ESSENTIAL,
                 lambda: self.runtime_provider.create_subtensor(self.config),
                 operation_name="create_subtensor",
+                abandoned_result_cleanup=lambda subtensor: subtensor.close(),
             )
         except ChainRpcRestartRequired:
             self._chain_rpc_restart_required = True

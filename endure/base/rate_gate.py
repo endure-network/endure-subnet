@@ -283,6 +283,7 @@ class AdaptiveRpcGate:
         operation: Callable[[], T],
         *,
         operation_name: str = "chain_rpc",
+        abandoned_result_cleanup: Callable[[T], None] | None = None,
     ) -> T:
         """Run one operation or raise a non-blocking scheduled-work signal."""
         reservation_monotonic: float | None = None
@@ -304,7 +305,11 @@ class AdaptiveRpcGate:
                     break
             self._sleeper(pacing_delay)
         try:
-            result = self._call_bounded(operation, operation_name=operation_name)
+            result = self._call_bounded(
+                operation,
+                operation_name=operation_name,
+                abandoned_result_cleanup=abandoned_result_cleanup,
+            )
         except Exception as error:
             if not _is_rate_limited(error):
                 raise
@@ -322,7 +327,13 @@ class AdaptiveRpcGate:
                 self._record_success(success_observed_at, reservation_monotonic)
         return result
 
-    def _call_bounded[T](self, operation: Callable[[], T], *, operation_name: str) -> T:
+    def _call_bounded[T](
+        self,
+        operation: Callable[[], T],
+        *,
+        operation_name: str,
+        abandoned_result_cleanup: Callable[[T], None] | None,
+    ) -> T:
         # The lock gives each caller a full deadline after the prior serialized
         # operation completes. The executor and websocket have identical
         # lifetimes: timeout poisons both before any later caller can submit.
@@ -342,10 +353,14 @@ class AdaptiveRpcGate:
                 self._poisoned_operation_name = operation_name
                 future.cancel()
                 self._executor.shutdown(wait=False, cancel_futures=True)
-                if not future.done():
+                if not future.cancelled():
                     with self._abandoned_state.condition:
                         self._abandoned_state.count += 1
-                    future.add_done_callback(self._release_abandoned_generation)
+                    future.add_done_callback(
+                        lambda completed: self._complete_abandoned_generation(
+                            completed, abandoned_result_cleanup
+                        )
+                    )
                 close = self._transport_close
                 if close is not None:
                     threading.Thread(
@@ -368,10 +383,24 @@ class AdaptiveRpcGate:
                 f"chain RPC poisoned transport close failed: {type(error).__name__}"
             )
 
-    def _release_abandoned_generation[T](self, _future: Future[T]) -> None:
-        with self._abandoned_state.condition:
-            self._abandoned_state.count -= 1
-            self._abandoned_state.condition.notify_all()
+    def _complete_abandoned_generation[T](
+        self,
+        future: Future[T],
+        cleanup: Callable[[T], None] | None,
+    ) -> None:
+        try:
+            if cleanup is not None and not future.cancelled():
+                error = future.exception()
+                if error is None:
+                    cleanup(future.result())
+        except Exception as error:  # noqa: BLE001 - release the shared capacity.
+            bt.logging.debug(
+                f"chain RPC abandoned result cleanup failed: {type(error).__name__}"
+            )
+        finally:
+            with self._abandoned_state.condition:
+                self._abandoned_state.count -= 1
+                self._abandoned_state.condition.notify_all()
 
     def close_generation(self) -> None:
         """Reject new work, close the transport, and retire the worker."""
