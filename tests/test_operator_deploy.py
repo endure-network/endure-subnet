@@ -193,8 +193,12 @@ def test_release_identity_check_refuses_a_mismatched_version() -> None:
 
 def test_coolify_soak_compose_passes_exact_identity_as_build_args() -> None:
     expected = {
-        "ENDURE_SOURCE_REVISION": "${ENDURE_SOURCE_REVISION:-unknown}",
-        "ENDURE_IMAGE_VERSION": "${ENDURE_IMAGE_VERSION:-dev}",
+        "ENDURE_SOURCE_REVISION": (
+            "${SOURCE_COMMIT:-${ENDURE_SOURCE_REVISION:-unknown}}"
+        ),
+        "ENDURE_IMAGE_VERSION": (
+            "${SOURCE_COMMIT:+sha-}${SOURCE_COMMIT:-${ENDURE_IMAGE_VERSION:-dev}}"
+        ),
     }
     for relative_path, service in (
         ("deploy/soak/docker-compose.yaml", "validator"),

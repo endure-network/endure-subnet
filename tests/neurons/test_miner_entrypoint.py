@@ -1,9 +1,11 @@
 import threading
 from collections.abc import Iterator
 from contextlib import ExitStack, contextmanager
+from decimal import Decimal
 from unittest.mock import MagicMock, patch
 
 import bittensor as bt
+import numpy as np
 import pytest
 
 from endure.assessment.schemas.forge_lending import FORGE_LENDING_SCHEMA_ID
@@ -86,6 +88,25 @@ def test_miner_refuses_served_risk_schema_on_finney(
         Miner(config=production_miner_config)
 
 
+def test_miner_warns_when_validator_stake_weight_gate_is_live(
+    production_miner_config: bt.Config,
+) -> None:
+    from neurons.miner import Miner
+
+    production_miner_config.subtensor.network = "test"
+    production_miner_config.endure.serving_stage = "testnet"
+    production_miner_config.endure.min_validator_stake_weight = Decimal("1000")
+    warning = MagicMock()
+
+    with _patched_chain(), patch("neurons.miner.bt.logging.warning", warning):
+        Miner(config=production_miner_config)
+
+    assert any(
+        "min_validator_stake_weight" in str(call.args[0])
+        for call in warning.call_args_list
+    )
+
+
 class _FakeAxon:
     def __init__(self, hotkey: str, ip: str = "203.0.113.1", port: int = 8091) -> None:
         self.hotkey = hotkey
@@ -99,6 +120,14 @@ class _FakeMetagraph:
     hotkeys = ["hk-v1", "hk-v2", "hk-self"]
     axons = [_FakeAxon("hk-v1"), _FakeAxon("hk-v2"), _FakeAxon("hk-self")]
     validator_permit = [True, True, True]
+    S = np.array([423000, 51000, 1], dtype=np.float32)
+
+
+class _IterationSensitiveStakeWeights(np.ndarray):
+    def __iter__(self) -> Iterator[np.float32]:
+        raise AssertionError(
+            "stake weights must be normalized before scalar conversion"
+        )
 
 
 async def test_send_counts_acceptances_and_skips_acked_validators(
@@ -183,6 +212,296 @@ async def test_send_applies_validator_axon_overrides(
         ("hk-v1", "validator", 8091),
         ("hk-v2", "203.0.113.1", 8091),
     ]
+
+
+async def test_send_skips_peers_below_the_validator_stake_floor(
+    mock_miner_config: bt.Config,
+) -> None:
+    """On testnet every registered neuron holds validator_permit, so the
+    permit alone would make miners push to each other; the stake floor
+    keeps low-stake permit holders out of the target set."""
+    from endure.protocol.synapses import SubmitCommit
+    from endure.protocol.version_contract import CURRENT_VERSION_KEY
+    from neurons.miner import Miner
+
+    mock_miner_config.endure.min_validator_stake_weight = Decimal("1000")
+    miner = Miner(config=mock_miner_config)
+    metagraph = _FakeMetagraph()
+    metagraph.S = np.array(
+        [423000, 1, 1], dtype=np.float32
+    )  # hk-v2 is a permit-holding miner
+    miner.metagraph = metagraph
+    miner.uid = 2  # hk-self
+
+    pushed: list[list[str]] = []
+
+    async def fake_dendrite(*, axons, synapse, timeout, deserialize):  # noqa: ANN001, ANN202
+        pushed.append([axon.hotkey for axon in axons])
+        responses = []
+        for _ in axons:
+            response = synapse.model_copy()
+            response.accepted = True
+            responses.append(response)
+        return responses
+
+    miner.dendrite = fake_dendrite
+
+    total = await miner._send(
+        SubmitCommit(
+            round_id="2023-03-06",
+            schema_id=RISK_SCHEMA_ID,
+            spec_version=CURRENT_VERSION_KEY,
+            bundle_hash="ab" * 32,
+        )
+    )
+
+    assert total == 1
+    assert pushed == [["hk-v1"]]
+
+
+def test_snapshot_push_targets_normalizes_stake_weights_before_conversion(
+    mock_miner_config: bt.Config,
+) -> None:
+    from neurons.miner import Miner
+
+    mock_miner_config.endure.min_validator_stake_weight = Decimal("1000")
+    miner = Miner(config=mock_miner_config)
+    metagraph = _FakeMetagraph()
+    metagraph.S = np.array([423000, 1, 1], dtype=np.float32).view(
+        _IterationSensitiveStakeWeights
+    )
+    miner.metagraph = metagraph
+    miner.uid = 2
+
+    targets = miner._snapshot_push_targets(set(), set())
+
+    assert [hotkey for hotkey, _ in targets] == ["hk-v1"]
+
+
+async def test_send_zero_stake_floor_disables_the_gate(
+    mock_miner_config: bt.Config,
+) -> None:
+    from endure.protocol.synapses import SubmitCommit
+    from endure.protocol.version_contract import CURRENT_VERSION_KEY
+    from neurons.miner import Miner
+
+    mock_miner_config.endure.min_validator_stake_weight = Decimal("0")
+    miner = Miner(config=mock_miner_config)
+    metagraph = _FakeMetagraph()
+    metagraph.S = np.array([1, 1, 1], dtype=np.float32)
+    miner.metagraph = metagraph
+    miner.uid = 2  # hk-self
+
+    pushed: list[list[str]] = []
+
+    async def fake_dendrite(*, axons, synapse, timeout, deserialize):  # noqa: ANN001, ANN202
+        pushed.append([axon.hotkey for axon in axons])
+        return [synapse.model_copy() for _ in axons]
+
+    miner.dendrite = fake_dendrite
+
+    await miner._send(
+        SubmitCommit(
+            round_id="2023-03-06",
+            schema_id=RISK_SCHEMA_ID,
+            spec_version=CURRENT_VERSION_KEY,
+            bundle_hash="ab" * 32,
+        )
+    )
+
+    assert pushed == [["hk-v1", "hk-v2"]]
+
+
+async def test_send_stops_retrying_canonical_unknown_synapse_rejections(
+    mock_miner_config: bt.Config,
+) -> None:
+    """A peer whose axon answers 404 (bittensor's UnknownSynapseError) lacks
+    the Endure handlers entirely; retrying it within the round only produces
+    an error storm, so it is excluded for the rest of the round."""
+    from endure.protocol.synapses import SubmitCommit
+    from endure.protocol.version_contract import CURRENT_VERSION_KEY
+    from neurons.miner import Miner
+
+    miner = Miner(config=mock_miner_config)
+    miner.metagraph = _FakeMetagraph()
+    miner.uid = 2  # hk-self
+
+    pushed: list[list[str]] = []
+
+    async def fake_dendrite(*, axons, synapse, timeout, deserialize):  # noqa: ANN001, ANN202
+        pushed.append([axon.hotkey for axon in axons])
+        responses = []
+        for axon in axons:
+            response = synapse.model_copy()
+            response.accepted = False
+            if axon.hotkey == "hk-v2":
+                response.dendrite = bt.TerminalInfo(
+                    status_code=404,
+                    status_message=(
+                        f"Synapse name '{response.name}' not found. "
+                        "Available synapses ['Synapse']"
+                    ),
+                )
+            responses.append(response)
+        return responses
+
+    miner.dendrite = fake_dendrite
+
+    synapse = SubmitCommit(
+        round_id="2023-03-06",
+        schema_id=RISK_SCHEMA_ID,
+        spec_version=CURRENT_VERSION_KEY,
+        bundle_hash="ab" * 32,
+    )
+    await miner._send(synapse)
+    assert pushed[0] == ["hk-v1", "hk-v2"]
+
+    await miner._send(synapse.model_copy())
+    assert pushed[1] == ["hk-v1"]  # hk-v2 excluded for the round, still retried v1
+
+    other_round = synapse.model_copy()
+    other_round.round_id = "2023-03-07"
+    await miner._send(other_round)
+    assert pushed[2] == ["hk-v1", "hk-v2"]  # exclusion is per-round
+
+
+async def test_unknown_synapse_match_tracks_installed_bittensor_contract() -> None:
+    from bittensor.core.axon import AxonMiddleware, log_and_handle_error
+    from bittensor.core.errors import UnknownSynapseError
+
+    from neurons.miner import _rejected_as_unknown_synapse
+
+    response = bt.Synapse()
+    axon = MagicMock()
+    axon.forward_class_types = {"DifferentSynapse": bt.Synapse}
+    middleware = AxonMiddleware(MagicMock(), axon)
+    request = MagicMock()
+    request.url.path = f"/{response.name}"
+
+    with pytest.raises(UnknownSynapseError) as error:
+        await middleware.preprocess(request)
+
+    mapped = log_and_handle_error(response, error.value)
+    response.dendrite = bt.TerminalInfo(
+        status_code=mapped.axon.status_code,
+        status_message=mapped.axon.status_message,
+    )
+    assert _rejected_as_unknown_synapse(response)
+
+
+async def test_send_retries_generic_http_404_responses(
+    mock_miner_config: bt.Config,
+) -> None:
+    from endure.protocol.synapses import SubmitCommit
+    from endure.protocol.version_contract import CURRENT_VERSION_KEY
+    from neurons.miner import Miner
+
+    miner = Miner(config=mock_miner_config)
+    miner.metagraph = _FakeMetagraph()
+    miner.uid = 2
+    pushed: list[list[str]] = []
+
+    async def fake_dendrite(*, axons, synapse, timeout, deserialize):  # noqa: ANN001, ANN202
+        pushed.append([axon.hotkey for axon in axons])
+        responses = []
+        for axon in axons:
+            response = synapse.model_copy()
+            response.accepted = False
+            if axon.hotkey == "hk-v2":
+                response.dendrite = bt.TerminalInfo(
+                    status_code=404,
+                    status_message="proxy route not found",
+                )
+            responses.append(response)
+        return responses
+
+    miner.dendrite = fake_dendrite
+    synapse = SubmitCommit(
+        round_id="2023-03-06",
+        schema_id=RISK_SCHEMA_ID,
+        spec_version=CURRENT_VERSION_KEY,
+        bundle_hash="ab" * 32,
+    )
+
+    await miner._send(synapse)
+    await miner._send(synapse.model_copy())
+
+    assert pushed == [["hk-v1", "hk-v2"], ["hk-v1", "hk-v2"]]
+
+
+async def test_send_handles_short_stake_weight_snapshot(
+    mock_miner_config: bt.Config,
+) -> None:
+    from endure.protocol.synapses import SubmitCommit
+    from endure.protocol.version_contract import CURRENT_VERSION_KEY
+    from neurons.miner import Miner
+
+    mock_miner_config.endure.min_validator_stake_weight = Decimal("1000")
+    miner = Miner(config=mock_miner_config)
+    metagraph = _FakeMetagraph()
+    metagraph.S = np.array([423000], dtype=np.float32)
+    miner.metagraph = metagraph
+    miner.uid = 2
+    pushed: list[list[str]] = []
+
+    async def fake_dendrite(*, axons, synapse, timeout, deserialize):  # noqa: ANN001, ANN202
+        pushed.append([axon.hotkey for axon in axons])
+        return [synapse.model_copy() for _ in axons]
+
+    miner.dendrite = fake_dendrite
+
+    await miner._send(
+        SubmitCommit(
+            round_id="2023-03-06",
+            schema_id=RISK_SCHEMA_ID,
+            spec_version=CURRENT_VERSION_KEY,
+            bundle_hash="ab" * 32,
+        )
+    )
+
+    assert pushed == [["hk-v1"]]
+
+
+async def test_unknown_synapse_tracking_evicts_after_twenty_rounds(
+    mock_miner_config: bt.Config,
+) -> None:
+    from endure.protocol.synapses import SubmitCommit
+    from endure.protocol.version_contract import CURRENT_VERSION_KEY
+    from neurons.miner import Miner
+
+    miner = Miner(config=mock_miner_config)
+    miner.metagraph = _FakeMetagraph()
+    miner.uid = 2
+
+    async def fake_dendrite(*, axons, synapse, timeout, deserialize):  # noqa: ANN001, ANN202
+        responses = []
+        for _ in axons:
+            response = synapse.model_copy()
+            response.accepted = False
+            response.dendrite = bt.TerminalInfo(
+                status_code=404,
+                status_message=(
+                    f"Synapse name '{response.name}' not found. "
+                    "Available synapses ['Synapse']"
+                ),
+            )
+            responses.append(response)
+        return responses
+
+    miner.dendrite = fake_dendrite
+    for day in range(1, 22):
+        await miner._send(
+            SubmitCommit(
+                round_id=f"2023-03-{day:02d}",
+                schema_id=RISK_SCHEMA_ID,
+                spec_version=CURRENT_VERSION_KEY,
+                bundle_hash="ab" * 32,
+            )
+        )
+
+    assert len(miner._unknown_synapse) == 20
+    assert "2023-03-01" not in miner._unknown_synapse
+    assert "2023-03-21" in miner._unknown_synapse
 
 
 @pytest.mark.parametrize(

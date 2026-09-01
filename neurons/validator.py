@@ -9,6 +9,7 @@ EMAs whenever scoring happens.
 """
 
 import asyncio
+import os
 import time
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -249,6 +250,7 @@ class Validator(BaseValidatorNeuron):
         )
         weight_emission_degraded = (
             gate.degraded
+            or gate.abandoned_generations > 0
             or self._consecutive_set_weights_failures > 0
             or unresolved_unconfirmed
             or deadline_overdue
@@ -309,6 +311,7 @@ class Validator(BaseValidatorNeuron):
                 "degraded": gate.degraded,
                 "rate_limited_total": gate.rate_limited_total,
                 "deferred_total": gate.deferred_total,
+                "abandoned_generations": gate.abandoned_generations,
             },
         }
 
@@ -320,6 +323,11 @@ class Validator(BaseValidatorNeuron):
         if self._last_tick_monotonic is None:
             return None
         return time.monotonic() - self._last_tick_monotonic
+
+    def _mark_tick_progress(self) -> None:
+        """Refresh tick liveness from bounded in-tick work, so a long catch-up
+        tick survives the watchdog while a wedged thread still trips it."""
+        self._last_tick_monotonic = time.monotonic()
 
     def _tick_stale(self) -> bool:
         now = time.monotonic()
@@ -939,7 +947,8 @@ def _build_risk_vertical_runtime(validator: Validator) -> VerticalRuntime:
             live_provider = LiveAlphaPriceProvider(
                 config=LiveAlphaPriceProviderConfig(
                     endpoint=str(validator.config.endure.market_data_endpoint)
-                )
+                ),
+                progress_fn=validator._mark_tick_progress,
             )
 
             def live_reveal_close_block(reveal_close: datetime) -> int:
@@ -1021,6 +1030,12 @@ def main() -> None:
         validator = Validator()
         with validator:
             while not stop.is_set():
+                if validator.chain_rpc_restart_required() is True:
+                    bt.logging.error(
+                        "validator forcing process restart after chain RPC "
+                        "abandonment capacity was reached"
+                    )
+                    os._exit(1)
                 if (reason := validator.watchdog_exit_reason()) is not None:
                     bt.logging.error(f"validator watchdog exiting: {reason}")
                     raise SystemExit(1)

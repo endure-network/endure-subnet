@@ -571,6 +571,31 @@ def test_main_exits_nonzero_and_cleans_up_on_watchdog_failure() -> None:
     context.__exit__.assert_called_once()
 
 
+def test_main_hard_exits_when_rpc_abandonment_capacity_is_reached() -> None:
+    from neurons.validator import main
+
+    validator = MagicMock()
+    validator.chain_rpc_restart_required.return_value = True
+    context = MagicMock()
+    context.__enter__.return_value = validator
+    context.chain_rpc_restart_required.return_value = True
+
+    with (
+        patch(
+            "neurons.validator.install_shutdown_handlers",
+            return_value=threading.Event(),
+        ),
+        patch("neurons.validator.Validator", return_value=context),
+        patch("neurons.validator.os._exit", side_effect=SystemExit(1)) as hard_exit,
+        pytest.raises(SystemExit) as exit_info,
+    ):
+        main()
+
+    assert exit_info.value.code == 1
+    hard_exit.assert_called_once_with(1)
+    context.__exit__.assert_called_once()
+
+
 def test_main_redacts_runtime_endpoint_credentials() -> None:
     from neurons.validator import main
 
@@ -619,6 +644,29 @@ def test_runtime_health_reports_stale_tick(
     assert health["tick_stale"] is True
     assert health["seconds_since_last_tick"] == 100
     assert validator.watchdog_exit_reason() == "validator tick stale"
+
+
+def test_mark_tick_progress_clears_watchdog_staleness(
+    mock_validator_config: bt.Config,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from neurons.validator import Validator
+
+    mock_validator_config.neuron.axon_off = True
+    mock_validator_config.neuron.disable_set_weights = True
+    mock_validator_config.endure.health_tick_max_age_seconds = 60
+    mock_validator_config.endure.health_startup_grace_seconds = 120
+    monkeypatch.setattr("neurons.validator.time.monotonic", lambda: 1_000.0)
+    validator = Validator(config=mock_validator_config)
+    validator._last_tick_monotonic = 900.0
+    validator.thread = MagicMock()
+    validator.thread.is_alive.return_value = True
+    assert validator.watchdog_exit_reason() == "validator tick stale"
+
+    validator._mark_tick_progress()
+
+    assert validator.watchdog_exit_reason() is None
+    assert validator.runtime_health()["tick_stale"] is False
 
 
 def test_set_weights_abstains_until_first_resolution(

@@ -2,8 +2,8 @@
 
 Alpha Risk (``risk.v1.subnet_alpha``) is the served vertical. Forge lending
 remains dormant, admitted only by the dev-only unserved-schema override.
-Endure is submission-driven: this miner pushes commits and reveals to every
-validator axon via its dendrite.
+Endure is submission-driven: this miner pushes commits and reveals to eligible
+validator axons (permit + optional stake-weight floor) via its dendrite.
 """
 
 import asyncio
@@ -11,6 +11,7 @@ import copy
 import threading
 import time
 from datetime import UTC, datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import Tuple
 from urllib.parse import urlsplit
@@ -55,6 +56,24 @@ def _utc_now() -> datetime:
 # Acceptance tracking is bounded; rounds beyond this are past their windows.
 _MAX_TRACKED_PUSH_ROUNDS = 20
 _MAX_TCP_PORT = 65535
+# bittensor's axon maps UnknownSynapseError to HTTP 404: the peer's axon does
+# not serve this synapse type at all (typically a permit-holding miner, not a
+# validator), so retrying it within the round can never succeed.
+_UNKNOWN_SYNAPSE_STATUS = 404
+
+
+def _rejected_as_unknown_synapse(response: bt.Synapse) -> bool:
+    dendrite = response.dendrite
+    if (
+        dendrite is None
+        or dendrite.status_code is None
+        or dendrite.status_message is None
+    ):
+        return False
+    canonical_prefix = f"Synapse name '{response.name}' not found. Available synapses "
+    return int(dendrite.status_code) == _UNKNOWN_SYNAPSE_STATUS and str(
+        dendrite.status_message
+    ).startswith(canonical_prefix)
 
 
 def _parse_validator_axon_overrides(raw: str) -> dict[str, tuple[str, int]]:
@@ -103,6 +122,14 @@ class Miner(BaseMinerNeuron):
         )
         self._schema_id = active_runtime_schema_id(self.config)
         require_serving_stage_allowed(self.config)
+        if str(self.config.runtime.mode) != "mock" and (
+            self.config.endure.min_validator_stake_weight > Decimal("0")
+        ):
+            bt.logging.warning(
+                "endure.min_validator_stake_weight is active on a live network — "
+                "permit-holding validators below the configured metagraph total "
+                "stake-weight floor receive no commits or reveals"
+            )
         self.dendrite = self.runtime_provider.create_miner_dendrite(
             self.wallet, self.config
         )
@@ -112,6 +139,10 @@ class Miner(BaseMinerNeuron):
         # an accepting validator burns its per-round commit rate limit). Nested
         # by round so eviction drops whole rounds (commit+reveal together).
         self._acked: dict[str, dict[str, set[str]]] = {}
+        # round_id → hotkeys whose axon rejected a push as an unknown synapse;
+        # they lack the Endure handlers entirely, so retries within the round
+        # only produce a symmetric error storm between colocated miners.
+        self._unknown_synapse: dict[str, set[str]] = {}
         self._validator_axon_overrides = _parse_validator_axon_overrides(
             str(self.config.endure.validator_axon_overrides or "")
         )
@@ -188,27 +219,17 @@ class Miner(BaseMinerNeuron):
         )
 
     async def _send(self, synapse: SubmitCommit | SubmitReveal) -> int:
-        """Push to validators that have not yet accepted; return total acked."""
+        """Push to eligible validators that have not yet accepted; return total acked."""
         round_acks = self._acked.setdefault(synapse.round_id, {})
         acked = round_acks.setdefault(type(synapse).__name__, set())
+        unknown = self._unknown_synapse.setdefault(synapse.round_id, set())
         # Evict whole oldest rounds so the bound is in rounds, not half-rounds,
         # and a round's commit/reveal sets are never split across the boundary.
         if len(self._acked) > _MAX_TRACKED_PUSH_ROUNDS:
             for stale_round in sorted(self._acked)[:-_MAX_TRACKED_PUSH_ROUNDS]:
                 del self._acked[stale_round]
-        targets = [
-            (
-                self.metagraph.hotkeys[uid],
-                self._axon_for_push(
-                    self.metagraph.axons[uid], self.metagraph.hotkeys[uid]
-                ),
-            )
-            for uid in range(int(self.metagraph.n))
-            if bool(self.metagraph.validator_permit[uid])
-            and uid != self.uid
-            and self.metagraph.axons[uid].is_serving
-            and self.metagraph.hotkeys[uid] not in acked
-        ]
+                self._unknown_synapse.pop(stale_round, None)
+        targets = self._snapshot_push_targets(acked, unknown)
         axons = [axon for _, axon in targets]
         if not axons:
             if not acked:
@@ -220,21 +241,62 @@ class Miner(BaseMinerNeuron):
         for (hotkey, _), response in zip(targets, responses, strict=True):
             if getattr(response, "accepted", False):
                 acked.add(hotkey)
+            elif _rejected_as_unknown_synapse(response):
+                unknown.add(hotkey)
         bt.logging.info(
             f"{type(synapse).__name__} round {synapse.round_id}: "
-            f"{len(acked)} validators hold it ({len(axons)} pushed this tick)"
+            f"{len(acked)} validators hold it ({len(axons)} pushed this tick, "
+            f"{len(unknown)} excluded as non-validators)"
         )
         return len(acked)
 
+    def _snapshot_push_targets(
+        self,
+        acked: set[str],
+        unknown: set[str],
+    ) -> tuple[tuple[str, bt.AxonInfo], ...]:
+        with self._metagraph_lock:
+            hotkeys = tuple(str(hotkey) for hotkey in self.metagraph.hotkeys)
+            axons = tuple(self.metagraph.axons)
+            permits = tuple(bool(permit) for permit in self.metagraph.validator_permit)
+            own_uid = self.uid
+            minimum_weight = self.config.endure.min_validator_stake_weight
+            aligned_count = min(
+                int(self.metagraph.n),
+                len(hotkeys),
+                len(axons),
+                len(permits),
+            )
+            stake_weights: tuple[Decimal, ...] = ()
+            if minimum_weight > Decimal("0"):
+                stake_weights = tuple(
+                    Decimal(str(stake)) for stake in self.metagraph.S.tolist()
+                )
+                aligned_count = min(aligned_count, len(stake_weights))
+
+            return tuple(
+                (hotkeys[uid], self._axon_for_push(axons[uid], hotkeys[uid]))
+                for uid in range(aligned_count)
+                if permits[uid]
+                and uid != own_uid
+                and axons[uid].is_serving
+                and (
+                    minimum_weight <= Decimal("0")
+                    or stake_weights[uid] >= minimum_weight
+                )
+                and hotkeys[uid] not in acked
+                and hotkeys[uid] not in unknown
+            )
+
     def _axon_for_push(self, axon: bt.AxonInfo, hotkey: str) -> bt.AxonInfo:
+        snapshotted = copy.copy(axon)
         override = self._validator_axon_overrides.get(hotkey)
         if override is None:
-            return axon
+            return snapshotted
         host, port = override
-        overridden = copy.copy(axon)
-        overridden.ip = host
-        overridden.port = port
-        return overridden
+        snapshotted.ip = host
+        snapshotted.port = port
+        return snapshotted
 
     def _push_loop(self) -> None:
         loop = asyncio.new_event_loop()

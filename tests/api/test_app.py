@@ -27,6 +27,7 @@ from endure.assessment.schemas.subnet_alpha_risk import (
 )
 from endure.protocol.canonical import canonical_bundle_bytes
 from endure.protocol.round_engine import DEFAULT_OFFSETS, compute_windows
+from endure.runtime.identity import content_revision
 from endure.scoring.assessment_orchestrator import REALIZED_TARGET_RESOLVED
 from endure.storage.repository import Storage
 from endure.storage.tables import rounds
@@ -78,6 +79,7 @@ class TestHealthAndSchemas:
         assert body["protocol_version_key"] == 29
         assert body["source_revision"] == "unknown"
         assert body["image_version"] == "dev"
+        assert body["content_revision"] == content_revision()
 
     def test_schemas_discovery(self, client: TestClient) -> None:
         response = client.get("/schemas")
@@ -131,6 +133,7 @@ def _runtime(
             "degraded": rpc_degraded,
             "rate_limited_total": 0,
             "deferred_total": 0,
+            "abandoned_generations": 0,
         },
     }
     if assessment_due_seconds is not None:
