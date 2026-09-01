@@ -646,6 +646,32 @@ def test_runtime_health_reports_stale_tick(
     assert validator.watchdog_exit_reason() == "validator tick stale"
 
 
+def test_mark_tick_progress_clears_watchdog_staleness(
+    mock_validator_config: bt.Config,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Bounded in-tick work (archive retries, per-round walks) refreshes
+    liveness, so a long catch-up tick survives the watchdog while a wedged
+    thread — which marks nothing — still trips it."""
+    from neurons.validator import Validator
+
+    mock_validator_config.neuron.axon_off = True
+    mock_validator_config.neuron.disable_set_weights = True
+    mock_validator_config.endure.health_tick_max_age_seconds = 60
+    mock_validator_config.endure.health_startup_grace_seconds = 120
+    monkeypatch.setattr("neurons.validator.time.monotonic", lambda: 1_000.0)
+    validator = Validator(config=mock_validator_config)
+    validator._last_tick_monotonic = 900.0
+    validator.thread = MagicMock()
+    validator.thread.is_alive.return_value = True
+    assert validator.watchdog_exit_reason() == "validator tick stale"
+
+    validator._mark_tick_progress()
+
+    assert validator.watchdog_exit_reason() is None
+    assert validator.runtime_health()["tick_stale"] is False
+
+
 def test_set_weights_abstains_until_first_resolution(
     mock_validator_config: bt.Config,
     monkeypatch: pytest.MonkeyPatch,

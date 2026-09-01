@@ -324,6 +324,18 @@ class Validator(BaseValidatorNeuron):
             return None
         return time.monotonic() - self._last_tick_monotonic
 
+    def _mark_tick_progress(self) -> None:
+        """Refresh tick liveness from bounded units of in-tick work.
+
+        A catch-up tick resolving a multi-day backlog legitimately outlives
+        ``health_tick_max_age_seconds`` (2026-09-01 soak: the watchdog killed
+        every catch-up attempt at 300s, wedging the validator in a restart
+        loop). Callees invoke this only from loops whose per-step work is
+        bounded by request timeouts, so a genuinely wedged thread stops
+        marking and the watchdog still trips.
+        """
+        self._last_tick_monotonic = time.monotonic()
+
     def _tick_stale(self) -> bool:
         now = time.monotonic()
         if self._last_tick_monotonic is None:
@@ -942,7 +954,8 @@ def _build_risk_vertical_runtime(validator: Validator) -> VerticalRuntime:
             live_provider = LiveAlphaPriceProvider(
                 config=LiveAlphaPriceProviderConfig(
                     endpoint=str(validator.config.endure.market_data_endpoint)
-                )
+                ),
+                progress_fn=validator._mark_tick_progress,
             )
 
             def live_reveal_close_block(reveal_close: datetime) -> int:
