@@ -78,6 +78,8 @@ class RpcGateHealth(TypedDict):
     rate_limited_total: int
     deferred_total: int
     abandoned_generations: int
+    late_completions_total: int
+    late_set_weights_completions_total: int
 
 
 class RuntimeHealth(TypedDict):

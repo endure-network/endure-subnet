@@ -2554,6 +2554,46 @@ class TestWeightEmissionAudit:
         validator.metagraph.__dict__["block"] = np.array([261])
         assert validator.runtime_health().get("weight_emission_degraded") is True
 
+    def test_runtime_health_exposes_late_rpc_completion_totals(
+        self, storage: Storage
+    ) -> None:
+        validator = _audit_validator(storage)
+        validator.metagraph = MagicMock()
+        validator.metagraph.__dict__["block"] = 100
+        validator.rpc_gate = MagicMock()
+        validator.rpc_gate.snapshot.return_value = MagicMock(
+            adaptive_rate=1.0,
+            degraded=False,
+            rate_limited_total=0,
+            deferred_total=0,
+            abandoned_generations=0,
+            late_completions_total=4,
+            late_set_weights_completions_total=1,
+        )
+        validator._service = MagicMock(
+            consecutive_universe_failures=0,
+            last_universe_error=None,
+            consecutive_resolution_failures=0,
+            last_resolution_error=None,
+            consecutive_empty_scored_rounds=0,
+            last_empty_scored_round=None,
+        )
+        validator._consecutive_set_weights_failures = 0
+        validator._last_set_weights_ok = None
+        validator._tick_failures = 0
+        validator._last_tick_ok = None
+        validator._last_tick_error = None
+        validator._last_tick_monotonic = None
+        validator._started_monotonic = 0.0
+        validator.config.endure.health_startup_grace_seconds = 1
+        validator.thread = MagicMock()
+        validator.thread.is_alive.return_value = True
+
+        rpc_health = validator.runtime_health()["rpc_gate"]
+
+        assert rpc_health["late_completions_total"] == 4
+        assert rpc_health["late_set_weights_completions_total"] == 1
+
     def test_unknown_cached_block_degrades_open_attempt_after_startup_grace(
         self, storage: Storage
     ) -> None:

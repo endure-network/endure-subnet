@@ -134,6 +134,8 @@ def _runtime(
             "rate_limited_total": 0,
             "deferred_total": 0,
             "abandoned_generations": 0,
+            "late_completions_total": 2,
+            "late_set_weights_completions_total": 1,
         },
     }
     if assessment_due_seconds is not None:
@@ -162,6 +164,11 @@ class TestRuntimeHealth:
         assert response.json()["status"] == "ok"
         assert response.json()["runtime"]["seconds_since_last_tick"] == 1.5
         assert response.json()["runtime"]["failed_weight_submissions_total"] == 3
+        assert response.json()["runtime"]["rpc_gate"]["late_completions_total"] == 2
+        assert (
+            response.json()["runtime"]["rpc_gate"]["late_set_weights_completions_total"]
+            == 1
+        )
 
     def test_tick_failures_degrade_to_503(self, storage: Storage) -> None:
         response = self._client(storage, _runtime(tick_failures=3)).get("/health")
