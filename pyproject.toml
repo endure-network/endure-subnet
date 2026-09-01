@@ -37,6 +37,7 @@ dependencies = [
     "fastapi>=0.110",
     "uvicorn[standard]>=0.29",
     "starlette>=0.30.0",
+    "prometheus-client>=0.22,<0.24",
     "numpy>=1",
 ]
 

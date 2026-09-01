@@ -229,6 +229,27 @@ class TestRuntimeHealth:
         assert response.status_code == 503
         assert response.json()["status"] == "degraded"
 
+    def test_metrics_are_parseable_while_health_is_degraded(
+        self, storage: Storage
+    ) -> None:
+        from prometheus_client.parser import text_string_to_metric_families
+
+        client = self._client(storage, _runtime(rpc_degraded=True))
+
+        health_response = client.get("/health")
+        assert health_response.status_code == 503
+        assert health_response.json()["status"] == "degraded"
+
+        metrics_response = client.get("/metrics")
+        assert metrics_response.status_code == 200
+        assert metrics_response.headers["content-type"].startswith("text/plain")
+
+        metric_families = {
+            family.name for family in text_string_to_metric_families(metrics_response.text)
+        }
+        assert "endure_validator_live" in metric_families
+        assert "endure_validator_ready" in metric_families
+
     def test_live_endpoint_stays_200_during_rpc_backoff(self, storage: Storage) -> None:
         response = self._client(storage, _runtime(rpc_degraded=True)).get("/live")
 
