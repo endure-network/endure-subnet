@@ -336,6 +336,7 @@ class LiveAlphaPriceProvider:
         fetcher: AlphaSubnetInfoFetcher | None = None,
         sleep: Sleeper = sleep_decimal,
         now_fn: Callable[[], float] = time.monotonic,
+        progress_fn: Callable[[], None] | None = None,
     ) -> None:
         if config.max_attempts <= 0:
             raise AlphaMarketDataError("max_attempts must be positive")
@@ -349,6 +350,7 @@ class LiveAlphaPriceProvider:
         )
         self._sleep = sleep
         self._now_fn = now_fn
+        self._progress_fn = progress_fn
         self._snapshots: dict[tuple[int, int], AlphaPriceSnapshot] = {}
         self._series: OrderedDict[tuple[int, ResolutionWindow], AlphaPriceSeries] = (
             OrderedDict()
@@ -563,7 +565,12 @@ class LiveAlphaPriceProvider:
             return _SnapshotFetchResult(snapshot=None, connection_available=True)
 
     def _with_retry[T](self, operation: Callable[[], T]) -> T:
+        # Attempt-level progress marks keep the watchdog honest: each attempt
+        # is bounded (request timeout + capped backoff), while a wedged thread
+        # stops marking and still trips it.
         for attempt in range(1, self._config.max_attempts + 1):
+            if self._progress_fn is not None:
+                self._progress_fn()
             try:
                 return operation()
             except ARCHIVE_FETCH_FAILURES as error:

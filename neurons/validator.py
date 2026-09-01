@@ -324,6 +324,11 @@ class Validator(BaseValidatorNeuron):
             return None
         return time.monotonic() - self._last_tick_monotonic
 
+    def _mark_tick_progress(self) -> None:
+        """Refresh tick liveness from bounded in-tick work, so a long catch-up
+        tick survives the watchdog while a wedged thread still trips it."""
+        self._last_tick_monotonic = time.monotonic()
+
     def _tick_stale(self) -> bool:
         now = time.monotonic()
         if self._last_tick_monotonic is None:
@@ -942,7 +947,8 @@ def _build_risk_vertical_runtime(validator: Validator) -> VerticalRuntime:
             live_provider = LiveAlphaPriceProvider(
                 config=LiveAlphaPriceProviderConfig(
                     endpoint=str(validator.config.endure.market_data_endpoint)
-                )
+                ),
+                progress_fn=validator._mark_tick_progress,
             )
 
             def live_reveal_close_block(reveal_close: datetime) -> int:

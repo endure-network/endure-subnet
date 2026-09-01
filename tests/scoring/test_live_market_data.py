@@ -1172,6 +1172,31 @@ def test_live_provider_redacts_endpoint_credentials_after_retry_exhaustion() -> 
         provider._with_retry(missing)
 
 
+def test_live_provider_marks_progress_per_retry_attempt() -> None:
+    # Given: a progress recorder and an operation that fails twice, then succeeds.
+    marks: list[int] = []
+    provider = LiveAlphaPriceProvider(
+        config=LiveAlphaPriceProviderConfig(
+            max_attempts=3, request_pause_seconds=Decimal("0")
+        ),
+        fetcher=FakeSubnetFetcher(responses={}),
+        progress_fn=lambda: marks.append(1),
+    )
+    attempts = iter((ConnectionError("drop"), ConnectionError("drop"), 7))
+
+    def flaky() -> int:
+        outcome = next(attempts)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    # When: the retry loop runs to success.
+    assert provider._with_retry(flaky) == 7
+
+    # Then: liveness is marked once per attempt.
+    assert marks == [1, 1, 1]
+
+
 def test_live_provider_is_window_explicit_and_reentrant() -> None:
     # Given: one provider cache shared by interleaved 5d and 30d requests.
     blocks = tuple(range(1_600, 1_600 + 30 * 600, 600))
