@@ -1193,8 +1193,7 @@ def test_live_provider_marks_progress_per_retry_attempt() -> None:
     # When: the retry loop runs to success.
     assert provider._with_retry(flaky) == 7
 
-    # Then: liveness is marked once per attempt, bounding watchdog silence
-    # to a single bounded archive request even during multi-day backfills.
+    # Then: liveness is marked once per attempt.
     assert marks == [1, 1, 1]
 
 

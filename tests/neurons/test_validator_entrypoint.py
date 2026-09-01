@@ -650,9 +650,6 @@ def test_mark_tick_progress_clears_watchdog_staleness(
     mock_validator_config: bt.Config,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Bounded in-tick work (archive retries, per-round walks) refreshes
-    liveness, so a long catch-up tick survives the watchdog while a wedged
-    thread — which marks nothing — still trips it."""
     from neurons.validator import Validator
 
     mock_validator_config.neuron.axon_off = True

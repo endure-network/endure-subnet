@@ -325,15 +325,8 @@ class Validator(BaseValidatorNeuron):
         return time.monotonic() - self._last_tick_monotonic
 
     def _mark_tick_progress(self) -> None:
-        """Refresh tick liveness from bounded units of in-tick work.
-
-        A catch-up tick resolving a multi-day backlog legitimately outlives
-        ``health_tick_max_age_seconds`` (2026-09-01 soak: the watchdog killed
-        every catch-up attempt at 300s, wedging the validator in a restart
-        loop). Callees invoke this only from loops whose per-step work is
-        bounded by request timeouts, so a genuinely wedged thread stops
-        marking and the watchdog still trips.
-        """
+        """Refresh tick liveness from bounded in-tick work, so a long catch-up
+        tick survives the watchdog while a wedged thread still trips it."""
         self._last_tick_monotonic = time.monotonic()
 
     def _tick_stale(self) -> bool:

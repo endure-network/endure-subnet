@@ -565,13 +565,9 @@ class LiveAlphaPriceProvider:
             return _SnapshotFetchResult(snapshot=None, connection_available=True)
 
     def _with_retry[T](self, operation: Callable[[], T]) -> T:
-        # Every archive fetch funnels through here, and each attempt is bounded
-        # (request timeout + capped backoff), so an attempt-level progress mark
-        # proves loop liveness to the watchdog during long backfills without
-        # masking a genuinely wedged thread — a wedge stops marking (spec §7.2
-        # watchdog contract; 2026-09-01 soak crash loop: one catch-up tick
-        # exceeded the 300s staleness budget and was killed mid-backfill
-        # forever).
+        # Attempt-level progress marks keep the watchdog honest: each attempt
+        # is bounded (request timeout + capped backoff), while a wedged thread
+        # stops marking and still trips it.
         for attempt in range(1, self._config.max_attempts + 1):
             if self._progress_fn is not None:
                 self._progress_fn()
