@@ -5,6 +5,7 @@ from decimal import Decimal
 from unittest.mock import MagicMock, patch
 
 import bittensor as bt
+import numpy as np
 import pytest
 
 from endure.assessment.schemas.forge_lending import FORGE_LENDING_SCHEMA_ID
@@ -119,7 +120,14 @@ class _FakeMetagraph:
     hotkeys = ["hk-v1", "hk-v2", "hk-self"]
     axons = [_FakeAxon("hk-v1"), _FakeAxon("hk-v2"), _FakeAxon("hk-self")]
     validator_permit = [True, True, True]
-    S = [Decimal("423000"), Decimal("51000"), Decimal("1")]
+    S = np.array([423000, 51000, 1], dtype=np.float32)
+
+
+class _IterationSensitiveStakeWeights(np.ndarray):
+    def __iter__(self) -> Iterator[np.float32]:
+        raise AssertionError(
+            "stake weights must be normalized before scalar conversion"
+        )
 
 
 async def test_send_counts_acceptances_and_skips_acked_validators(
@@ -219,11 +227,9 @@ async def test_send_skips_peers_below_the_validator_stake_floor(
     mock_miner_config.endure.min_validator_stake_weight = Decimal("1000")
     miner = Miner(config=mock_miner_config)
     metagraph = _FakeMetagraph()
-    metagraph.S = [
-        Decimal("423000"),
-        Decimal("1"),
-        Decimal("1"),
-    ]  # hk-v2 is a permit-holding miner
+    metagraph.S = np.array(
+        [423000, 1, 1], dtype=np.float32
+    )  # hk-v2 is a permit-holding miner
     miner.metagraph = metagraph
     miner.uid = 2  # hk-self
 
@@ -253,6 +259,25 @@ async def test_send_skips_peers_below_the_validator_stake_floor(
     assert pushed == [["hk-v1"]]
 
 
+def test_snapshot_push_targets_normalizes_stake_weights_before_conversion(
+    mock_miner_config: bt.Config,
+) -> None:
+    from neurons.miner import Miner
+
+    mock_miner_config.endure.min_validator_stake_weight = Decimal("1000")
+    miner = Miner(config=mock_miner_config)
+    metagraph = _FakeMetagraph()
+    metagraph.S = np.array([423000, 1, 1], dtype=np.float32).view(
+        _IterationSensitiveStakeWeights
+    )
+    miner.metagraph = metagraph
+    miner.uid = 2
+
+    targets = miner._snapshot_push_targets(set(), set())
+
+    assert [hotkey for hotkey, _ in targets] == ["hk-v1"]
+
+
 async def test_send_zero_stake_floor_disables_the_gate(
     mock_miner_config: bt.Config,
 ) -> None:
@@ -263,7 +288,7 @@ async def test_send_zero_stake_floor_disables_the_gate(
     mock_miner_config.endure.min_validator_stake_weight = Decimal("0")
     miner = Miner(config=mock_miner_config)
     metagraph = _FakeMetagraph()
-    metagraph.S = [Decimal("1"), Decimal("1"), Decimal("1")]
+    metagraph.S = np.array([1, 1, 1], dtype=np.float32)
     miner.metagraph = metagraph
     miner.uid = 2  # hk-self
 
@@ -340,6 +365,30 @@ async def test_send_stops_retrying_canonical_unknown_synapse_rejections(
     assert pushed[2] == ["hk-v1", "hk-v2"]  # exclusion is per-round
 
 
+async def test_unknown_synapse_match_tracks_installed_bittensor_contract() -> None:
+    from bittensor.core.axon import AxonMiddleware, log_and_handle_error
+    from bittensor.core.errors import UnknownSynapseError
+
+    from neurons.miner import _rejected_as_unknown_synapse
+
+    response = bt.Synapse()
+    axon = MagicMock()
+    axon.forward_class_types = {"DifferentSynapse": bt.Synapse}
+    middleware = AxonMiddleware(MagicMock(), axon)
+    request = MagicMock()
+    request.url.path = f"/{response.name}"
+
+    with pytest.raises(UnknownSynapseError) as error:
+        await middleware.preprocess(request)
+
+    mapped = log_and_handle_error(response, error.value)
+    response.dendrite = bt.TerminalInfo(
+        status_code=mapped.axon.status_code,
+        status_message=mapped.axon.status_message,
+    )
+    assert _rejected_as_unknown_synapse(response)
+
+
 async def test_send_retries_generic_http_404_responses(
     mock_miner_config: bt.Config,
 ) -> None:
@@ -390,7 +439,7 @@ async def test_send_handles_short_stake_weight_snapshot(
     mock_miner_config.endure.min_validator_stake_weight = Decimal("1000")
     miner = Miner(config=mock_miner_config)
     metagraph = _FakeMetagraph()
-    metagraph.S = [Decimal("423000")]
+    metagraph.S = np.array([423000], dtype=np.float32)
     miner.metagraph = metagraph
     miner.uid = 2
     pushed: list[list[str]] = []

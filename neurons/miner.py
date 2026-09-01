@@ -269,7 +269,9 @@ class Miner(BaseMinerNeuron):
             )
             stake_weights: tuple[Decimal, ...] = ()
             if minimum_weight > Decimal("0"):
-                stake_weights = tuple(Decimal(str(stake)) for stake in self.metagraph.S)
+                stake_weights = tuple(
+                    Decimal(str(stake)) for stake in self.metagraph.S.tolist()
+                )
                 aligned_count = min(aligned_count, len(stake_weights))
 
             return tuple(
