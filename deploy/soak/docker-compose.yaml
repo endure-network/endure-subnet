@@ -70,11 +70,13 @@ services:
       context: ../..
       dockerfile: docker/validator.Dockerfile
       args:
-        # Prefer Coolify's SOURCE_COMMIT (the actually checked-out commit) so an
-        # auto-deploy can never build new code under a stale hand-typed label;
-        # fall back to the manual variables, then to the dev-image defaults.
-        ENDURE_SOURCE_REVISION: ${SOURCE_COMMIT:-${ENDURE_SOURCE_REVISION:-unknown}}
-        ENDURE_IMAGE_VERSION: ${SOURCE_COMMIT:+sha-}${SOURCE_COMMIT:-${ENDURE_IMAGE_VERSION:-dev}}
+        # Coolify's SOURCE_COMMIT (the actually checked-out commit) is the only
+        # identity source. Single-level ${VAR:-default} only: Coolify's own
+        # compose parser rejects the :+ operator and nested defaults with
+        # "The key must start with a letter or underscore" (2026-09-01 deploy
+        # failure), even though docker compose resolves them fine.
+        ENDURE_SOURCE_REVISION: ${SOURCE_COMMIT:-unknown}
+        ENDURE_IMAGE_VERSION: sha-${SOURCE_COMMIT:-unknown}
     image: endure-validator:soak
     environment:
       PYTHONUNBUFFERED: "1"
