@@ -34,7 +34,13 @@ import numpy as np
 from bittensor.core.types import ExtrinsicResponse
 
 from endure.base.neuron import BaseNeuron
-from endure.base.rate_gate import GatedSubtensor, RateLimited
+from endure.base.rate_gate import (
+    ChainRpcRestartRequired,
+    ChainRpcStalled,
+    GatedSubtensor,
+    RateLimited,
+    RpcPriority,
+)
 from endure.base.shutdown import join_thread_or_raise
 from endure.base.utils.weight_utils import (
     coerce_decimal,
@@ -163,6 +169,8 @@ class BaseValidatorNeuron(BaseNeuron):
         super().__init__(config=config, runtime_provider=runtime_provider)
 
         self._consecutive_loop_failures = 0
+        self._chain_rpc_restart_required = False
+        self._chain_rpc_replacement_required_reason: str | None = None
         self._last_set_weights_ok: str | None = None
         self._consecutive_set_weights_failures = 0
 
@@ -244,16 +252,7 @@ class BaseValidatorNeuron(BaseNeuron):
 
     def run(self):
         """Run validator ticks, chain synchronization, and weight emission."""
-
-        # Check that validator is registered on the network.
-        try:
-            self.sync()
-        except RateLimited:
-            bt.logging.warning("initial validator sync deferred by RPC gate")
-        except Exception as error:  # noqa: BLE001 - worker boundary must redact.
-            bt.logging.error(f"Validator startup sync failed: {safe_error(error)}")
-            bt.logging.debug(safe_error(traceback.format_exc()))
-            self.should_exit = True
+        if not self._initial_sync():
             return
 
         bt.logging.info(f"Validator starting at block: {self._safe_block()}")
@@ -264,42 +263,19 @@ class BaseValidatorNeuron(BaseNeuron):
         try:
             while True:
                 try:
-                    bt.logging.info(f"step({self.step}) block({self._safe_block()})")
-
-                    # Run multiple forwards concurrently.
-                    self.loop.run_until_complete(self.concurrent_forward())
-
-                    # Check if we should exit.
-                    if self.should_exit:
+                    if not self._run_iteration():
                         break
-
-                    # Sync metagraph and potentially set weights.
-                    self.sync()
-                    self._maybe_reconnect_on_provider_throttles()
-
-                    self.step += 1
+                except ChainRpcRestartRequired as err:
+                    bt.logging.error(f"chain RPC restart required: {safe_error(err)}")
+                    self._chain_rpc_restart_required = True
+                    break
+                except ChainRpcStalled as err:
+                    bt.logging.error(f"chain RPC stalled: {safe_error(err)}")
+                    self._reconnect_subtensor(reason=f"{err.operation_name} timeout")
                     self._consecutive_loop_failures = 0
-
-                # Unforeseen errors are logged per-iteration and the loop
-                # continues: a transient failure must not silently kill the
-                # consensus loop. An explicit should_exit still ends it.
-                # A sustained failure streak indicates a wedged subtensor
-                # connection (observed in soak: per-connection rate limiting
-                # after the reveal-close burst never recovers on the same
-                # websocket), so the connection is rebuilt rather than left
-                # to fail every iteration until a human restarts the process.
                 except Exception as err:
-                    bt.logging.error(f"Error during validation: {safe_error(err)}")
-                    bt.logging.debug(safe_error(traceback.format_exc()))
-                    if self.should_exit:
+                    if not self._handle_iteration_error(err):
                         break
-                    self._consecutive_loop_failures += 1
-                    if (
-                        self._consecutive_loop_failures
-                        >= CONSECUTIVE_FAILURES_BEFORE_RECONNECT
-                    ):
-                        self._reconnect_subtensor()
-                        self._consecutive_loop_failures = 0
 
         # If someone intentionally stops the validator, it'll safely terminate operations.
         except KeyboardInterrupt:
@@ -313,6 +289,61 @@ class BaseValidatorNeuron(BaseNeuron):
                 self.loop = None
             asyncio.set_event_loop(None)
 
+    def _initial_sync(self) -> bool:
+        try:
+            self.sync()
+        except RateLimited:
+            bt.logging.warning("initial validator sync deferred by RPC gate")
+        except ChainRpcRestartRequired as error:
+            bt.logging.error(f"initial chain RPC restart required: {safe_error(error)}")
+            self._chain_rpc_restart_required = True
+            return False
+        except ChainRpcStalled as error:
+            bt.logging.error(f"initial validator sync stalled: {safe_error(error)}")
+            self._reconnect_subtensor(reason=f"{error.operation_name} timeout")
+        except Exception as error:  # noqa: BLE001 - worker boundary must redact.
+            bt.logging.error(f"Validator startup sync failed: {safe_error(error)}")
+            bt.logging.debug(safe_error(traceback.format_exc()))
+            self.should_exit = True
+            return False
+        return True
+
+    def _run_iteration(self) -> bool:
+        bt.logging.info(
+            f"validator operation=forward phase=start step={self.step} "
+            f"block={self._safe_block()}"
+        )
+        if self.loop is None:
+            raise RuntimeError("validator event loop is unavailable")
+        self.loop.run_until_complete(self.concurrent_forward())
+        bt.logging.info(f"validator operation=forward phase=complete step={self.step}")
+        if self.should_exit:
+            return False
+        bt.logging.info(f"validator operation=chain_sync phase=start step={self.step}")
+        self.sync()
+        bt.logging.info(
+            f"validator operation=chain_sync phase=complete step={self.step}"
+        )
+        self._maybe_reconnect_on_provider_throttles()
+        self.step += 1
+        self._consecutive_loop_failures = 0
+        return True
+
+    def chain_rpc_restart_required(self) -> bool:
+        """Report whether abandoned RPC workers require a hard process exit."""
+        return self._chain_rpc_restart_required
+
+    def _handle_iteration_error(self, error: Exception) -> bool:
+        bt.logging.error(f"Error during validation: {safe_error(error)}")
+        bt.logging.debug(safe_error(traceback.format_exc()))
+        if self.should_exit:
+            return False
+        self._consecutive_loop_failures += 1
+        if self._consecutive_loop_failures >= CONSECUTIVE_FAILURES_BEFORE_RECONNECT:
+            self._reconnect_subtensor(reason="consecutive loop failures")
+            self._consecutive_loop_failures = 0
+        return True
+
     def _maybe_reconnect_on_provider_throttles(self) -> None:
         # A wedged websocket can keep returning provider 429s that sync()
         # swallows as normal deferral, so the loop-failure reconnect never fires.
@@ -324,33 +355,42 @@ class BaseValidatorNeuron(BaseNeuron):
             "rebuilding subtensor after "
             f"{self._consecutive_provider_throttles} consecutive provider throttles"
         )
-        self._reconnect_subtensor()
+        self._reconnect_subtensor(reason="consecutive provider throttles")
         self._consecutive_provider_throttles = 0
 
-    def _reconnect_subtensor(self) -> None:
-        bt.logging.warning(
-            "Rebuilding subtensor connection after "
-            f"{CONSECUTIVE_FAILURES_BEFORE_RECONNECT} consecutive loop failures"
-        )
+    def _reconnect_subtensor(self, *, reason: str = "manual recovery") -> None:
+        bt.logging.warning(f"Rebuilding subtensor connection: {reason}")
+        replacement_gate = self.rpc_gate.replacement()
         try:
-            replacement = self.runtime_provider.create_subtensor(self.config)
+            replacement = replacement_gate.call(
+                RpcPriority.ESSENTIAL,
+                lambda: self.runtime_provider.create_subtensor(self.config),
+                operation_name="create_subtensor",
+                abandoned_result_cleanup=lambda subtensor: subtensor.close(),
+            )
+        except ChainRpcRestartRequired:
+            self._chain_rpc_restart_required = True
+            raise
         except Exception as create_error:
+            replacement_gate.close_generation()
             bt.logging.error(
-                "Subtensor rebuild failed; retrying after the next "
-                f"{CONSECUTIVE_FAILURES_BEFORE_RECONNECT}-failure streak: "
+                f"Subtensor rebuild failed; existing generation retained: "
                 f"{safe_error(create_error)}"
             )
             return
+        old_subtensor = self.gated_subtensor
+        replacement_subtensor = GatedSubtensor(replacement, replacement_gate)
+        self.rpc_gate = replacement_gate
+        self.gated_subtensor = replacement_subtensor
+        self.subtensor = replacement_subtensor
         try:
             # Real method on bittensor.core.subtensor.Subtensor; hidden from
             # pyright by the bt lazy-import facade (same gap as neuron.py).
-            self.gated_subtensor.close()
+            old_subtensor.close()
         except Exception as close_error:
             bt.logging.debug(
                 f"Closing wedged subtensor failed: {safe_error(close_error)}"
             )
-        self.gated_subtensor = GatedSubtensor(replacement, self.rpc_gate)
-        self.subtensor = self.gated_subtensor
 
     def run_in_background_thread(self):
         """Start the validator loop in a daemon thread."""
@@ -590,6 +630,14 @@ class BaseValidatorNeuron(BaseNeuron):
             )
             if preparation_completed or intent is None:
                 self._notify_weights_emitted(attempt, prepared_batch_id)
+            self._replace_transport_if_required()
+
+    def _replace_transport_if_required(self) -> None:
+        reason = getattr(self, "_chain_rpc_replacement_required_reason", None)
+        if reason is None:
+            return
+        self._chain_rpc_replacement_required_reason = None
+        self._reconnect_subtensor(reason=reason)
 
     def _weight_submission_baseline(self) -> int:
         if not 0 <= self.uid < len(self.metagraph.last_update):
@@ -686,6 +734,27 @@ class BaseValidatorNeuron(BaseNeuron):
                 confirmation_deadline_block=confirmation_deadline,
                 cr4_reveal_deadline_block=cr4_reveal_deadline,
             )
+        except ChainRpcRestartRequired:
+            raise
+        except ChainRpcStalled as error:
+            bt.logging.error(
+                f"set_weights outcome is ambiguous after transport timeout: "
+                f"{error.operation_name}"
+            )
+            confirmation_deadline, cr4_reveal_deadline = (
+                self._post_submission_deadlines(attempt)
+            )
+            result = WeightSubmissionResult(
+                status=EMISSION_ERROR,
+                confirmation_state="ambiguous",
+                submission_mode=attempt.submission_mode or "direct",
+                commitment_hash=None,
+                reveal_round=None,
+                confirmation_deadline_block=confirmation_deadline,
+                cr4_reveal_deadline_block=cr4_reveal_deadline,
+            )
+            self._chain_rpc_replacement_required_reason = "set_weights timeout"
+            return result
         except Exception as error:  # noqa: BLE001 — SDK error types vary by RPC backend
             bt.logging.error(
                 "set_weights outcome is ambiguous; not retrying: "
