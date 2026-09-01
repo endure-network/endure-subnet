@@ -368,6 +368,7 @@ class BaseValidatorNeuron(BaseNeuron):
                 operation_name="create_subtensor",
             )
         except ChainRpcRestartRequired:
+            self._chain_rpc_restart_required = True
             raise
         except Exception as create_error:
             replacement_gate.close_generation()

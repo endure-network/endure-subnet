@@ -22,7 +22,14 @@ import numpy as np
 import pytest
 from bittensor.utils.mock.subtensor_mock import __GLOBAL_MOCK_STATE__
 
-from endure.base.rate_gate import AdaptiveRpcGate, GatedSubtensor, RateLimited
+from endure.base.rate_gate import (
+    AdaptiveRpcGate,
+    ChainRpcRestartRequired,
+    ChainRpcStalled,
+    GatedSubtensor,
+    RateLimited,
+    RpcPriority,
+)
 from endure.base.validator import BaseValidatorNeuron
 from endure.runtime.mock import MockRuntimeProvider, MockSubtensor
 
@@ -796,6 +803,61 @@ class TestRunSubtensorReconnect:
             assert entered.wait(timeout=1)
             assert validator.subtensor is existing
             assert validator.rpc_gate.snapshot().abandoned_generations == 1
+        finally:
+            release.set()
+
+    def test_run_marks_restart_required_at_third_abandonment(
+        self,
+        validator_config: bt.Config,
+        mock_runtime_provider: MockRuntimeProvider,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        runtime_validator = _FailingRuntimeValidator(
+            config=validator_config,
+            runtime_provider=mock_runtime_provider,
+        )
+        release = threading.Event()
+        gate = AdaptiveRpcGate(operation_timeout_seconds=0.02)
+
+        try:
+            for generation in range(2):
+                with pytest.raises(ChainRpcStalled):
+                    gate.call(
+                        RpcPriority.ESSENTIAL,
+                        lambda: release.wait(5),
+                        operation_name=f"preexisting-stall-{generation}",
+                    )
+                gate = gate.replacement()
+
+            existing_delegate = runtime_validator.gated_subtensor._delegate
+            runtime_validator.rpc_gate = gate
+            runtime_validator.gated_subtensor = GatedSubtensor(existing_delegate, gate)
+            runtime_validator.subtensor = runtime_validator.gated_subtensor
+
+            async def ok_forward() -> None:
+                return None
+
+            sync_calls = 0
+
+            def stall_third_generation() -> None:
+                nonlocal sync_calls
+                sync_calls += 1
+                if sync_calls == 1:
+                    return
+                gate.call(
+                    RpcPriority.ESSENTIAL,
+                    lambda: release.wait(5),
+                    operation_name="third-stall",
+                )
+
+            monkeypatch.setattr(runtime_validator, "forward", ok_forward)
+            monkeypatch.setattr(runtime_validator, "sync", stall_third_generation)
+
+            with pytest.raises(ChainRpcRestartRequired):
+                runtime_validator.run()
+
+            assert runtime_validator.chain_rpc_restart_required() is True
+            assert gate.snapshot().abandoned_generations == 3
         finally:
             release.set()
 
