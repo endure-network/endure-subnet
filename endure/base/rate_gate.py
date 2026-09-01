@@ -199,6 +199,8 @@ class RateGateSnapshot:
     rate_limited_total: int
     deferred_total: int
     abandoned_generations: int
+    late_completions_total: int
+    late_set_weights_completions_total: int
 
 
 class _AbandonedGenerationState:
@@ -206,6 +208,8 @@ class _AbandonedGenerationState:
 
     def __init__(self) -> None:
         self.count = 0
+        self.late_completions_total = 0
+        self.late_set_weights_completions_total = 0
         self.condition = threading.Condition()
 
 
@@ -354,11 +358,18 @@ class AdaptiveRpcGate:
                 future.cancel()
                 self._executor.shutdown(wait=False, cancel_futures=True)
                 if not future.cancelled():
+                    abandoned_at = self._clock()
                     with self._abandoned_state.condition:
                         self._abandoned_state.count += 1
+                    # The SDK may reconnect and resend after websocket closure.
+                    # We knowingly measure that bounded residual: the ledger
+                    # blocks a second submission, and chain mortality limits it.
                     future.add_done_callback(
                         lambda completed: self._complete_abandoned_generation(
-                            completed, abandoned_result_cleanup
+                            completed,
+                            abandoned_result_cleanup,
+                            operation_name=operation_name,
+                            abandoned_at=abandoned_at,
                         )
                     )
                 close = self._transport_close
@@ -387,20 +398,59 @@ class AdaptiveRpcGate:
         self,
         future: Future[T],
         cleanup: Callable[[T], None] | None,
+        *,
+        operation_name: str,
+        abandoned_at: float,
     ) -> None:
+        completion = "success"
+        error_type: str | None = None
         try:
-            if cleanup is not None and not future.cancelled():
-                error = future.exception()
-                if error is None:
+            error = future.exception()
+            if error is not None:
+                completion = "raised"
+                error_type = type(error).__name__
+            elif cleanup is not None:
+                try:
                     cleanup(future.result())
-        except Exception as error:  # noqa: BLE001 - release the shared capacity.
-            bt.logging.debug(
-                f"chain RPC abandoned result cleanup failed: {type(error).__name__}"
-            )
+                except BaseException as cleanup_error:  # noqa: BLE001
+                    try:
+                        bt.logging.debug(
+                            "chain RPC abandoned result cleanup failed: "
+                            f"{type(cleanup_error).__name__}"
+                        )
+                    except BaseException as logging_error:  # noqa: BLE001
+                        _ = logging_error
+        except BaseException as error:  # noqa: BLE001 - callback must not raise.
+            completion = "raised"
+            error_type = type(error).__name__
         finally:
+            try:
+                completed_at = self._clock()
+            except BaseException as clock_error:  # noqa: BLE001 - callback must not raise.
+                _ = clock_error
+                completed_at = abandoned_at
             with self._abandoned_state.condition:
+                self._abandoned_state.late_completions_total += 1
+                if operation_name == "set_weights":
+                    self._abandoned_state.late_set_weights_completions_total += 1
                 self._abandoned_state.count -= 1
                 self._abandoned_state.condition.notify_all()
+
+        seconds_after_timeout = max(0.0, completed_at - abandoned_at)
+        message = (
+            "abandoned chain RPC completed late "
+            f"operation={operation_name} completion={completion} "
+            f"seconds_after_timeout={seconds_after_timeout:.3f}"
+        )
+        if error_type is not None:
+            message = f"{message} error_type={error_type}"
+        try:
+            if operation_name == "set_weights":
+                bt.logging.error(message)
+            else:
+                bt.logging.warning(message)
+        except BaseException as logging_error:  # noqa: BLE001 - best effort only.
+            _ = logging_error
 
     def close_generation(self) -> None:
         """Reject new work, close the transport, and retire the worker."""
@@ -418,6 +468,10 @@ class AdaptiveRpcGate:
         with self._lock:
             with self._abandoned_state.condition:
                 abandoned_generations = self._abandoned_state.count
+                late_completions_total = self._abandoned_state.late_completions_total
+                late_set_weights_completions_total = (
+                    self._abandoned_state.late_set_weights_completions_total
+                )
             return RateGateSnapshot(
                 adaptive_rate=self._adaptive_rate,
                 degraded=now < self._retry_after_monotonic,
@@ -425,6 +479,8 @@ class AdaptiveRpcGate:
                 rate_limited_total=self._rate_limited_total,
                 deferred_total=self._deferred_total,
                 abandoned_generations=abandoned_generations,
+                late_completions_total=late_completions_total,
+                late_set_weights_completions_total=(late_set_weights_completions_total),
             )
 
     def ready(self) -> bool:
