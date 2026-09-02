@@ -261,6 +261,12 @@ class TestRuntimeHealth:
         assert "endure_validator_ready" in metric_families
         assert "endure_validator_ready 0.0" in metrics_response.text
 
+    def test_metrics_route_is_hidden_and_get_only(self, storage: Storage) -> None:
+        client = self._client(storage, _runtime())
+
+        assert "/metrics" not in client.app.openapi()["paths"]
+        assert client.post("/metrics").status_code == 405
+
     def test_live_endpoint_stays_200_during_rpc_backoff(self, storage: Storage) -> None:
         response = self._client(storage, _runtime(rpc_degraded=True)).get("/live")
 
