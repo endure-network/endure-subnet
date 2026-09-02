@@ -230,10 +230,12 @@ class TestRuntimeHealth:
         assert response.json()["status"] == "degraded"
 
     def test_active_rpc_backoff_degrades_to_503(self, storage: Storage) -> None:
-        response = self._client(storage, _runtime(rpc_degraded=True)).get("/health")
+        client = self._client(storage, _runtime(rpc_degraded=True))
+        response = client.get("/health")
 
         assert response.status_code == 503
         assert response.json()["status"] == "degraded"
+        assert "endure_validator_rpc_degraded 1.0" in client.get("/metrics").text
 
     def test_metrics_are_parseable_while_health_is_degraded(
         self, storage: Storage
@@ -282,12 +284,15 @@ class TestRuntimeHealth:
         assert response.json()["status"] == "degraded"
 
     def test_overdue_weight_emission_degrades_to_503(self, storage: Storage) -> None:
-        response = self._client(storage, _runtime(weight_emission_degraded=True)).get(
-            "/health"
-        )
+        client = self._client(storage, _runtime(weight_emission_degraded=True))
+        response = client.get("/health")
 
         assert response.status_code == 503
         assert response.json()["status"] == "degraded"
+        assert (
+            "endure_validator_weight_emission_degraded 1.0"
+            in client.get("/metrics").text
+        )
 
     def test_single_empty_scored_round_stays_ok(self, storage: Storage) -> None:
         response = self._client(storage, _runtime(empty_scored_rounds=1)).get("/health")
