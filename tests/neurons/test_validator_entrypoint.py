@@ -669,6 +669,38 @@ def test_mark_tick_progress_clears_watchdog_staleness(
     assert validator.runtime_health()["tick_stale"] is False
 
 
+def test_sync_brackets_gated_chain_work_with_tick_progress(
+    mock_validator_config: bt.Config,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from endure.base.neuron import BaseNeuron
+    from neurons.validator import Validator
+
+    mock_validator_config.neuron.axon_off = True
+    mock_validator_config.neuron.disable_set_weights = True
+    mock_validator_config.endure.health_tick_max_age_seconds = 60
+    mock_validator_config.endure.health_startup_grace_seconds = 120
+    monkeypatch.setattr("neurons.validator.time.monotonic", lambda: 1_000.0)
+    validator = Validator(config=mock_validator_config)
+    validator._last_tick_monotonic = 900.0
+    validator.thread = MagicMock()
+    validator.thread.is_alive.return_value = True
+    marks_during_sync: list[float | None] = []
+
+    def observing_sync(self: BaseNeuron) -> None:
+        marks_during_sync.append(validator._last_tick_monotonic)
+
+    monkeypatch.setattr(BaseNeuron, "sync", observing_sync)
+    assert validator.watchdog_exit_reason() == "validator tick stale"
+
+    validator.sync()
+
+    # The gated chain work started freshly marked and marked again on
+    # completion, so its bounded RPC time never stacks onto a prior tick's age.
+    assert marks_during_sync == [1_000.0]
+    assert validator.watchdog_exit_reason() is None
+
+
 def test_set_weights_abstains_until_first_resolution(
     mock_validator_config: bt.Config,
     monkeypatch: pytest.MonkeyPatch,

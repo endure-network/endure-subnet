@@ -27,6 +27,7 @@ from typing import Union
 import bittensor as bt
 
 from endure.base.neuron import BaseNeuron
+from endure.base.rate_gate import ChainRpcRestartRequired, ChainRpcStalled
 from endure.base.shutdown import join_thread_or_raise
 from endure.runtime.types import RuntimeProvider
 from endure.utils.config import add_miner_args
@@ -147,6 +148,14 @@ class BaseMinerNeuron(BaseNeuron):
                     last_sync_block = self.block
                     self.step += 1
 
+                except ChainRpcRestartRequired as err:
+                    bt.logging.error(f"chain RPC restart required: {safe_error(err)}")
+                    self.should_exit = True
+                    break
+                except ChainRpcStalled as err:
+                    bt.logging.error(f"chain RPC stalled: {safe_error(err)}")
+                    self._reconnect_subtensor(reason=f"{err.operation_name} timeout")
+                    self._shutdown_event.wait(1)
                 # Unforeseen errors are logged per-iteration and the loop
                 # continues: a transient sync/metagraph/chain failure must not
                 # silently kill the miner service (mirrors the validator loop).

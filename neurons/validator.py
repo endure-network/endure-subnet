@@ -329,6 +329,16 @@ class Validator(BaseValidatorNeuron):
         tick survives the watchdog while a wedged thread still trips it."""
         self._last_tick_monotonic = time.monotonic()
 
+    def sync(self):
+        # Every chain RPC inside sync() is deadline-bounded by the rpc gate, so
+        # bracketing it with liveness marks is honest: a wedged gate operation
+        # still raises within its deadline instead of marking forever, while a
+        # slow-but-bounded sync no longer stacks its silence onto the tail of a
+        # long forward pass.
+        self._mark_tick_progress()
+        super().sync()
+        self._mark_tick_progress()
+
     def _tick_stale(self) -> bool:
         now = time.monotonic()
         if self._last_tick_monotonic is None:
