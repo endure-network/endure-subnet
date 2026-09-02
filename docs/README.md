@@ -42,6 +42,7 @@ guidance and are not shipped here.
 | current | [Alpha Risk 24x7 rounds](specs/2026-07-18-alpha-risk-24x7-rounds.md) |
 | current | [Durable weight-emission confirmation](specs/2026-08-09-weight-emission-confirmation.md) |
 | current | [Validator lifecycle metrics — Phase 1](specs/2026-09-01-validator-lifecycle-metrics.md) |
+| current | [Validator event counters — Phase 2](specs/2026-09-02-validator-event-counters.md) |
 
 ## Governance
 
