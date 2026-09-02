@@ -595,6 +595,17 @@ def _register_core_routes(  # noqa: PLR0913 — explicit read API dependencies
             response.status_code = 503
         return payload
 
+    @app.get("/metrics", include_in_schema=False)
+    def metrics() -> Response:
+        return _metrics_response(
+            _health_snapshot(
+                storage,
+                schema_id,
+                publisher,
+                runtime_health=runtime_health,
+            )
+        )
+
     @app.get("/schemas")
     def schemas() -> list[dict[str, object]]:
         registry = default_registry()

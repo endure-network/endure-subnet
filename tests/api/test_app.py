@@ -242,6 +242,9 @@ class TestRuntimeHealth:
 
         client = self._client(storage, _runtime(rpc_degraded=True))
 
+        live_response = client.get("/live")
+        assert live_response.status_code == 200
+
         health_response = client.get("/health")
         assert health_response.status_code == 503
         assert health_response.json()["status"] == "degraded"
@@ -251,10 +254,12 @@ class TestRuntimeHealth:
         assert metrics_response.headers["content-type"].startswith("text/plain")
 
         metric_families = {
-            family.name for family in text_string_to_metric_families(metrics_response.text)
+            family.name
+            for family in text_string_to_metric_families(metrics_response.text)
         }
         assert "endure_validator_live" in metric_families
         assert "endure_validator_ready" in metric_families
+        assert "endure_validator_ready 0.0" in metrics_response.text
 
     def test_live_endpoint_stays_200_during_rpc_backoff(self, storage: Storage) -> None:
         response = self._client(storage, _runtime(rpc_degraded=True)).get("/live")
@@ -349,7 +354,11 @@ class TestMetricsResponse:
             "endure_validator_weight_submissions_latest_unconfirmed_block",
             "endure_validator_rpc_degraded",
         }
-        assert all(sample.labels == {} for family in metric_families for sample in family.samples)
+        assert all(
+            sample.labels == {}
+            for family in metric_families
+            for sample in family.samples
+        )
         exposition = response.body.decode()
         assert "failed_weight_submissions_total" not in exposition
         assert "deferred_total" not in exposition
@@ -382,12 +391,22 @@ class TestMetricsResponse:
 
         assert response.status_code == 200
         metric_families = {
-            family.name for family in text_string_to_metric_families(response.body.decode())
+            family.name
+            for family in text_string_to_metric_families(response.body.decode())
         }
-        assert "endure_validator_weights_last_confirmed_timestamp_seconds" not in metric_families
+        assert (
+            "endure_validator_weights_last_confirmed_timestamp_seconds"
+            not in metric_families
+        )
         assert "endure_validator_weight_submissions_open" in metric_families
-        assert "endure_validator_weight_submissions_oldest_open_age_blocks" in metric_families
-        assert "endure_validator_weight_submissions_latest_unconfirmed_block" in metric_families
+        assert (
+            "endure_validator_weight_submissions_oldest_open_age_blocks"
+            in metric_families
+        )
+        assert (
+            "endure_validator_weight_submissions_latest_unconfirmed_block"
+            in metric_families
+        )
 
     def test_boolean_optional_count_is_omitted_but_zero_is_preserved(self) -> None:
         from prometheus_client.parser import text_string_to_metric_families
@@ -406,10 +425,14 @@ class TestMetricsResponse:
         )
 
         metric_families = {
-            family.name for family in text_string_to_metric_families(response.body.decode())
+            family.name
+            for family in text_string_to_metric_families(response.body.decode())
         }
         assert "endure_validator_weight_submissions_open" not in metric_families
-        assert "endure_validator_weight_submissions_oldest_open_age_blocks" in metric_families
+        assert (
+            "endure_validator_weight_submissions_oldest_open_age_blocks"
+            in metric_families
+        )
 
     def test_malformed_optional_rpc_gate_is_omitted(self) -> None:
         from prometheus_client.parser import text_string_to_metric_families
@@ -428,7 +451,8 @@ class TestMetricsResponse:
 
         assert response.status_code == 200
         metric_families = {
-            family.name for family in text_string_to_metric_families(response.body.decode())
+            family.name
+            for family in text_string_to_metric_families(response.body.decode())
         }
         assert "endure_validator_rpc_degraded" not in metric_families
 
