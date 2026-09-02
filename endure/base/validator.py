@@ -39,7 +39,6 @@ from endure.base.rate_gate import (
     ChainRpcStalled,
     GatedSubtensor,
     RateLimited,
-    RpcPriority,
 )
 from endure.base.shutdown import join_thread_or_raise
 from endure.base.utils.weight_utils import (
@@ -169,7 +168,6 @@ class BaseValidatorNeuron(BaseNeuron):
         super().__init__(config=config, runtime_provider=runtime_provider)
 
         self._consecutive_loop_failures = 0
-        self._chain_rpc_restart_required = False
         self._chain_rpc_replacement_required_reason: str | None = None
         self._last_set_weights_ok: str | None = None
         self._consecutive_set_weights_failures = 0
@@ -329,10 +327,6 @@ class BaseValidatorNeuron(BaseNeuron):
         self._consecutive_loop_failures = 0
         return True
 
-    def chain_rpc_restart_required(self) -> bool:
-        """Report whether abandoned RPC workers require a hard process exit."""
-        return self._chain_rpc_restart_required
-
     def _handle_iteration_error(self, error: Exception) -> bool:
         bt.logging.error(f"Error during validation: {safe_error(error)}")
         bt.logging.debug(safe_error(traceback.format_exc()))
@@ -357,40 +351,6 @@ class BaseValidatorNeuron(BaseNeuron):
         )
         self._reconnect_subtensor(reason="consecutive provider throttles")
         self._consecutive_provider_throttles = 0
-
-    def _reconnect_subtensor(self, *, reason: str = "manual recovery") -> None:
-        bt.logging.warning(f"Rebuilding subtensor connection: {reason}")
-        replacement_gate = self.rpc_gate.replacement()
-        try:
-            replacement = replacement_gate.call(
-                RpcPriority.ESSENTIAL,
-                lambda: self.runtime_provider.create_subtensor(self.config),
-                operation_name="create_subtensor",
-                abandoned_result_cleanup=lambda subtensor: subtensor.close(),
-            )
-        except ChainRpcRestartRequired:
-            self._chain_rpc_restart_required = True
-            raise
-        except Exception as create_error:
-            replacement_gate.close_generation()
-            bt.logging.error(
-                f"Subtensor rebuild failed; existing generation retained: "
-                f"{safe_error(create_error)}"
-            )
-            return
-        old_subtensor = self.gated_subtensor
-        replacement_subtensor = GatedSubtensor(replacement, replacement_gate)
-        self.rpc_gate = replacement_gate
-        self.gated_subtensor = replacement_subtensor
-        self.subtensor = replacement_subtensor
-        try:
-            # Real method on bittensor.core.subtensor.Subtensor; hidden from
-            # pyright by the bt lazy-import facade (same gap as neuron.py).
-            old_subtensor.close()
-        except Exception as close_error:
-            bt.logging.debug(
-                f"Closing wedged subtensor failed: {safe_error(close_error)}"
-            )
 
     def run_in_background_thread(self):
         """Start the validator loop in a daemon thread."""

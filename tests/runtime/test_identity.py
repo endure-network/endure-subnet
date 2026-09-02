@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -47,10 +48,22 @@ def test_content_revision_is_a_stable_sha256_of_the_running_sources() -> None:
     assert first == content_revision()
 
 
-def test_content_revision_matches_an_independent_hash_of_the_package() -> None:
+def test_content_revision_matches_an_independent_hash_of_the_sources() -> None:
     package_root = Path(endure.runtime.identity.__file__).resolve().parents[1]
+    digest = hashlib.sha256()
+    for root in (package_root, package_root.parent / "neurons"):
+        digest.update(root.name.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(hash_python_sources(root).encode("utf-8"))
+        digest.update(b"\0")
 
-    assert content_revision() == hash_python_sources(package_root)
+    assert content_revision() == digest.hexdigest()
+
+
+def test_content_revision_covers_the_neuron_entrypoints() -> None:
+    assert content_revision() != hash_python_sources(
+        Path(endure.runtime.identity.__file__).resolve().parents[1]
+    )
 
 
 def test_hash_python_sources_ignores_location_and_interpreter_caches(

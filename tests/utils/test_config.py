@@ -626,7 +626,7 @@ class TestArgValidation:
         assert isinstance(value, Decimal)
         assert value == Decimal("0")
 
-    @pytest.mark.parametrize("bad", ["-5", "nan", "notanumber"])
+    @pytest.mark.parametrize("bad", ["-5", "nan", "Infinity", "notanumber"])
     def test_min_miner_stake_rejects_invalid(self, bad: str) -> None:
         # A bad stake threshold must fail at boot, not on the first inbound
         # synapse the validator tries to blacklist.
@@ -651,7 +651,7 @@ class TestArgValidation:
         assert value == Decimal("1000")
         assert isinstance(value, Decimal)
 
-    @pytest.mark.parametrize("bad", ["-5", "nan", "notanumber"])
+    @pytest.mark.parametrize("bad", ["-5", "nan", "Infinity", "notanumber"])
     def test_min_validator_stake_weight_rejects_invalid(self, bad: str) -> None:
         with pytest.raises(SystemExit):
             self._miner_parser().parse_args(

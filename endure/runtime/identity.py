@@ -13,8 +13,11 @@ _LOCAL_IMAGE_VERSION = "dev"
 
 # The installed `endure` package root. An image copies these sources verbatim,
 # so hashing them yields the same digest as hashing `endure/` in a checkout of
-# the commit the image was built from.
+# the commit the image was built from. The adjacent `neurons/` entrypoints ship
+# with every supported layout (checkout and image) and are equally executable,
+# so identity must cover them too.
 _PACKAGE_ROOT = Path(__file__).resolve().parents[1]
+_HASHED_SOURCE_ROOTS = (_PACKAGE_ROOT, _PACKAGE_ROOT.parent / "neurons")
 
 
 def hash_python_sources(root: Path) -> str:
@@ -45,14 +48,20 @@ def hash_python_sources(root: Path) -> str:
 
 @cache
 def content_revision() -> str:
-    """Return the digest of the `endure` sources this process is running.
+    """Return the digest of the `endure` and `neurons` sources this process runs.
 
     Unlike `source_revision`, this is computed from the code itself rather than
     declared by whoever built the image, so it cannot drift from what is
     actually running. Reproduce it from a checkout of the same commit with
     `python -m scripts.content_revision`.
     """
-    return hash_python_sources(_PACKAGE_ROOT)
+    digest = hashlib.sha256()
+    for root in _HASHED_SOURCE_ROOTS:
+        digest.update(root.name.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(hash_python_sources(root).encode("utf-8"))
+        digest.update(b"\0")
+    return digest.hexdigest()
 
 
 def runtime_identity() -> dict[str, str]:

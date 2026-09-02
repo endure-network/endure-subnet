@@ -217,9 +217,9 @@ def _non_negative_decimal(value: str) -> Decimal:
         parsed = Decimal(value)
     except (InvalidOperation, ValueError) as exc:
         raise argparse.ArgumentTypeError(f"invalid Decimal value: {value!r}") from exc
-    if parsed.is_nan() or parsed < Decimal("0"):
+    if not parsed.is_finite() or parsed < Decimal("0"):
         raise argparse.ArgumentTypeError(
-            f"must be a non-negative Decimal, got {parsed}"
+            f"must be a finite non-negative Decimal, got {parsed}"
         )
     return parsed
 
