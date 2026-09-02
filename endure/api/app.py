@@ -27,6 +27,12 @@ from typing import TYPE_CHECKING, Final, NotRequired, TypedDict
 
 from fastapi import FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
+from prometheus_client import (
+    CONTENT_TYPE_LATEST,
+    CollectorRegistry,
+    Gauge,
+    generate_latest,
+)
 
 from endure import __version__
 from endure.api import RoundResolutionHealth, assessment_round_resolution_health
@@ -397,6 +403,148 @@ def _health_snapshot(
         unfinished_rounds=unfinished_rounds,
         round_resolution=round_resolution,
         degraded=degraded,
+    )
+
+
+def _metrics_response(snapshot: HealthSnapshot) -> Response:
+    metrics: list[tuple[str, str, int | float]] = [
+        ("endure_validator_live", "Whether the API process is serving.", 1),
+        (
+            "endure_validator_ready",
+            "Whether the validator health snapshot is not degraded.",
+            int(not snapshot.degraded),
+        ),
+        (
+            "endure_validator_unfinished_rounds",
+            "Current count of non-terminal rounds.",
+            snapshot.unfinished_round_count,
+        ),
+    ]
+    if snapshot.round_resolution is not None:
+        metrics.extend(
+            [
+                (
+                    "endure_validator_pending_rounds",
+                    "Current rounds awaiting realized targets.",
+                    snapshot.round_resolution["pending_round_count"],
+                ),
+                (
+                    "endure_validator_overdue_rounds",
+                    "Current rounds past the resolution deadline.",
+                    snapshot.round_resolution["overdue_round_count"],
+                ),
+            ]
+        )
+    if snapshot.runtime is not None:
+        runtime = snapshot.runtime
+        metrics.extend(
+            [
+                (
+                    "endure_validator_loop_alive",
+                    "Whether the validator loop is alive.",
+                    int(runtime["validator_loop_alive"]),
+                ),
+                (
+                    "endure_validator_tick_stale",
+                    "Whether the latest completed tick is beyond its freshness window.",
+                    int(runtime["tick_stale"]),
+                ),
+                (
+                    "endure_validator_tick_failures_consecutive",
+                    "Current consecutive validator tick failures.",
+                    runtime["consecutive_tick_failures"],
+                ),
+            ]
+        )
+        tick_age = runtime["seconds_since_last_tick"]
+        if tick_age is not None:
+            metrics.append(
+                (
+                    "endure_validator_tick_age_seconds",
+                    "Age of the latest completed validator tick in seconds.",
+                    tick_age,
+                )
+            )
+        optional_counts = (
+            (
+                "consecutive_resolution_failures",
+                "endure_validator_resolution_failures_consecutive",
+                "Current consecutive resolution failures.",
+            ),
+            (
+                "consecutive_universe_failures",
+                "endure_validator_universe_failures_consecutive",
+                "Current consecutive universe-opening failures.",
+            ),
+            (
+                "consecutive_empty_scored_rounds",
+                "endure_validator_empty_scored_rounds_consecutive",
+                "Current consecutive empty scored rounds.",
+            ),
+            (
+                "consecutive_set_weights_failures",
+                "endure_validator_set_weights_failures_consecutive",
+                "Current consecutive set-weights failures.",
+            ),
+            (
+                "open_weight_submissions",
+                "endure_validator_weight_submissions_open",
+                "Current weight submissions awaiting confirmation.",
+            ),
+            (
+                "oldest_open_weight_submission_age_blocks",
+                "endure_validator_weight_submissions_oldest_open_age_blocks",
+                "Age of the oldest open weight submission in blocks.",
+            ),
+            (
+                "latest_unconfirmed_weight_submission_block",
+                "endure_validator_weight_submissions_latest_unconfirmed_block",
+                "Latest unconfirmed weight-submission block height.",
+            ),
+        )
+        for runtime_key, metric_name, documentation in optional_counts:
+            value = runtime.get(runtime_key)
+            if isinstance(value, int):
+                metrics.append((metric_name, documentation, value))
+        weight_emission_degraded = runtime.get("weight_emission_degraded")
+        if isinstance(weight_emission_degraded, bool):
+            metrics.append(
+                (
+                    "endure_validator_weight_emission_degraded",
+                    "Whether weight-emission confirmation is degraded.",
+                    int(weight_emission_degraded),
+                )
+            )
+        confirmed_timestamp: datetime | None = None
+        confirmed_at = runtime.get("last_confirmed_weights_at")
+        if isinstance(confirmed_at, str):
+            try:
+                confirmed_timestamp = datetime.fromisoformat(confirmed_at)
+            except (OSError, OverflowError, ValueError):
+                confirmed_timestamp = None
+        if confirmed_timestamp is not None and confirmed_timestamp.tzinfo is not None:
+            metrics.append(
+                (
+                    "endure_validator_weights_last_confirmed_timestamp_seconds",
+                    "Last confirmed on-chain weight-emission time as Unix seconds.",
+                    confirmed_timestamp.timestamp(),
+                )
+            )
+        rpc_gate = runtime.get("rpc_gate")
+        if rpc_gate is not None:
+            metrics.append(
+                (
+                    "endure_validator_rpc_degraded",
+                    "Whether the RPC gate is currently degraded.",
+                    int(rpc_gate["degraded"]),
+                )
+            )
+    registry = CollectorRegistry()
+    for name, documentation, value in metrics:
+        Gauge(name, documentation, registry=registry).set(value)
+    return Response(
+        content=generate_latest(registry),
+        headers={"Content-Type": CONTENT_TYPE_LATEST},
     )
 
 
