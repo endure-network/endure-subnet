@@ -8,7 +8,10 @@ from decimal import Decimal
 from itertools import count
 
 import pytest
-from async_substrate_interface.errors import MaxRetriesExceeded
+from async_substrate_interface.errors import (
+    MaxRetriesExceeded,
+    SubstrateRequestException,
+)
 from websockets.datastructures import Headers
 from websockets.exceptions import InvalidStatus
 from websockets.http11 import Response
@@ -825,6 +828,7 @@ def test_baseline_risk_bundle_skips_timed_out_netuids_without_wedging() -> None:
         endpoint="mock://archive",
         request_timeout_seconds=request_timeout,
         subtensor_factory=make_subtensor,
+        min_request_interval_seconds=0.0,
     )
     provider = LiveAlphaPriceProvider(
         config=LiveAlphaPriceProviderConfig(
@@ -1020,6 +1024,7 @@ def test_fetcher_recovers_when_reconnect_hangs_after_timeout() -> None:
         endpoint="mock://archive",
         request_timeout_seconds=request_timeout,
         subtensor_factory=make_subtensor,
+        min_request_interval_seconds=0.0,
     )
 
     # When: an operation times out, then the reconnect hangs.
@@ -1133,6 +1138,91 @@ def test_fetcher_backs_off_after_operation_rate_limit_429() -> None:
         fetcher.subnet(netuid=9)
     assert len(connections) == 2
     assert connections[1].calls == 1
+
+
+def test_fetcher_paces_consecutive_archive_operations() -> None:
+    # Given: a fetcher with a fake clock where operations complete instantly.
+    clock = [0.0]
+    sleeps: list[float] = []
+
+    def pace_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+        clock[0] += seconds
+
+    fetcher = BittensorSubnetInfoFetcher(
+        endpoint="mock://archive",
+        request_timeout_seconds=5.0,
+        subtensor=BlockingSubtensor(),
+        now_fn=lambda: clock[0],
+        min_request_interval_seconds=0.5,
+        pace_sleep=pace_sleep,
+    )
+
+    # When: two operations run back-to-back and a third after a long idle gap.
+    fetcher.subnet(netuid=7)
+    fetcher.subnet(netuid=8)
+    clock[0] += 10.0
+    fetcher.subnet(netuid=9)
+
+    # Then: only the back-to-back operation waits, for the remaining interval.
+    assert sleeps == [0.5]
+
+
+@dataclass(slots=True)
+class InBandThrottledSubtensor:
+    error: Exception
+    failures: int = 1
+    calls: int = 0
+
+    def subnet(self, netuid: int, block: int | None = None) -> FakeDynamicInfo:
+        self.calls += 1
+        if self.calls <= self.failures:
+            raise self.error
+        return FakeDynamicInfo(tao_in=5_000_000_000 + netuid, alpha_in=1_000_000_000)
+
+    def get_current_block(self) -> int:
+        return 9_999
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        SubstrateRequestException(
+            {
+                "jsonrpc": "2.0",
+                "error": {"code": -32029, "message": "Rate limit exceeded"},
+            }
+        ),
+        ConnectionError("archive request failed: Historical work rate limit exceeded"),
+    ],
+)
+def test_fetcher_keeps_connection_after_in_band_rate_limit(error: Exception) -> None:
+    # Given: a cached connection whose operation answers an in-band rate limit.
+    connections: list[InBandThrottledSubtensor] = []
+
+    def make_subtensor() -> InBandThrottledSubtensor:
+        connection = InBandThrottledSubtensor(error=error)
+        connections.append(connection)
+        return connection
+
+    clock = [0.0]
+    fetcher = BittensorSubnetInfoFetcher(
+        endpoint="mock://archive",
+        request_timeout_seconds=5.0,
+        subtensor_factory=make_subtensor,
+        now_fn=lambda: clock[0],
+        min_request_interval_seconds=0.0,
+    )
+    with pytest.raises((type(error), ConnectionError)):
+        fetcher.subnet(netuid=9)
+
+    # When: the next operation runs immediately, with no cooldown armed.
+    result = fetcher.subnet(netuid=9)
+
+    # Then: the healthy connection is reused instead of being voided.
+    assert result.tao_in == 5_000_000_009
+    assert len(connections) == 1
+    assert connections[0].calls == 2
 
 
 def test_market_data_endpoint_default_is_mainnet_archive() -> None:

@@ -49,6 +49,7 @@ LIVE_MARKET_DATA_TIMEOUT_WORKERS: Final = 1
 LIVE_MARKET_DATA_MAX_ABANDONED_WORKERS: Final = 3
 LIVE_MARKET_DATA_MAX_CONSECUTIVE_ARCHIVE_FAILURES: Final = 2
 LIVE_MARKET_DATA_RATE_LIMIT_COOLDOWN_SECONDS: Final = 60.0
+LIVE_MARKET_DATA_MIN_REQUEST_INTERVAL_SECONDS: Final = 0.5
 LIVE_MARKET_DATA_HEAD_CACHE_TTL_SECONDS: Final = 30.0
 LIVE_MARKET_DATA_MAX_SERIES_CACHE_ENTRIES: Final = 64
 LIVE_MARKET_DATA_SNAPSHOT_RETENTION_BLOCKS: Final = 30 * 24 * 60 * 60 // BLOCK_SECONDS
@@ -79,6 +80,7 @@ ARCHIVE_CONNECTION_FAILURES: Final = (
 
 
 _HTTP_TOO_MANY_REQUESTS: Final = 429
+_JSONRPC_RATE_LIMIT_CODE: Final = -32029
 
 
 def _is_archive_rate_limited(error: BaseException) -> bool:
@@ -89,6 +91,21 @@ def _is_archive_rate_limited(error: BaseException) -> bool:
     if getattr(response, "status_code", None) == _HTTP_TOO_MANY_REQUESTS:
         return True
     return str(_HTTP_TOO_MANY_REQUESTS) in str(error)
+
+
+def _is_archive_request_rate_limited(error: BaseException) -> bool:
+    # In-band throttling arrives as a well-formed JSON-RPC error (-32029 or a
+    # textual rate-limit message): the connection is healthy, never void it.
+    if isinstance(error, SubstrateRequestException) and error.args:
+        payload = error.args[0]
+        if isinstance(payload, dict):
+            detail = payload.get("error")
+            if (
+                isinstance(detail, dict)
+                and detail.get("code") == _JSONRPC_RATE_LIMIT_CODE
+            ):
+                return True
+    return "rate limit" in str(error).lower()
 
 
 class SupportsInt(Protocol):
@@ -165,7 +182,7 @@ class BittensorSubnetInfoFetcher:
     before introducing any concurrent caller.
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 — keyword-only test-injection seams
         self,
         endpoint: str,
         *,
@@ -173,11 +190,22 @@ class BittensorSubnetInfoFetcher:
         subtensor: SubtensorLike | None = None,
         subtensor_factory: Callable[[], SubtensorLike] | None = None,
         now_fn: Callable[[], float] = time.monotonic,
+        min_request_interval_seconds: float = (
+            LIVE_MARKET_DATA_MIN_REQUEST_INTERVAL_SECONDS
+        ),
+        pace_sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         if request_timeout_seconds <= 0:
             raise AlphaMarketDataError("request_timeout_seconds must be positive")
+        if min_request_interval_seconds < 0:
+            raise AlphaMarketDataError(
+                "min_request_interval_seconds must be non-negative"
+            )
         self._request_timeout_seconds = request_timeout_seconds
         self._now_fn = now_fn
+        self._min_request_interval_seconds = min_request_interval_seconds
+        self._pace_sleep = pace_sleep
+        self._last_request_at: float | None = None
         self._cooldown_until = 0.0
         self._make_subtensor: Callable[[], SubtensorLike]
         if subtensor is not None:
@@ -286,17 +314,30 @@ class BittensorSubnetInfoFetcher:
         return substrate
 
     def _call_archive_operation[T](self, operation: Callable[[], T]) -> T:
+        self._pace_request()
         try:
             return self._call_with_timeout(operation)
         except Exception as error:  # noqa: BLE001 — SDK failures must void snapshots
             # The cached SDK connection may be poisoned after any operation error.
             # A 429 additionally guards the next reconnect behind the cooldown.
-            self._subtensor = None
-            self._substrate = None
+            if not _is_archive_request_rate_limited(error):
+                self._subtensor = None
+                self._substrate = None
             self._apply_rate_limit_cooldown(error)
             if isinstance(error, ARCHIVE_FETCH_FAILURES):
                 raise
             raise ConnectionError("archive operation failed") from error
+
+    def _pace_request(self) -> None:
+        # The archive enforces a per-second request budget; spacing submissions
+        # keeps a multi-thousand-query backfill under it instead of burning
+        # retries on -32029 rejections.
+        last = self._last_request_at
+        if last is not None:
+            wait = self._min_request_interval_seconds - (self._now_fn() - last)
+            if wait > 0:
+                self._pace_sleep(wait)
+        self._last_request_at = self._now_fn()
 
     def _call_with_timeout[T](self, operation: Callable[[], T]) -> T:
         with self._abandoned_workers_condition:
@@ -579,6 +620,10 @@ class LiveAlphaPriceProvider:
                     if isinstance(error, LookupError):
                         raise LookupError(message) from None
                     raise ConnectionError(message) from None
+                bt.logging.warning(
+                    f"archive attempt {attempt}/{self._config.max_attempts} "
+                    f"failed; retrying: {safe_error(error)}"
+                )
                 self._sleep(
                     self._config.request_pause_seconds * (Decimal(2) ** (attempt - 1))
                 )
