@@ -131,6 +131,16 @@ def test_runtime_images_embed_oci_source_identity() -> None:
         assert "org.opencontainers.image.version=$ENDURE_IMAGE_VERSION" in dockerfile
 
 
+def test_runtime_images_run_the_layout_content_revision_hashes() -> None:
+    # Without PYTHONPATH=/app the entrypoint imports `endure` from
+    # site-packages, where no `neurons/` sits beside it, and content_revision
+    # fails at boot instead of attesting the running sources.
+    for dockerfile_name in ("validator.Dockerfile", "miner.Dockerfile"):
+        dockerfile = (ROOT / "docker" / dockerfile_name).read_text()
+
+        assert "PYTHONPATH=/app" in dockerfile
+
+
 def test_runtime_images_validate_release_identity_before_dependencies() -> None:
     for dockerfile_name in ("validator.Dockerfile", "miner.Dockerfile"):
         dockerfile = (ROOT / "docker" / dockerfile_name).read_text()
