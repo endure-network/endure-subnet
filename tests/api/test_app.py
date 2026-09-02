@@ -389,6 +389,49 @@ class TestMetricsResponse:
         assert "endure_validator_weight_submissions_oldest_open_age_blocks" in metric_families
         assert "endure_validator_weight_submissions_latest_unconfirmed_block" in metric_families
 
+    def test_boolean_optional_count_is_omitted_but_zero_is_preserved(self) -> None:
+        from prometheus_client.parser import text_string_to_metric_families
+
+        runtime = _runtime()
+        runtime["open_weight_submissions"] = True
+        runtime["oldest_open_weight_submission_age_blocks"] = 0
+        response = _metrics_response(
+            HealthSnapshot(
+                runtime=runtime,
+                unfinished_round_count=0,
+                unfinished_rounds=(),
+                round_resolution=None,
+                degraded=False,
+            )
+        )
+
+        metric_families = {
+            family.name for family in text_string_to_metric_families(response.body.decode())
+        }
+        assert "endure_validator_weight_submissions_open" not in metric_families
+        assert "endure_validator_weight_submissions_oldest_open_age_blocks" in metric_families
+
+    def test_malformed_optional_rpc_gate_is_omitted(self) -> None:
+        from prometheus_client.parser import text_string_to_metric_families
+
+        runtime = _runtime()
+        del runtime["rpc_gate"]["degraded"]
+        response = _metrics_response(
+            HealthSnapshot(
+                runtime=runtime,
+                unfinished_round_count=0,
+                unfinished_rounds=(),
+                round_resolution=None,
+                degraded=False,
+            )
+        )
+
+        assert response.status_code == 200
+        metric_families = {
+            family.name for family in text_string_to_metric_families(response.body.decode())
+        }
+        assert "endure_validator_rpc_degraded" not in metric_families
+
 
 class TestRiskRoundResolutionHealth:
     def _open_round(self, storage: Storage) -> datetime:

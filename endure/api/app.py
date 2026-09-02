@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal, localcontext
@@ -504,7 +504,7 @@ def _metrics_response(snapshot: HealthSnapshot) -> Response:
         )
         for runtime_key, metric_name, documentation in optional_counts:
             value = runtime.get(runtime_key)
-            if isinstance(value, int):
+            if type(value) is int:
                 metrics.append((metric_name, documentation, value))
         weight_emission_degraded = runtime.get("weight_emission_degraded")
         if isinstance(weight_emission_degraded, bool):
@@ -531,12 +531,15 @@ def _metrics_response(snapshot: HealthSnapshot) -> Response:
                 )
             )
         rpc_gate = runtime.get("rpc_gate")
-        if rpc_gate is not None:
+        rpc_degraded = (
+            rpc_gate.get("degraded") if isinstance(rpc_gate, Mapping) else None
+        )
+        if isinstance(rpc_degraded, bool):
             metrics.append(
                 (
                     "endure_validator_rpc_degraded",
                     "Whether the RPC gate is currently degraded.",
-                    int(rpc_gate["degraded"]),
+                    int(rpc_degraded),
                 )
             )
     registry = CollectorRegistry()
