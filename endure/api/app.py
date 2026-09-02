@@ -29,7 +29,7 @@ from fastapi import FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 
 from endure import __version__
-from endure.api import assessment_round_resolution_health
+from endure.api import RoundResolutionHealth, assessment_round_resolution_health
 from endure.assessment.coordinates import (
     AssessmentConsensusRow,
     AssessmentCoordinate,
@@ -132,6 +132,15 @@ class RuntimeHealth(TypedDict):
     rpc_gate: NotRequired[RpcGateHealth]
     assessment_due_seconds: NotRequired[dict[int, int]]
     overdue_grace_seconds: NotRequired[int]
+
+
+@dataclass(frozen=True, slots=True)
+class HealthSnapshot:
+    runtime: RuntimeHealth | None
+    unfinished_round_count: int
+    unfinished_rounds: tuple[str, ...]
+    round_resolution: RoundResolutionHealth | None
+    degraded: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -331,6 +340,66 @@ def _ensure_embargo_lifted(meta: dict[str, object]) -> None:
     )
 
 
+def _health_snapshot(
+    storage: Storage,
+    schema_id: str,
+    publisher: PublisherProjection,
+    /,
+    *,
+    runtime_health: Callable[[], RuntimeHealth] | None,
+) -> HealthSnapshot:
+    unfinished_rounds = tuple(storage.unfinished_rounds(schema_id))
+    runtime = None if runtime_health is None else runtime_health()
+    round_resolution = None
+    degraded = False
+    if publisher == "risk":
+        round_resolution = assessment_round_resolution_health(
+            storage.unfinished_assessment_resolution_progress(schema_id),
+            RISK_HORIZONS,
+            now=_utc_now(),
+            sample_limit=_HEALTH_ROUNDS_SAMPLE,
+            due_seconds=(
+                None if runtime is None else runtime.get("assessment_due_seconds")
+            ),
+            overdue_grace_seconds=(
+                _OVERDUE_GRACE_SECONDS
+                if runtime is None
+                else runtime.get("overdue_grace_seconds", _OVERDUE_GRACE_SECONDS)
+            ),
+        )
+        degraded = round_resolution["overdue_round_count"] > 0
+    if runtime is not None:
+        missing_counter_keys = [
+            key for key in _RUNTIME_COUNTER_KEYS if key not in runtime
+        ]
+        if missing_counter_keys:
+            logger.warning(
+                "runtime health payload omitted counters: %s",
+                ", ".join(missing_counter_keys),
+            )
+        rpc_gate = runtime.get("rpc_gate")
+        rpc_degraded = rpc_gate is not None and rpc_gate["degraded"]
+        degraded = degraded or (
+            not runtime["validator_loop_alive"]
+            or runtime["tick_stale"]
+            or runtime["consecutive_tick_failures"] > 0
+            or runtime.get("consecutive_universe_failures", 0) > 0
+            or runtime.get("consecutive_resolution_failures", 0) > 0
+            or runtime.get("consecutive_empty_scored_rounds", 0)
+            >= _EMPTY_SCORED_ROUNDS_HEALTH_THRESHOLD
+            or runtime.get("consecutive_set_weights_failures", 0) > 0
+            or runtime.get("weight_emission_degraded", False)
+            or rpc_degraded
+        )
+    return HealthSnapshot(
+        runtime=runtime,
+        unfinished_round_count=len(unfinished_rounds),
+        unfinished_rounds=unfinished_rounds,
+        round_resolution=round_resolution,
+        degraded=degraded,
+    )
+
+
 def _register_core_routes(  # noqa: PLR0913 — explicit read API dependencies
     app: FastAPI,
     storage: Storage,
@@ -351,60 +420,26 @@ def _register_core_routes(  # noqa: PLR0913 — explicit read API dependencies
 
     @app.get("/health")
     def health(response: Response) -> dict[str, object]:
-        unfinished = storage.unfinished_rounds(schema_id)
-        runtime = None if runtime_health is None else runtime_health()
+        snapshot = _health_snapshot(
+            storage,
+            schema_id,
+            publisher,
+            runtime_health=runtime_health,
+        )
         payload: dict[str, object] = {
             "status": "ok",
             "schema_id": schema_id,
             "version": __version__,
             "protocol_version_key": CURRENT_VERSION_KEY,
             **runtime_identity(),
-            "unfinished_round_count": len(unfinished),
-            "unfinished_rounds": unfinished[:_HEALTH_ROUNDS_SAMPLE],
+            "unfinished_round_count": snapshot.unfinished_round_count,
+            "unfinished_rounds": snapshot.unfinished_rounds[:_HEALTH_ROUNDS_SAMPLE],
         }
-        degraded = False
-        if publisher == "risk":
-            round_resolution = assessment_round_resolution_health(
-                storage.unfinished_assessment_resolution_progress(schema_id),
-                RISK_HORIZONS,
-                now=_utc_now(),
-                sample_limit=_HEALTH_ROUNDS_SAMPLE,
-                due_seconds=(
-                    None if runtime is None else runtime.get("assessment_due_seconds")
-                ),
-                overdue_grace_seconds=(
-                    _OVERDUE_GRACE_SECONDS
-                    if runtime is None
-                    else runtime.get("overdue_grace_seconds", _OVERDUE_GRACE_SECONDS)
-                ),
-            )
-            payload["round_resolution"] = round_resolution
-            degraded = round_resolution["overdue_round_count"] > 0
-        if runtime is not None:
-            payload["runtime"] = runtime
-            missing_counter_keys = [
-                key for key in _RUNTIME_COUNTER_KEYS if key not in runtime
-            ]
-            if missing_counter_keys:
-                logger.warning(
-                    "runtime health payload omitted counters: %s",
-                    ", ".join(missing_counter_keys),
-                )
-            rpc_gate = runtime.get("rpc_gate")
-            rpc_degraded = rpc_gate is not None and rpc_gate["degraded"]
-            degraded = degraded or (
-                not runtime["validator_loop_alive"]
-                or runtime["tick_stale"]
-                or runtime["consecutive_tick_failures"] > 0
-                or runtime.get("consecutive_universe_failures", 0) > 0
-                or runtime.get("consecutive_resolution_failures", 0) > 0
-                or runtime.get("consecutive_empty_scored_rounds", 0)
-                >= _EMPTY_SCORED_ROUNDS_HEALTH_THRESHOLD
-                or runtime.get("consecutive_set_weights_failures", 0) > 0
-                or runtime.get("weight_emission_degraded", False)
-                or rpc_degraded
-            )
-        if degraded:
+        if snapshot.round_resolution is not None:
+            payload["round_resolution"] = snapshot.round_resolution
+        if snapshot.runtime is not None:
+            payload["runtime"] = snapshot.runtime
+        if snapshot.degraded:
             payload["status"] = "degraded"
             response.status_code = 503
         return payload

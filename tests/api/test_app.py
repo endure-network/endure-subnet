@@ -347,6 +347,25 @@ class TestRiskRoundResolutionHealth:
             HORIZON_5D_SECONDS
         ]
 
+    def test_overdue_round_projects_to_metrics(
+        self, storage: Storage, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        reveal_close = self._open_round(storage)
+        monkeypatch.setattr(
+            "endure.api.app._utc_now", lambda: reveal_close + timedelta(days=6)
+        )
+        client = TestClient(
+            build_app(storage=storage, schema_id=RISK_SCHEMA_ID, publisher="risk")
+        )
+
+        health_response = client.get("/health")
+        assert health_response.status_code == 503
+
+        metrics_response = client.get("/metrics")
+        assert metrics_response.status_code == 200
+        assert "endure_validator_ready 0.0" in metrics_response.text
+        assert "endure_validator_overdue_rounds 1.0" in metrics_response.text
+
     def test_compressed_due_seconds_degrade_after_effective_deadline(
         self, storage: Storage, monkeypatch: pytest.MonkeyPatch
     ) -> None:
