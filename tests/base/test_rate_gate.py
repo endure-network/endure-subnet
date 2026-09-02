@@ -124,6 +124,41 @@ class TestAdaptiveRpcGate:
         assert "completion=raised" in message
         assert "error_type=RuntimeError" in message
 
+    def test_late_failed_set_weights_completion_increments_both_counters(
+        self,
+    ) -> None:
+        gate = AdaptiveRpcGate(operation_timeout_seconds=0.02)
+        release = threading.Event()
+        handler = _SignalingHandler()
+        logger = logging.getLogger("bittensor")
+
+        def fail_late() -> None:
+            release.wait(timeout=1)
+            raise RuntimeError("late set_weights failure")
+
+        logger.addHandler(handler)
+        try:
+            with pytest.raises(ChainRpcStalled):
+                gate.call(
+                    RpcPriority.ESSENTIAL,
+                    fail_late,
+                    operation_name="set_weights",
+                )
+
+            release.set()
+            assert handler.emitted.wait(timeout=1)
+        finally:
+            logger.removeHandler(handler)
+        snapshot = gate.snapshot()
+        assert snapshot.late_completions_total == 1
+        assert snapshot.late_set_weights_completions_total == 1
+        [record] = handler.records
+        assert record.levelno == logging.ERROR
+        message = record.getMessage()
+        assert "operation=set_weights" in message
+        assert "completion=raised" in message
+        assert "error_type=RuntimeError" in message
+
     def test_normal_completion_is_not_counted_as_late(self) -> None:
         gate = AdaptiveRpcGate(operation_timeout_seconds=1)
 
