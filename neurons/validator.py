@@ -274,9 +274,7 @@ class Validator(BaseValidatorNeuron):
             "seconds_since_last_tick": self._seconds_since_last_tick(),
             "long_op_in_flight": long_op_started is not None,
             "seconds_since_long_op_start": (
-                None
-                if long_op_started is None
-                else time.monotonic() - long_op_started
+                None if long_op_started is None else time.monotonic() - long_op_started
             ),
             "consecutive_tick_failures": self._tick_failures,
             "last_tick_ok": self._last_tick_ok,
