@@ -159,6 +159,13 @@ class Validator(BaseValidatorNeuron):
                 "endure.health_startup_grace_seconds must be greater than "
                 "endure.tick_seconds"
             )
+        if int(resolved_config.endure.health_tick_max_duration_seconds) <= int(
+            resolved_config.endure.health_tick_max_age_seconds
+        ):
+            raise RuntimeError(
+                "endure.health_tick_max_duration_seconds must be greater than "
+                "endure.health_tick_max_age_seconds"
+            )
         super().__init__(
             config=resolved_config,
             runtime_provider=resolve_runtime_provider(resolved_config),
@@ -183,6 +190,9 @@ class Validator(BaseValidatorNeuron):
         self._last_tick_ok: str | None = None
         self._last_tick_monotonic: float | None = None
         self._last_tick_error: str | None = None
+        # Anchors the watchdog's generous window while a long tick/sync is in
+        # flight; None when the loop is between operations. See _tick_stale.
+        self._long_op_started_monotonic: float | None = None
         self._started_monotonic = time.monotonic()
         self._api_server: uvicorn.Server | None = None
         self._api_thread: threading.Thread | None = None
@@ -257,10 +267,15 @@ class Validator(BaseValidatorNeuron):
             or fallback_overdue
             or unknown_block_open
         )
+        long_op_started = getattr(self, "_long_op_started_monotonic", None)
         return {
             "validator_loop_alive": self._validator_loop_alive(),
             "tick_stale": self._tick_stale(),
             "seconds_since_last_tick": self._seconds_since_last_tick(),
+            "long_op_in_flight": long_op_started is not None,
+            "seconds_since_long_op_start": (
+                None if long_op_started is None else time.monotonic() - long_op_started
+            ),
             "consecutive_tick_failures": self._tick_failures,
             "last_tick_ok": self._last_tick_ok,
             "last_tick_error": self._last_tick_error,
@@ -329,6 +344,17 @@ class Validator(BaseValidatorNeuron):
         tick survives the watchdog while a wedged thread still trips it."""
         self._last_tick_monotonic = time.monotonic()
 
+    def _begin_long_op(self) -> None:
+        # Keep the earliest anchor if a long operation is already in flight, so
+        # the generous window measures the whole run, not the latest bracket.
+        # getattr tolerates the base constructor's first sync(), which runs
+        # before Validator.__init__ finishes declaring its state fields.
+        if getattr(self, "_long_op_started_monotonic", None) is None:
+            self._long_op_started_monotonic = time.monotonic()
+
+    def _end_long_op(self) -> None:
+        self._long_op_started_monotonic = None
+
     def sync(self):
         # Every chain RPC inside sync() is deadline-bounded by the rpc gate, so
         # bracketing it with liveness marks is honest: a wedged gate operation
@@ -336,11 +362,20 @@ class Validator(BaseValidatorNeuron):
         # slow-but-bounded sync no longer stacks its silence onto the tail of a
         # long forward pass.
         self._mark_tick_progress()
-        super().sync()
-        self._mark_tick_progress()
+        self._begin_long_op()
+        try:
+            super().sync()
+        finally:
+            self._end_long_op()
+            self._mark_tick_progress()
 
     def _tick_stale(self) -> bool:
         now = time.monotonic()
+        long_op_started = getattr(self, "_long_op_started_monotonic", None)
+        if long_op_started is not None:
+            return now - long_op_started > int(
+                self.config.endure.health_tick_max_duration_seconds
+            )
         if self._last_tick_monotonic is None:
             return now - self._started_monotonic > int(
                 self.config.endure.health_startup_grace_seconds
@@ -894,6 +929,7 @@ class Validator(BaseValidatorNeuron):
 
     async def forward(self) -> None:
         """One round-service tick; updates scores when new resolutions land."""
+        self._begin_long_op()
         try:
             weights = await asyncio.to_thread(
                 self._service.tick,
@@ -916,6 +952,7 @@ class Validator(BaseValidatorNeuron):
                 f"{safe_error(error)}"
             )
         finally:
+            self._end_long_op()
             # Heartbeat means the loop completed an attempt, not that external
             # work succeeded. Failure counters degrade /health separately;
             # only an unresponsive loop should trigger a forced restart.
