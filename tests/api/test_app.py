@@ -319,6 +319,54 @@ class TestRuntimeHealth:
 
 
 class TestMetricsResponse:
+    def test_event_counter_scrapes_follow_process_lifecycle(self) -> None:
+        from prometheus_client.parser import text_string_to_metric_families
+
+        def counter_samples(
+            rate_limited: int, deferred: int, failed_weights: int
+        ) -> dict[str, float]:
+            response = _metrics_response(
+                HealthSnapshot(
+                    runtime=_runtime(
+                        rpc_rate_limited_total=rate_limited,
+                        rpc_deferred_total=deferred,
+                        weight_submissions_failed_total=failed_weights,
+                    ),
+                    unfinished_round_count=0,
+                    unfinished_rounds=(),
+                    round_resolution=None,
+                    degraded=False,
+                )
+            )
+            return {
+                sample.name: sample.value
+                for family in text_string_to_metric_families(response.body.decode())
+                if family.name.startswith("endure_validator_rpc_")
+                or family.name == "endure_validator_weight_submissions_failed"
+                for sample in family.samples
+                if sample.name.endswith("_total")
+            }
+
+        first = counter_samples(2, 3, 1)
+        later = counter_samples(3, 4, 2)
+        restarted = counter_samples(0, 0, 0)
+
+        assert first == {
+            "endure_validator_rpc_rate_limited_total": 2.0,
+            "endure_validator_rpc_deferred_total": 3.0,
+            "endure_validator_weight_submissions_failed_total": 1.0,
+        }
+        assert later == {
+            "endure_validator_rpc_rate_limited_total": 3.0,
+            "endure_validator_rpc_deferred_total": 4.0,
+            "endure_validator_weight_submissions_failed_total": 2.0,
+        }
+        assert restarted == {
+            "endure_validator_rpc_rate_limited_total": 0.0,
+            "endure_validator_rpc_deferred_total": 0.0,
+            "endure_validator_weight_submissions_failed_total": 0.0,
+        }
+
     def test_catalog_is_unlabelled_and_excludes_private_totals(self) -> None:
         from prometheus_client.parser import text_string_to_metric_families
 
