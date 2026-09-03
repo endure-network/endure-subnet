@@ -213,7 +213,9 @@ def test_live_provider_uses_first_block_at_or_after_reveal_close() -> None:
             6: _timestamp(53),
         },
     )
-    fetcher = BittensorSubnetInfoFetcher(endpoint="mock://archive")
+    fetcher = BittensorSubnetInfoFetcher(
+        endpoint="mock://archive", min_request_interval_seconds=0.0
+    )
     fetcher._make_substrate = lambda: substrate
     provider = LiveAlphaPriceProvider(
         config=LiveAlphaPriceProviderConfig(request_pause_seconds=Decimal("0")),
@@ -857,6 +859,7 @@ def test_latest_pool_observation_returns_none_when_current_block_times_out() -> 
         endpoint="mock://archive",
         request_timeout_seconds=request_timeout,
         subtensor=BlockingSubtensor(slow_current_block=True, sleep_seconds=0.6),
+        min_request_interval_seconds=0.0,
     )
     provider = LiveAlphaPriceProvider(
         config=LiveAlphaPriceProviderConfig(
@@ -886,6 +889,7 @@ def test_fetcher_rebuilds_connection_after_subnet_timeout() -> None:
         endpoint="mock://archive",
         request_timeout_seconds=request_timeout,
         subtensor_factory=make_subtensor,
+        min_request_interval_seconds=0.0,
     )
 
     with pytest.raises(TimeoutError, match="archive request timed out"):
@@ -914,6 +918,7 @@ def test_fetcher_bounds_indefinitely_timed_out_archive_workers() -> None:
         endpoint="mock://archive",
         request_timeout_seconds=request_timeout,
         subtensor_factory=make_subtensor,
+        min_request_interval_seconds=0.0,
     )
 
     try:
@@ -954,6 +959,7 @@ def test_fetcher_connects_lazily_and_never_blocks_init_on_a_hanging_factory() ->
         endpoint="mock://archive",
         request_timeout_seconds=request_timeout,
         subtensor_factory=make_subtensor,
+        min_request_interval_seconds=0.0,
     )
     init_elapsed = time.monotonic() - started
 
@@ -990,6 +996,7 @@ def test_fetcher_recovers_when_reconnect_raises_after_timeout() -> None:
         endpoint="mock://archive",
         request_timeout_seconds=request_timeout,
         subtensor_factory=make_subtensor,
+        min_request_interval_seconds=0.0,
     )
 
     # When: an operation times out, then the reconnect raises.
@@ -1054,6 +1061,7 @@ def test_fetcher_constructs_and_uses_one_connection_on_a_single_worker_thread() 
         endpoint="mock://archive",
         request_timeout_seconds=5.0,
         subtensor_factory=make_subtensor,
+        min_request_interval_seconds=0.0,
     )
 
     # When: several archive calls run without any timeout.
@@ -1084,6 +1092,7 @@ def test_fetcher_backs_off_after_archive_rate_limit_429() -> None:
         request_timeout_seconds=5.0,
         subtensor_factory=make_subtensor,
         now_fn=lambda: clock[0],
+        min_request_interval_seconds=0.0,
     )
 
     # When: the first fetch hits the 429, it arms a cooldown.
@@ -1119,6 +1128,7 @@ def test_fetcher_backs_off_after_operation_rate_limit_429() -> None:
         request_timeout_seconds=5.0,
         subtensor_factory=make_subtensor,
         now_fn=lambda: clock[0],
+        min_request_interval_seconds=0.0,
     )
 
     # When: the cached connection receives a 429 after it has connected.
@@ -1193,7 +1203,7 @@ class InBandThrottledSubtensor:
                 "error": {"code": -32029, "message": "Rate limit exceeded"},
             }
         ),
-        ConnectionError("archive request failed: Historical work rate limit exceeded"),
+        SubstrateRequestException("Historical work rate limit exceeded"),
     ],
 )
 def test_fetcher_keeps_connection_after_in_band_rate_limit(error: Exception) -> None:
@@ -1223,6 +1233,36 @@ def test_fetcher_keeps_connection_after_in_band_rate_limit(error: Exception) -> 
     assert result.tao_in == 5_000_000_009
     assert len(connections) == 1
     assert connections[0].calls == 2
+
+
+def test_fetcher_voids_connection_for_transport_errors_mentioning_rate_limits() -> None:
+    # Given: a transport-level error whose text happens to mention rate limits.
+    connections: list[InBandThrottledSubtensor] = []
+
+    def make_subtensor() -> InBandThrottledSubtensor:
+        connection = InBandThrottledSubtensor(
+            error=ConnectionError("socket closed by proxy rate limiter: rate limit"),
+            failures=1 if not connections else 0,
+        )
+        connections.append(connection)
+        return connection
+
+    fetcher = BittensorSubnetInfoFetcher(
+        endpoint="mock://archive",
+        request_timeout_seconds=5.0,
+        subtensor_factory=make_subtensor,
+        now_fn=lambda: 0.0,
+        min_request_interval_seconds=0.0,
+    )
+    with pytest.raises(ConnectionError):
+        fetcher.subnet(netuid=9)
+
+    # When: the next operation runs.
+    result = fetcher.subnet(netuid=9)
+
+    # Then: the possibly-poisoned connection was voided and rebuilt.
+    assert result.tao_in == 5_000_000_009
+    assert len(connections) == 2
 
 
 def test_market_data_endpoint_default_is_mainnet_archive() -> None:
