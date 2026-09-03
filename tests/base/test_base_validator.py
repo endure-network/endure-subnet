@@ -92,6 +92,7 @@ class TestConstructor:
         assert validator.neuron_type == "ValidatorNeuron"
         assert isinstance(validator.scores, list)
         assert validator.scores == [Decimal("0")] * int(validator.metagraph.n)
+        assert validator._weight_submissions_failed_process_total == 0
 
     def test_inherits_base_neuron_wiring(self, validator: _ConcreteValidator) -> None:
         assert validator.wallet is not None
@@ -159,8 +160,18 @@ class TestConstructor:
         )
 
         validator._submit_prepared_weights(attempt)
+        validator._submit_prepared_weights(attempt)
 
-        assert validator._weight_submissions_failed_process_total == 1
+        assert validator._weight_submissions_failed_process_total == 2
+
+        validator.subtensor.set_weights.return_value = MagicMock(
+            success=True, message="accepted"
+        )
+        validator._submit_prepared_weights(attempt)
+        validator.subtensor.set_weights.side_effect = RuntimeError("ambiguous")
+        validator._submit_prepared_weights(attempt)
+
+        assert validator._weight_submissions_failed_process_total == 2
 
     def test_hotkeys_snapshot_matches_metagraph(
         self, validator: _ConcreteValidator

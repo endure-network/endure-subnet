@@ -561,6 +561,9 @@ class Validator(BaseValidatorNeuron):
                 if confirmation is None
                 else confirmation.latest_unconfirmed_submission_block
             ),
+            "failed_weight_submissions_total": (
+                0 if confirmation is None else confirmation.failed_submissions_total
+            ),
             "rpc_rate_limited_process_total": gate.rate_limited_total,
             "rpc_deferred_process_total": gate.deferred_total,
             "weight_submissions_failed_process_total": (

@@ -129,6 +129,7 @@ def _runtime(
         "last_empty_scored_round": None,
         "consecutive_set_weights_failures": set_weights_failures,
         "weight_emission_degraded": weight_emission_degraded,
+        "failed_weight_submissions_total": 0,
         "rpc_rate_limited_process_total": rpc_rate_limited_total,
         "rpc_deferred_process_total": rpc_deferred_total,
         "weight_submissions_failed_process_total": weight_submissions_failed_total,
@@ -170,6 +171,7 @@ class TestRuntimeHealth:
         assert (
             response.json()["runtime"]["weight_submissions_failed_process_total"] == 0
         )
+        assert response.json()["runtime"]["failed_weight_submissions_total"] == 0
 
     def test_tick_failures_degrade_to_503(self, storage: Storage) -> None:
         response = self._client(storage, _runtime(tick_failures=3)).get("/health")
@@ -388,6 +390,7 @@ class TestMetricsResponse:
         assert "endure_validator_rpc_rate_limited_total 2.0" in exposition
         assert "endure_validator_rpc_deferred_total 3.0" in exposition
         assert "endure_validator_weight_submissions_failed_total 1.0" in exposition
+        assert "_created" not in exposition
         assert "# TYPE endure_validator_rpc_rate_limited_total counter" in exposition
         assert "# TYPE endure_validator_rpc_deferred_total counter" in exposition
         assert (

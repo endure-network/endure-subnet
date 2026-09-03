@@ -135,6 +135,7 @@ class RuntimeHealth(TypedDict):
     open_weight_submissions: NotRequired[int]
     oldest_open_weight_submission_age_blocks: NotRequired[int | None]
     latest_unconfirmed_weight_submission_block: NotRequired[int | None]
+    failed_weight_submissions_total: NotRequired[int]
     rpc_rate_limited_process_total: NotRequired[int]
     rpc_deferred_process_total: NotRequired[int]
     weight_submissions_failed_process_total: NotRequired[int]
