@@ -329,6 +329,25 @@ class TestRunLoopResilience:
 
 
 class TestChainRpcRecovery:
+    def test_startup_chain_rpc_restart_required_sets_restart_latch(
+        self,
+        mock_miner_config: bt.Config,
+        mock_runtime_provider: MockRuntimeProvider,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        miner = _FailingRuntimeMiner(
+            config=mock_miner_config,
+            runtime_provider=mock_runtime_provider,
+        )
+        monkeypatch.setattr(
+            miner, "sync", MagicMock(side_effect=ChainRpcRestartRequired(3))
+        )
+
+        miner.run()
+
+        assert miner.should_exit is True
+        assert miner.chain_rpc_restart_required() is True
+
     def test_run_reconnects_after_chain_rpc_stall(
         self,
         mock_miner_config: bt.Config,

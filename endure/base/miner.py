@@ -116,6 +116,11 @@ class BaseMinerNeuron(BaseNeuron):
             self.axon.serve(netuid=self.config.netuid, subtensor=self.subtensor)
             self.axon.start()
             bt.logging.info(f"Miner starting at block: {self.block}")
+        except ChainRpcRestartRequired as err:
+            bt.logging.error(f"chain RPC restart required: {safe_error(err)}")
+            self._chain_rpc_restart_required = True
+            self.should_exit = True
+            return
         except Exception as error:  # noqa: BLE001 - worker boundary must redact.
             bt.logging.error(f"Miner startup failed: {safe_error(error)}")
             bt.logging.debug(safe_error(traceback.format_exc()))
