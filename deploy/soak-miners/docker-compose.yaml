@@ -8,7 +8,9 @@
 # own axon publish); the validator IP is discovered from the metagraph.
 #
 # Required env: NETUID, EXTERNAL_IP (this miner host's public IP), WALLETS_TAR_B64
-# (base64 tar of hotkeys + coldkeypub; never the coldkey secret). Optional: CHAIN
+# (base64 tar of hotkeys + coldkeypub; never the coldkey secret), SOURCE_COMMIT
+# (Coolify injects it; manual builds must export
+# SOURCE_COMMIT=$(git rev-parse HEAD) — see the build args below). Optional: CHAIN
 # (network name OR a wss:// chain RPC URL, e.g. a keyed Dwellir testnet endpoint —
 # bittensor >=10.3 ignores --subtensor.chain_endpoint, so a custom RPC must ride
 # this flag; host must be allowlisted in endure/utils/config.py _TESTNET_HOSTS;
