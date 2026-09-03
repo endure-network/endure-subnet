@@ -8,6 +8,7 @@ validator axons (permit + optional stake-weight floor) via its dendrite.
 
 import asyncio
 import copy
+import os
 import threading
 import time
 from datetime import UTC, datetime
@@ -398,6 +399,14 @@ def main() -> None:
         stop = install_shutdown_handlers()
         with Miner() as miner:
             while not stop.is_set():
+                if miner.chain_rpc_restart_required() is True:
+                    # A normal exit would join the abandoned non-daemon RPC
+                    # workers at interpreter shutdown and could hang forever.
+                    bt.logging.error(
+                        "miner forcing process restart after chain RPC "
+                        "abandonment capacity was reached"
+                    )
+                    os._exit(1)
                 if miner.thread is None or not miner.thread.is_alive():
                     bt.logging.error("miner watchdog exiting: miner loop thread exited")
                     raise SystemExit(1)

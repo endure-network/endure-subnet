@@ -71,10 +71,12 @@ services:
       dockerfile: docker/validator.Dockerfile
       args:
         # Coolify's SOURCE_COMMIT (the actually checked-out commit) is the only
-        # identity source. Single-level ${VAR:-default} only: Coolify's own
-        # compose parser rejects the :+ operator and nested defaults with
-        # "The key must start with a letter or underscore" (2026-09-01 deploy
-        # failure), even though docker compose resolves them fine.
+        # identity source — there is no manual-variable or dev fallback; for a
+        # build outside Coolify, set SOURCE_COMMIT=$(git rev-parse HEAD) or the
+        # release-identity check refuses the rendered unknown/sha-unknown pair.
+        # Single-level ${VAR:-default} only: Coolify's own compose parser
+        # rejects the :+ operator and nested defaults that docker compose
+        # accepts.
         ENDURE_SOURCE_REVISION: ${SOURCE_COMMIT:-unknown}
         ENDURE_IMAGE_VERSION: sha-${SOURCE_COMMIT:-unknown}
     image: endure-validator:soak

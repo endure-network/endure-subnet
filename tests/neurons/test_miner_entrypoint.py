@@ -34,6 +34,38 @@ def _patched_chain() -> Iterator[None]:
         yield
 
 
+def test_main_hard_exits_when_rpc_abandonment_capacity_is_reached() -> None:
+    from neurons.miner import main
+
+    miner = MagicMock()
+    miner.chain_rpc_restart_required.return_value = True
+    context = MagicMock()
+    context.__enter__.return_value = miner
+
+    with (
+        patch(
+            "neurons.miner.install_shutdown_handlers",
+            return_value=threading.Event(),
+        ),
+        patch(
+            "neurons.miner.runtime_identity",
+            return_value={
+                "source_revision": "unknown",
+                "image_version": "dev",
+                "content_revision": "0" * 64,
+            },
+        ),
+        patch("neurons.miner.Miner", return_value=context),
+        patch("neurons.miner.os._exit", side_effect=SystemExit(1)) as hard_exit,
+        pytest.raises(SystemExit) as exit_info,
+    ):
+        main()
+
+    assert exit_info.value.code == 1
+    hard_exit.assert_called_once_with(1)
+    context.__exit__.assert_called_once()
+
+
 def test_miner_bootstraps_in_mock_mode(
     mock_miner_config: bt.Config,
     trap_external_ip: dict[str, int],

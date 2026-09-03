@@ -63,6 +63,30 @@ def _assert_metagraph_lock(miner: BaseMinerNeuron, *, expected: bool) -> None:
     assert miner._metagraph_lock.locked() is expected
 
 
+def _looping_miner(
+    mock_miner_config: bt.Config,
+    mock_runtime_provider: MockRuntimeProvider,
+    monkeypatch: pytest.MonkeyPatch,
+) -> _FailingRuntimeMiner:
+    # Advance the block on every read so the epoch-wait inner loop clears
+    # each iteration (pacing keys on blocks since our own last sync).
+    miner = _FailingRuntimeMiner(
+        config=mock_miner_config,
+        runtime_provider=mock_runtime_provider,
+    )
+    monkeypatch.setattr(miner.axon, "serve", MagicMock())
+    monkeypatch.setattr(miner.axon, "start", MagicMock())
+    block_counter = {"n": 0}
+
+    def advancing_block(_self: object) -> int:
+        block_counter["n"] += 1_000
+        return block_counter["n"]
+
+    monkeypatch.setattr("endure.base.neuron.ttl_get_block", advancing_block)
+    miner.config.neuron.epoch_length = 1
+    return miner
+
+
 @pytest.fixture
 def miner(
     mock_miner_config: bt.Config,
@@ -264,22 +288,7 @@ class TestRunLoopResilience:
         trap_external_ip: dict[str, int],
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        miner = _FailingRuntimeMiner(
-            config=mock_miner_config,
-            runtime_provider=mock_runtime_provider,
-        )
-        monkeypatch.setattr(miner.axon, "serve", MagicMock())
-        monkeypatch.setattr(miner.axon, "start", MagicMock())
-        # Advance the block on every read so the epoch-wait inner loop clears
-        # each iteration (pacing keys on blocks since our own last sync).
-        block_counter = {"n": 0}
-
-        def advancing_block(_self: object) -> int:
-            block_counter["n"] += 1_000
-            return block_counter["n"]
-
-        monkeypatch.setattr("endure.base.neuron.ttl_get_block", advancing_block)
-        miner.config.neuron.epoch_length = 1
+        miner = _looping_miner(mock_miner_config, mock_runtime_provider, monkeypatch)
 
         calls = {"count": 0}
 
@@ -320,28 +329,6 @@ class TestRunLoopResilience:
 
 
 class TestChainRpcRecovery:
-    def _looping_miner(
-        self,
-        mock_miner_config: bt.Config,
-        mock_runtime_provider: MockRuntimeProvider,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> _FailingRuntimeMiner:
-        miner = _FailingRuntimeMiner(
-            config=mock_miner_config,
-            runtime_provider=mock_runtime_provider,
-        )
-        monkeypatch.setattr(miner.axon, "serve", MagicMock())
-        monkeypatch.setattr(miner.axon, "start", MagicMock())
-        block_counter = {"n": 0}
-
-        def advancing_block(_self: object) -> int:
-            block_counter["n"] += 1_000
-            return block_counter["n"]
-
-        monkeypatch.setattr("endure.base.neuron.ttl_get_block", advancing_block)
-        miner.config.neuron.epoch_length = 1
-        return miner
-
     def test_run_reconnects_after_chain_rpc_stall(
         self,
         mock_miner_config: bt.Config,
@@ -349,9 +336,7 @@ class TestChainRpcRecovery:
         trap_external_ip: dict[str, int],
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        miner = self._looping_miner(
-            mock_miner_config, mock_runtime_provider, monkeypatch
-        )
+        miner = _looping_miner(mock_miner_config, mock_runtime_provider, monkeypatch)
         reconnect = MagicMock()
         monkeypatch.setattr(miner, "_reconnect_subtensor", reconnect)
 
@@ -382,9 +367,7 @@ class TestChainRpcRecovery:
         trap_external_ip: dict[str, int],
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        miner = self._looping_miner(
-            mock_miner_config, mock_runtime_provider, monkeypatch
-        )
+        miner = _looping_miner(mock_miner_config, mock_runtime_provider, monkeypatch)
 
         calls = {"count": 0}
 
@@ -424,20 +407,7 @@ class TestSyncFailureThrottle:
         # When sync() fails, last_sync_block never advances, so the wait loop's
         # sleep is skipped and the retry must be throttled explicitly — or a
         # dead chain endpoint gets hammered in a hot loop.
-        miner = _FailingRuntimeMiner(
-            config=mock_miner_config,
-            runtime_provider=mock_runtime_provider,
-        )
-        monkeypatch.setattr(miner.axon, "serve", MagicMock())
-        monkeypatch.setattr(miner.axon, "start", MagicMock())
-        block_counter = {"n": 0}
-
-        def advancing_block(_self: object) -> int:
-            block_counter["n"] += 1_000
-            return block_counter["n"]
-
-        monkeypatch.setattr("endure.base.neuron.ttl_get_block", advancing_block)
-        miner.config.neuron.epoch_length = 1
+        miner = _looping_miner(mock_miner_config, mock_runtime_provider, monkeypatch)
 
         sleeps: list[float] = []
         monkeypatch.setattr(

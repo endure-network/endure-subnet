@@ -150,6 +150,7 @@ class BaseMinerNeuron(BaseNeuron):
 
                 except ChainRpcRestartRequired as err:
                     bt.logging.error(f"chain RPC restart required: {safe_error(err)}")
+                    self._chain_rpc_restart_required = True
                     self.should_exit = True
                     break
                 except ChainRpcStalled as err:
