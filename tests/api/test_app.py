@@ -167,7 +167,9 @@ class TestRuntimeHealth:
         assert response.status_code == 200
         assert response.json()["status"] == "ok"
         assert response.json()["runtime"]["seconds_since_last_tick"] == 1.5
-        assert response.json()["runtime"]["weight_submissions_failed_process_total"] == 0
+        assert (
+            response.json()["runtime"]["weight_submissions_failed_process_total"] == 0
+        )
 
     def test_tick_failures_degrade_to_503(self, storage: Storage) -> None:
         response = self._client(storage, _runtime(tick_failures=3)).get("/health")
