@@ -33,6 +33,7 @@ from prometheus_client import (
     Gauge,
     generate_latest,
 )
+from prometheus_client.core import CounterMetricFamily
 
 from endure import __version__
 from endure.api import RoundResolutionHealth, assessment_round_resolution_health
@@ -134,7 +135,9 @@ class RuntimeHealth(TypedDict):
     open_weight_submissions: NotRequired[int]
     oldest_open_weight_submission_age_blocks: NotRequired[int | None]
     latest_unconfirmed_weight_submission_block: NotRequired[int | None]
-    failed_weight_submissions_total: NotRequired[int]
+    rpc_rate_limited_process_total: NotRequired[int]
+    rpc_deferred_process_total: NotRequired[int]
+    weight_submissions_failed_process_total: NotRequired[int]
     rpc_gate: NotRequired[RpcGateHealth]
     assessment_due_seconds: NotRequired[dict[int, int]]
     overdue_grace_seconds: NotRequired[int]
@@ -147,6 +150,24 @@ class HealthSnapshot:
     unfinished_rounds: tuple[str, ...]
     round_resolution: RoundResolutionHealth | None
     degraded: bool
+
+
+@dataclass(frozen=True, slots=True)
+class _CounterMetric:
+    name: str
+    documentation: str
+    value: int
+
+
+@dataclass(frozen=True, slots=True)
+class _CounterProjection:
+    metrics: tuple[_CounterMetric, ...]
+
+    def collect(self) -> tuple[CounterMetricFamily, ...]:
+        return tuple(
+            CounterMetricFamily(metric.name, metric.documentation, value=metric.value)
+            for metric in self.metrics
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -545,6 +566,33 @@ def _metrics_response(snapshot: HealthSnapshot) -> Response:
     registry = CollectorRegistry()
     for name, documentation, value in metrics:
         Gauge(name, documentation, registry=registry).set(value)
+    if snapshot.runtime is not None:
+        counter_metrics = (
+            (
+                "endure_validator_rpc_rate_limited",
+                "Count of provider rate-limit responses observed by the validator process.",
+                snapshot.runtime.get("rpc_rate_limited_process_total"),
+            ),
+            (
+                "endure_validator_rpc_deferred",
+                "Count of chain-RPC operations deferred during provider cooldown.",
+                snapshot.runtime.get("rpc_deferred_process_total"),
+            ),
+            (
+                "endure_validator_weight_submissions_failed",
+                "Count of explicit unsuccessful weight-submission responses.",
+                snapshot.runtime.get("weight_submissions_failed_process_total"),
+            ),
+        )
+        registry.register(
+            _CounterProjection(
+                tuple(
+                    _CounterMetric(name, documentation, value)
+                    for name, documentation, value in counter_metrics
+                    if type(value) is int
+                )
+            )
+        )
     return Response(
         content=generate_latest(registry),
         headers={"Content-Type": CONTENT_TYPE_LATEST},

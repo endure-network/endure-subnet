@@ -29,7 +29,11 @@ from endure.base.rate_gate import (
     RateLimited,
     RpcPriority,
 )
-from endure.base.validator import BaseValidatorNeuron
+from endure.base.validator import (
+    EMISSION_FAILED,
+    BaseValidatorNeuron,
+    WeightEmissionAttempt,
+)
 from endure.runtime.mock import MockRuntimeProvider, MockSubtensor
 from endure.scoring.weight_processing import normalize_scores
 
@@ -93,6 +97,70 @@ class TestConstructor:
         assert validator.wallet is not None
         assert validator.subtensor is not None
         assert validator.metagraph is not None
+
+    def test_explicit_failed_weight_submission_reports_failed_status(
+        self,
+        validator: _ConcreteValidator,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        response = MagicMock(success=False, message="rejected")
+        monkeypatch.setattr(
+            validator,
+            "subtensor",
+            MagicMock(set_weights=MagicMock(return_value=response)),
+        )
+        attempt = WeightEmissionAttempt(
+            hotkeys=(),
+            raw_weights=(),
+            processed_uids=(),
+            processed_weights=(),
+            uint_uids=(),
+            uint_weights=(),
+            min_allowed_weights=None,
+            max_weight_limit=None,
+            status="error",
+            block=None,
+            submission_block=None,
+            baseline_last_update_block=None,
+            period_blocks=None,
+            confirmation_state="prepared",
+        )
+
+        result = validator._submit_prepared_weights(attempt)
+
+        assert result.status == EMISSION_FAILED
+
+    def test_explicit_failed_weight_submission_counts_process_total(
+        self,
+        validator: _ConcreteValidator,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        response = MagicMock(success=False, message="rejected")
+        monkeypatch.setattr(
+            validator,
+            "subtensor",
+            MagicMock(set_weights=MagicMock(return_value=response)),
+        )
+        attempt = WeightEmissionAttempt(
+            hotkeys=(),
+            raw_weights=(),
+            processed_uids=(),
+            processed_weights=(),
+            uint_uids=(),
+            uint_weights=(),
+            min_allowed_weights=None,
+            max_weight_limit=None,
+            status="error",
+            block=None,
+            submission_block=None,
+            baseline_last_update_block=None,
+            period_blocks=None,
+            confirmation_state="prepared",
+        )
+
+        validator._submit_prepared_weights(attempt)
+
+        assert validator._weight_submissions_failed_process_total == 1
 
     def test_hotkeys_snapshot_matches_metagraph(
         self, validator: _ConcreteValidator

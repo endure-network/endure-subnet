@@ -106,6 +106,9 @@ def _runtime(
     set_weights_failures: int = 0,
     weight_emission_degraded: bool = False,
     rpc_degraded: bool = False,
+    rpc_rate_limited_total: int = 0,
+    rpc_deferred_total: int = 0,
+    weight_submissions_failed_total: int = 0,
     assessment_due_seconds: dict[int, int] | None = None,
     overdue_grace_seconds: int | None = None,
 ) -> RuntimeHealth:
@@ -126,7 +129,9 @@ def _runtime(
         "last_empty_scored_round": None,
         "consecutive_set_weights_failures": set_weights_failures,
         "weight_emission_degraded": weight_emission_degraded,
-        "failed_weight_submissions_total": 3,
+        "rpc_rate_limited_process_total": rpc_rate_limited_total,
+        "rpc_deferred_process_total": rpc_deferred_total,
+        "weight_submissions_failed_process_total": weight_submissions_failed_total,
         "rpc_gate": {
             "adaptive_rate": 1.0,
             "degraded": rpc_degraded,
@@ -162,7 +167,7 @@ class TestRuntimeHealth:
         assert response.status_code == 200
         assert response.json()["status"] == "ok"
         assert response.json()["runtime"]["seconds_since_last_tick"] == 1.5
-        assert response.json()["runtime"]["failed_weight_submissions_total"] == 3
+        assert response.json()["runtime"]["weight_submissions_failed_process_total"] == 0
 
     def test_tick_failures_degrade_to_503(self, storage: Storage) -> None:
         response = self._client(storage, _runtime(tick_failures=3)).get("/health")
@@ -313,7 +318,11 @@ class TestMetricsResponse:
     def test_catalog_is_unlabelled_and_excludes_private_totals(self) -> None:
         from prometheus_client.parser import text_string_to_metric_families
 
-        runtime = _runtime()
+        runtime = _runtime(
+            rpc_rate_limited_total=2,
+            rpc_deferred_total=3,
+            weight_submissions_failed_total=1,
+        )
         runtime.update(
             {
                 "last_confirmed_weights_at": NOW,
@@ -364,6 +373,9 @@ class TestMetricsResponse:
             "endure_validator_weight_submissions_oldest_open_age_blocks",
             "endure_validator_weight_submissions_latest_unconfirmed_block",
             "endure_validator_rpc_degraded",
+            "endure_validator_rpc_rate_limited",
+            "endure_validator_rpc_deferred",
+            "endure_validator_weight_submissions_failed",
         }
         assert all(
             sample.labels == {}
@@ -371,9 +383,15 @@ class TestMetricsResponse:
             for sample in family.samples
         )
         exposition = response.body.decode()
-        assert "failed_weight_submissions_total" not in exposition
-        assert "deferred_total" not in exposition
-        assert "rate_limited_total" not in exposition
+        assert "endure_validator_rpc_rate_limited_total 2.0" in exposition
+        assert "endure_validator_rpc_deferred_total 3.0" in exposition
+        assert "endure_validator_weight_submissions_failed_total 1.0" in exposition
+        assert "# TYPE endure_validator_rpc_rate_limited_total counter" in exposition
+        assert "# TYPE endure_validator_rpc_deferred_total counter" in exposition
+        assert (
+            "# TYPE endure_validator_weight_submissions_failed_total counter"
+            in exposition
+        )
         assert "hotkey" not in exposition
         assert "wallet" not in exposition
         assert "host" not in exposition
