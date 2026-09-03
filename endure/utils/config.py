@@ -476,6 +476,20 @@ def add_args(cls, parser):
         ),
     )
     parser.add_argument(
+        "--endure.health_tick_max_duration_seconds",
+        type=_positive_int,
+        default=1800,
+        help=(
+            "Maximum wall-clock duration of a single in-flight tick or sync "
+            "operation before the watchdog marks the process stale. Long "
+            "catch-up ticks (multi-round resolution backlogs) legitimately "
+            "exceed health_tick_max_age_seconds, so while an operation is in "
+            "flight the watchdog applies this longer window anchored at the "
+            "operation start; a wedged operation that exceeds it still trips "
+            "the watchdog."
+        ),
+    )
+    parser.add_argument(
         "--endure.min_miner_stake",
         type=_non_negative_decimal,
         default=Decimal("0"),

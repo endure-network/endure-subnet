@@ -107,6 +107,8 @@ def _runtime(
     validator_loop_alive: bool = True,
     tick_stale: bool = False,
     seconds_since_last_tick: float | None = 1.5,
+    long_op_in_flight: bool = False,
+    seconds_since_long_op_start: float | None = None,
     set_weights_failures: int = 0,
     weight_emission_degraded: bool = False,
     rpc_degraded: bool = False,
@@ -116,6 +118,8 @@ def _runtime(
         "validator_loop_alive": validator_loop_alive,
         "tick_stale": tick_stale,
         "seconds_since_last_tick": seconds_since_last_tick,
+        "long_op_in_flight": long_op_in_flight,
+        "seconds_since_long_op_start": seconds_since_long_op_start,
         "consecutive_tick_failures": tick_failures,
         "last_tick_ok": NOW,
         "last_tick_error": None,
@@ -203,6 +207,18 @@ class TestRuntimeHealth:
 
         assert response.status_code == 503
         assert response.json()["status"] == "degraded"
+
+    def test_long_op_in_flight_is_ok_and_visible(self, storage: Storage) -> None:
+        response = self._client(
+            storage,
+            _runtime(long_op_in_flight=True, seconds_since_long_op_start=42.0),
+        ).get("/health")
+
+        assert response.status_code == 200
+        runtime = response.json()["runtime"]
+        assert runtime["long_op_in_flight"] is True
+        assert runtime["seconds_since_long_op_start"] == 42.0
+        assert runtime["tick_stale"] is False
 
     def test_rounds_not_opening_degrade_to_503(self, storage: Storage) -> None:
         response = self._client(storage, _runtime(universe_failures=2)).get("/health")

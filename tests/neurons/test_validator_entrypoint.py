@@ -430,6 +430,56 @@ def test_failed_tick_refreshes_loop_heartbeat(
     now[0] = 1_016.0
 
     assert validator.watchdog_exit_reason() is None
+    assert validator._long_op_started_monotonic is None
+
+
+def test_tick_in_flight_survives_beyond_normal_stale_window(
+    mock_validator_config: bt.Config,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from neurons.validator import Validator
+
+    mock_validator_config.neuron.axon_off = True
+    mock_validator_config.neuron.disable_set_weights = True
+    mock_validator_config.endure.health_tick_max_age_seconds = 60
+    mock_validator_config.endure.health_tick_max_duration_seconds = 600
+    now = [1_000.0]
+    monkeypatch.setattr("neurons.validator.time.monotonic", lambda: now[0])
+    validator = Validator(config=mock_validator_config)
+    validator.thread = MagicMock()
+    validator.thread.is_alive.return_value = True
+    validator._last_tick_monotonic = 900.0
+    validator._begin_long_op()
+    now[0] = 1_050.0
+
+    health = validator.runtime_health()
+
+    assert health["tick_stale"] is False
+    assert health["long_op_in_flight"] is True
+    assert health["seconds_since_long_op_start"] == 50
+    assert validator.watchdog_exit_reason() is None
+
+
+def test_tick_in_flight_trips_watchdog_beyond_max_duration(
+    mock_validator_config: bt.Config,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from neurons.validator import Validator
+
+    mock_validator_config.neuron.axon_off = True
+    mock_validator_config.neuron.disable_set_weights = True
+    mock_validator_config.endure.health_tick_max_age_seconds = 60
+    mock_validator_config.endure.health_tick_max_duration_seconds = 600
+    now = [1_000.0]
+    monkeypatch.setattr("neurons.validator.time.monotonic", lambda: now[0])
+    validator = Validator(config=mock_validator_config)
+    validator.thread = MagicMock()
+    validator.thread.is_alive.return_value = True
+    validator._last_tick_monotonic = 900.0
+    validator._begin_long_op()
+    now[0] = 1_700.0
+
+    assert validator.watchdog_exit_reason() == "validator tick stale"
 
 
 def test_validator_rejects_watchdog_age_not_greater_than_tick_cadence(
@@ -457,6 +507,22 @@ def test_validator_rejects_startup_grace_not_greater_than_tick_cadence(
     mock_validator_config.endure.health_startup_grace_seconds = 60
 
     with pytest.raises(RuntimeError, match="greater than endure.tick_seconds"):
+        Validator(config=mock_validator_config)
+
+
+def test_validator_rejects_duration_not_greater_than_stale_age(
+    mock_validator_config: bt.Config,
+) -> None:
+    from neurons.validator import Validator
+
+    mock_validator_config.neuron.axon_off = True
+    mock_validator_config.neuron.disable_set_weights = True
+    mock_validator_config.endure.health_tick_max_age_seconds = 300
+    mock_validator_config.endure.health_tick_max_duration_seconds = 300
+
+    with pytest.raises(
+        RuntimeError, match="greater than endure.health_tick_max_age_seconds"
+    ):
         Validator(config=mock_validator_config)
 
 
