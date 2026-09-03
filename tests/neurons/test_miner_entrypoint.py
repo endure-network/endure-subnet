@@ -57,6 +57,33 @@ def test_main_hard_exits_when_rpc_abandonment_capacity_is_reached() -> None:
     hard_exit.assert_called_once_with(1)
 
 
+def test_main_hard_exits_when_watchdog_races_rpc_abandonment() -> None:
+    from neurons.miner import main
+
+    miner = MagicMock()
+    # Given: the worker latches and dies between the latch check and the
+    # liveness probe.
+    miner.chain_rpc_restart_required.side_effect = [False, True]
+    miner.thread = None
+    context = MagicMock()
+    context.__enter__.return_value = miner
+
+    with (
+        patch(
+            "neurons.miner.install_shutdown_handlers",
+            return_value=threading.Event(),
+        ),
+        patch("neurons.miner.Miner", return_value=context),
+        patch("neurons.miner.os._exit", side_effect=SystemExit(1)) as hard_exit,
+        pytest.raises(SystemExit) as exit_info,
+    ):
+        main()
+
+    # Then: the watchdog path still restarts hard instead of exiting normally.
+    assert exit_info.value.code == 1
+    hard_exit.assert_called_once_with(1)
+
+
 def test_main_hard_exits_when_shutdown_signal_races_rpc_abandonment() -> None:
     from neurons.miner import main
 
@@ -457,6 +484,12 @@ async def test_send_logs_the_rejection_reason_for_refused_pushes(
     assert total == 0
     rendered = "\n".join(str(call.args[0]) for call in warning_mock.call_args_list)
     assert "Insufficient stake" in rendered
+
+    # When: the same validators keep rejecting on later ticks for the same
+    # reason, the warning is not repeated.
+    first_tick_warnings = warning_mock.call_count
+    await miner._send(synapse.model_copy())
+    assert warning_mock.call_count == first_tick_warnings
 
 
 async def test_unknown_synapse_match_tracks_installed_bittensor_contract() -> None:

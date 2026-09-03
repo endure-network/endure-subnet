@@ -1089,6 +1089,10 @@ def main() -> None:
             while not stop.is_set():
                 _force_restart_if_rpc_abandoned(validator)
                 if (reason := validator.watchdog_exit_reason()) is not None:
+                    # The worker may have died by latching between the check
+                    # above and this liveness probe; a plain SystemExit here
+                    # would take the normal exit the latch exists to prevent.
+                    _force_restart_if_rpc_abandoned(validator)
                     bt.logging.error(f"validator watchdog exiting: {reason}")
                     raise SystemExit(1)
                 bt.logging.info(f"Validator running... {time.time()}")
