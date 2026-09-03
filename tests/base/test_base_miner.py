@@ -385,6 +385,7 @@ class TestChainRpcRecovery:
         # Abandoned RPC generations cannot heal in-process: the loop must end
         # so the entrypoint watchdog restarts the process.
         assert miner.should_exit is True
+        assert miner.chain_rpc_restart_required() is True
         assert calls["count"] == 2
         assert any(
             "chain RPC restart required" in str(call.args[0])
