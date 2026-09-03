@@ -17,7 +17,9 @@
 #      deploy/soak/.
 #
 # Required env: NETUID, EXTERNAL_IP (the host's public IP — published on-chain
-# for the axon), WALLETS_TAR_B64. Optional: CHAIN (network name OR a wss://
+# for the axon), WALLETS_TAR_B64, SOURCE_COMMIT (Coolify injects it; manual
+# builds must export SOURCE_COMMIT=$(git rev-parse HEAD) — see the build args
+# below). Optional: CHAIN (network name OR a wss://
 # chain RPC URL such as a keyed Dwellir testnet endpoint — bittensor >=10.3
 # ignores --subtensor.chain_endpoint, so a custom RPC must ride this flag;
 # the URL host must be allowlisted in endure/utils/config.py _TESTNET_HOSTS;

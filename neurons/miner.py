@@ -244,6 +244,17 @@ class Miner(BaseMinerNeuron):
                 acked.add(hotkey)
             elif _rejected_as_unknown_synapse(response):
                 unknown.add(hotkey)
+            else:
+                dendrite = response.dendrite
+                reason = (
+                    dendrite.status_message
+                    if dendrite is not None and dendrite.status_message is not None
+                    else "no response"
+                )
+                bt.logging.warning(
+                    f"{type(synapse).__name__} round {synapse.round_id}: "
+                    f"validator {hotkey[:8]}… rejected push: {safe_error(reason)}"
+                )
         bt.logging.info(
             f"{type(synapse).__name__} round {synapse.round_id}: "
             f"{len(acked)} validators hold it ({len(axons)} pushed this tick, "
@@ -387,6 +398,17 @@ class Miner(BaseMinerNeuron):
         return priority
 
 
+def _force_restart_if_rpc_abandoned(miner: Miner) -> None:
+    if miner.chain_rpc_restart_required() is not True:
+        return
+    # A normal exit would join the abandoned non-daemon RPC workers at
+    # interpreter shutdown and could hang forever.
+    bt.logging.error(
+        "miner forcing process restart after chain RPC abandonment capacity was reached"
+    )
+    os._exit(1)
+
+
 def main() -> None:
     try:
         identity = runtime_identity()
@@ -399,19 +421,15 @@ def main() -> None:
         stop = install_shutdown_handlers()
         with Miner() as miner:
             while not stop.is_set():
-                if miner.chain_rpc_restart_required() is True:
-                    # A normal exit would join the abandoned non-daemon RPC
-                    # workers at interpreter shutdown and could hang forever.
-                    bt.logging.error(
-                        "miner forcing process restart after chain RPC "
-                        "abandonment capacity was reached"
-                    )
-                    os._exit(1)
+                _force_restart_if_rpc_abandoned(miner)
                 if miner.thread is None or not miner.thread.is_alive():
                     bt.logging.error("miner watchdog exiting: miner loop thread exited")
                     raise SystemExit(1)
                 bt.logging.info(f"Miner running... {time.time()}")
                 stop.wait(5)
+            # A shutdown signal that races the latch must not fall through to
+            # the normal exit the latch exists to prevent.
+            _force_restart_if_rpc_abandoned(miner)
         bt.logging.info("miner stopped on shutdown signal")
     except Exception as error:  # noqa: BLE001 - CLI boundary must redact SDK errors.
         bt.logging.error(f"miner failed: {type(error).__name__}: {safe_error(error)}")

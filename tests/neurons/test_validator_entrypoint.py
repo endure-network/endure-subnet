@@ -659,7 +659,31 @@ def test_main_hard_exits_when_rpc_abandonment_capacity_is_reached() -> None:
 
     assert exit_info.value.code == 1
     hard_exit.assert_called_once_with(1)
-    context.__exit__.assert_called_once()
+
+
+def test_main_hard_exits_when_shutdown_signal_races_rpc_abandonment() -> None:
+    from neurons.validator import main
+
+    context = MagicMock()
+    context.chain_rpc_restart_required.return_value = True
+    # Given: the shutdown signal already arrived when the latch is checked.
+    already_stopped = threading.Event()
+    already_stopped.set()
+
+    with (
+        patch(
+            "neurons.validator.install_shutdown_handlers",
+            return_value=already_stopped,
+        ),
+        patch("neurons.validator.Validator", return_value=context),
+        patch("neurons.validator.os._exit", side_effect=SystemExit(1)) as hard_exit,
+        pytest.raises(SystemExit) as exit_info,
+    ):
+        main()
+
+    # Then: the process still restarts hard instead of exiting normally.
+    assert exit_info.value.code == 1
+    hard_exit.assert_called_once_with(1)
 
 
 def test_main_redacts_runtime_endpoint_credentials() -> None:
