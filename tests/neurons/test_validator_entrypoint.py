@@ -661,6 +661,31 @@ def test_main_hard_exits_when_rpc_abandonment_capacity_is_reached() -> None:
     hard_exit.assert_called_once_with(1)
 
 
+def test_main_hard_exits_when_watchdog_races_rpc_abandonment() -> None:
+    from neurons.validator import main
+
+    context = MagicMock()
+    # Given: the worker latches and dies between the latch check and the
+    # watchdog probe.
+    context.chain_rpc_restart_required.side_effect = [False, True]
+    context.watchdog_exit_reason.return_value = "scoring loop thread exited"
+
+    with (
+        patch(
+            "neurons.validator.install_shutdown_handlers",
+            return_value=threading.Event(),
+        ),
+        patch("neurons.validator.Validator", return_value=context),
+        patch("neurons.validator.os._exit", side_effect=SystemExit(1)) as hard_exit,
+        pytest.raises(SystemExit) as exit_info,
+    ):
+        main()
+
+    # Then: the watchdog path still restarts hard instead of exiting normally.
+    assert exit_info.value.code == 1
+    hard_exit.assert_called_once_with(1)
+
+
 def test_main_hard_exits_when_shutdown_signal_races_rpc_abandonment() -> None:
     from neurons.validator import main
 

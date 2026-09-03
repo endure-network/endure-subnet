@@ -48,6 +48,20 @@ def safe_error(exc: object) -> str:
     return _USERINFO_RE.sub("<redacted-endpoint>", text)
 
 
+_CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]+")
+_REMOTE_TEXT_LIMIT = 200
+
+
+def safe_remote_text(value: object) -> str:
+    """Bound peer-supplied text for logging: redact credentials, collapse
+    control characters (newline/ANSI log-injection vectors), and truncate.
+    """
+    text = _CONTROL_CHARS_RE.sub(" ", safe_error(value))
+    if len(text) > _REMOTE_TEXT_LIMIT:
+        return text[:_REMOTE_TEXT_LIMIT] + "…"
+    return text
+
+
 def startup_config_summary(config: object, *, neuron_type: str) -> dict[str, object]:
     """Build a strict allowlist of non-sensitive startup configuration."""
     summary: dict[str, object] = {"neuron_type": neuron_type}
