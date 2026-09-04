@@ -111,6 +111,40 @@ def test_main_hard_exits_when_shutdown_signal_races_rpc_abandonment() -> None:
     hard_exit.assert_called_once_with(1)
 
 
+def test_main_hard_exits_when_rpc_abandonment_races_lifecycle_teardown() -> None:
+    from neurons.miner import main
+
+    miner = MagicMock()
+    latched = {"value": False}
+    miner.chain_rpc_restart_required.side_effect = lambda: latched["value"]
+    context = MagicMock()
+    context.__enter__.return_value = miner
+    # Given: the worker latches only while __exit__ joins it, after every
+    # in-body recheck has already passed.
+    already_stopped = threading.Event()
+    already_stopped.set()
+
+    def _latch_during_teardown(*_args: object) -> None:
+        latched["value"] = True
+
+    context.__exit__.side_effect = _latch_during_teardown
+
+    with (
+        patch(
+            "neurons.miner.install_shutdown_handlers",
+            return_value=already_stopped,
+        ),
+        patch("neurons.miner.Miner", return_value=context),
+        patch("neurons.miner.os._exit", side_effect=SystemExit(1)) as hard_exit,
+        pytest.raises(SystemExit) as exit_info,
+    ):
+        main()
+
+    # Then: the post-teardown recheck still restarts hard.
+    assert exit_info.value.code == 1
+    hard_exit.assert_called_once_with(1)
+
+
 def test_miner_bootstraps_in_mock_mode(
     mock_miner_config: bt.Config,
     trap_external_ip: dict[str, int],
@@ -490,6 +524,70 @@ async def test_send_logs_the_rejection_reason_for_refused_pushes(
     first_tick_warnings = warning_mock.call_count
     await miner._send(synapse.model_copy())
     assert warning_mock.call_count == first_tick_warnings
+
+
+async def test_send_dedups_rotating_reasons_and_labels_transport_failures(
+    mock_miner_config: bt.Config,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from endure.protocol.synapses import SubmitCommit
+    from endure.protocol.version_contract import CURRENT_VERSION_KEY
+    from neurons.miner import Miner
+
+    miner = Miner(config=mock_miner_config)
+    miner.metagraph = _FakeMetagraph()
+    miner.uid = 2  # hk-self
+    tick = {"count": 0}
+
+    async def fake_dendrite(*, axons, synapse, timeout, deserialize):  # noqa: ANN001, ANN202
+        tick["count"] += 1
+        responses = []
+        for axon in axons:
+            response = synapse.model_copy()
+            response.accepted = False
+            if axon.hotkey == "hk-v1":
+                # Given: a policy rejection whose peer-controlled reason text
+                # rotates on every tick.
+                response.dendrite = bt.TerminalInfo(
+                    status_code=403,
+                    status_message=f"Forbidden. rotating nonce {tick['count']}",
+                )
+            else:
+                # Given: a dendrite-local transport failure that never carried
+                # a validator verdict.
+                response.dendrite = bt.TerminalInfo(
+                    status_code=503,
+                    status_message="Service at 203.0.113.1:8091 unavailable.",
+                )
+            responses.append(response)
+        return responses
+
+    miner.dendrite = fake_dendrite
+    warning_mock = MagicMock()
+    monkeypatch.setattr(bt.logging, "warning", warning_mock)
+
+    synapse = SubmitCommit(
+        round_id="2023-03-06",
+        schema_id=RISK_SCHEMA_ID,
+        spec_version=CURRENT_VERSION_KEY,
+        bundle_hash="ab" * 32,
+    )
+    await miner._send(synapse)
+    await miner._send(synapse.model_copy())
+    await miner._send(synapse.model_copy())
+
+    rendered = [str(call.args[0]) for call in warning_mock.call_args_list]
+    rejected = [line for line in rendered if "rejected push" in line]
+    undelivered = [line for line in rendered if "push undelivered" in line]
+    # Then: the rotating reason cannot re-trigger the warning; the first
+    # reason is kept.
+    assert len(rejected) == 1
+    assert "hk-v1" in rejected[0]
+    assert "rotating nonce 1" in rejected[0]
+    # Then: the transport failure is labeled as undelivered, not as a
+    # validator rejection, and is deduplicated the same way.
+    assert len(undelivered) == 1
+    assert "hk-v2" in undelivered[0]
 
 
 async def test_unknown_synapse_match_tracks_installed_bittensor_contract() -> None:
