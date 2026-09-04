@@ -37,7 +37,11 @@ hotkeys, then check the prompted fee and chain state before confirming:
   --hotkey <validator-hotkey> --network test
 ```
 
-Register and stake the miner hotkey the same way.
+Register and stake the miner hotkey the same way. Validators may enforce a
+minimum miner stake (`MIN_MINER_STAKE`) and reject commits from under-staked
+hotkeys with `Insufficient stake`; the public testnet soak validator currently
+requires a metagraph stake weight of at least `0.3`, so stake the miner hotkey
+above that floor or its submissions will never be accepted.
 
 ## Validator first
 

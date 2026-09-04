@@ -47,7 +47,7 @@ from endure.utils.config import (
     require_explicit_netuid,
     require_serving_stage_allowed,
 )
-from endure.utils.logging import safe_error
+from endure.utils.logging import safe_error, safe_remote_text
 
 
 def _utc_now() -> datetime:
@@ -144,6 +144,10 @@ class Miner(BaseMinerNeuron):
         # they lack the Endure handlers entirely, so retries within the round
         # only produce a symmetric error storm between colocated miners.
         self._unknown_synapse: dict[str, set[str]] = {}
+        # round_id → (synapse type, hotkey, reason) triples already logged, so
+        # a persistently rejecting validator warns once per reason per round
+        # instead of on every 12s push tick.
+        self._rejections_logged: dict[str, set[tuple[str, str, str]]] = {}
         self._validator_axon_overrides = _parse_validator_axon_overrides(
             str(self.config.endure.validator_axon_overrides or "")
         )
@@ -230,6 +234,7 @@ class Miner(BaseMinerNeuron):
             for stale_round in sorted(self._acked)[:-_MAX_TRACKED_PUSH_ROUNDS]:
                 del self._acked[stale_round]
                 self._unknown_synapse.pop(stale_round, None)
+                self._rejections_logged.pop(stale_round, None)
         targets = self._snapshot_push_targets(acked, unknown)
         axons = [axon for _, axon in targets]
         if not axons:
@@ -244,6 +249,21 @@ class Miner(BaseMinerNeuron):
                 acked.add(hotkey)
             elif _rejected_as_unknown_synapse(response):
                 unknown.add(hotkey)
+            else:
+                dendrite = response.dendrite
+                reason = safe_remote_text(
+                    dendrite.status_message
+                    if dendrite is not None and dendrite.status_message is not None
+                    else "no response"
+                )
+                logged = self._rejections_logged.setdefault(synapse.round_id, set())
+                key = (type(synapse).__name__, hotkey, reason)
+                if key not in logged:
+                    logged.add(key)
+                    bt.logging.warning(
+                        f"{type(synapse).__name__} round {synapse.round_id}: "
+                        f"validator {hotkey[:8]}… rejected push: {reason}"
+                    )
         bt.logging.info(
             f"{type(synapse).__name__} round {synapse.round_id}: "
             f"{len(acked)} validators hold it ({len(axons)} pushed this tick, "
@@ -387,6 +407,17 @@ class Miner(BaseMinerNeuron):
         return priority
 
 
+def _force_restart_if_rpc_abandoned(miner: Miner) -> None:
+    if miner.chain_rpc_restart_required() is not True:
+        return
+    # A normal exit would join the abandoned non-daemon RPC workers at
+    # interpreter shutdown and could hang forever.
+    bt.logging.error(
+        "miner forcing process restart after chain RPC abandonment capacity was reached"
+    )
+    os._exit(1)
+
+
 def main() -> None:
     try:
         identity = runtime_identity()
@@ -399,19 +430,19 @@ def main() -> None:
         stop = install_shutdown_handlers()
         with Miner() as miner:
             while not stop.is_set():
-                if miner.chain_rpc_restart_required() is True:
-                    # A normal exit would join the abandoned non-daemon RPC
-                    # workers at interpreter shutdown and could hang forever.
-                    bt.logging.error(
-                        "miner forcing process restart after chain RPC "
-                        "abandonment capacity was reached"
-                    )
-                    os._exit(1)
+                _force_restart_if_rpc_abandoned(miner)
                 if miner.thread is None or not miner.thread.is_alive():
+                    # The worker may have died by latching between the check
+                    # above and this liveness probe; a plain SystemExit here
+                    # would take the normal exit the latch exists to prevent.
+                    _force_restart_if_rpc_abandoned(miner)
                     bt.logging.error("miner watchdog exiting: miner loop thread exited")
                     raise SystemExit(1)
                 bt.logging.info(f"Miner running... {time.time()}")
                 stop.wait(5)
+            # A shutdown signal that races the latch must not fall through to
+            # the normal exit the latch exists to prevent.
+            _force_restart_if_rpc_abandoned(miner)
         bt.logging.info("miner stopped on shutdown signal")
     except Exception as error:  # noqa: BLE001 - CLI boundary must redact SDK errors.
         bt.logging.error(f"miner failed: {type(error).__name__}: {safe_error(error)}")

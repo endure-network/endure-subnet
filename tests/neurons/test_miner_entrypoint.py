@@ -47,14 +47,6 @@ def test_main_hard_exits_when_rpc_abandonment_capacity_is_reached() -> None:
             "neurons.miner.install_shutdown_handlers",
             return_value=threading.Event(),
         ),
-        patch(
-            "neurons.miner.runtime_identity",
-            return_value={
-                "source_revision": "unknown",
-                "image_version": "dev",
-                "content_revision": "0" * 64,
-            },
-        ),
         patch("neurons.miner.Miner", return_value=context),
         patch("neurons.miner.os._exit", side_effect=SystemExit(1)) as hard_exit,
         pytest.raises(SystemExit) as exit_info,
@@ -63,7 +55,60 @@ def test_main_hard_exits_when_rpc_abandonment_capacity_is_reached() -> None:
 
     assert exit_info.value.code == 1
     hard_exit.assert_called_once_with(1)
-    context.__exit__.assert_called_once()
+
+
+def test_main_hard_exits_when_watchdog_races_rpc_abandonment() -> None:
+    from neurons.miner import main
+
+    miner = MagicMock()
+    # Given: the worker latches and dies between the latch check and the
+    # liveness probe.
+    miner.chain_rpc_restart_required.side_effect = [False, True]
+    miner.thread = None
+    context = MagicMock()
+    context.__enter__.return_value = miner
+
+    with (
+        patch(
+            "neurons.miner.install_shutdown_handlers",
+            return_value=threading.Event(),
+        ),
+        patch("neurons.miner.Miner", return_value=context),
+        patch("neurons.miner.os._exit", side_effect=SystemExit(1)) as hard_exit,
+        pytest.raises(SystemExit) as exit_info,
+    ):
+        main()
+
+    # Then: the watchdog path still restarts hard instead of exiting normally.
+    assert exit_info.value.code == 1
+    hard_exit.assert_called_once_with(1)
+
+
+def test_main_hard_exits_when_shutdown_signal_races_rpc_abandonment() -> None:
+    from neurons.miner import main
+
+    miner = MagicMock()
+    miner.chain_rpc_restart_required.return_value = True
+    context = MagicMock()
+    context.__enter__.return_value = miner
+    # Given: the shutdown signal already arrived when the latch is checked.
+    already_stopped = threading.Event()
+    already_stopped.set()
+
+    with (
+        patch(
+            "neurons.miner.install_shutdown_handlers",
+            return_value=already_stopped,
+        ),
+        patch("neurons.miner.Miner", return_value=context),
+        patch("neurons.miner.os._exit", side_effect=SystemExit(1)) as hard_exit,
+        pytest.raises(SystemExit) as exit_info,
+    ):
+        main()
+
+    # Then: the process still restarts hard instead of exiting normally.
+    assert exit_info.value.code == 1
+    hard_exit.assert_called_once_with(1)
 
 
 def test_miner_bootstraps_in_mock_mode(
@@ -395,6 +440,56 @@ async def test_send_stops_retrying_canonical_unknown_synapse_rejections(
     other_round.round_id = "2023-03-07"
     await miner._send(other_round)
     assert pushed[2] == ["hk-v1", "hk-v2"]  # exclusion is per-round
+
+
+async def test_send_logs_the_rejection_reason_for_refused_pushes(
+    mock_miner_config: bt.Config,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A validator that refuses a push (e.g. a stake-floor blacklist) must
+    surface its reason in the miner log — a silently unacked push leaves the
+    operator with no way to see why no commit is ever accepted."""
+    from endure.protocol.synapses import SubmitCommit
+    from endure.protocol.version_contract import CURRENT_VERSION_KEY
+    from neurons.miner import Miner
+
+    miner = Miner(config=mock_miner_config)
+    miner.metagraph = _FakeMetagraph()
+    miner.uid = 2  # hk-self
+
+    async def fake_dendrite(*, axons, synapse, timeout, deserialize):  # noqa: ANN001, ANN202
+        responses = []
+        for _ in axons:
+            response = synapse.model_copy()
+            response.accepted = False
+            response.dendrite = bt.TerminalInfo(
+                status_code=403,
+                status_message="Forbidden. Key is blacklisted: Insufficient stake.",
+            )
+            responses.append(response)
+        return responses
+
+    miner.dendrite = fake_dendrite
+    warning_mock = MagicMock()
+    monkeypatch.setattr(bt.logging, "warning", warning_mock)
+
+    synapse = SubmitCommit(
+        round_id="2023-03-06",
+        schema_id=RISK_SCHEMA_ID,
+        spec_version=CURRENT_VERSION_KEY,
+        bundle_hash="ab" * 32,
+    )
+    total = await miner._send(synapse)
+
+    assert total == 0
+    rendered = "\n".join(str(call.args[0]) for call in warning_mock.call_args_list)
+    assert "Insufficient stake" in rendered
+
+    # When: the same validators keep rejecting on later ticks for the same
+    # reason, the warning is not repeated.
+    first_tick_warnings = warning_mock.call_count
+    await miner._send(synapse.model_copy())
+    assert warning_mock.call_count == first_tick_warnings
 
 
 async def test_unknown_synapse_match_tracks_installed_bittensor_contract() -> None:

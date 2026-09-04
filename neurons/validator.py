@@ -1064,6 +1064,16 @@ def _build_forge_vertical_runtime(validator: Validator) -> VerticalRuntime:
     )
 
 
+def _force_restart_if_rpc_abandoned(validator: Validator) -> None:
+    if validator.chain_rpc_restart_required() is not True:
+        return
+    bt.logging.error(
+        "validator forcing process restart after chain RPC "
+        "abandonment capacity was reached"
+    )
+    os._exit(1)
+
+
 def main() -> None:
     try:
         identity = runtime_identity()
@@ -1077,17 +1087,19 @@ def main() -> None:
         validator = Validator()
         with validator:
             while not stop.is_set():
-                if validator.chain_rpc_restart_required() is True:
-                    bt.logging.error(
-                        "validator forcing process restart after chain RPC "
-                        "abandonment capacity was reached"
-                    )
-                    os._exit(1)
+                _force_restart_if_rpc_abandoned(validator)
                 if (reason := validator.watchdog_exit_reason()) is not None:
+                    # The worker may have died by latching between the check
+                    # above and this liveness probe; a plain SystemExit here
+                    # would take the normal exit the latch exists to prevent.
+                    _force_restart_if_rpc_abandoned(validator)
                     bt.logging.error(f"validator watchdog exiting: {reason}")
                     raise SystemExit(1)
                 bt.logging.info(f"Validator running... {time.time()}")
                 stop.wait(5)
+            # A shutdown signal that races the latch must not fall through to
+            # the normal exit the latch exists to prevent.
+            _force_restart_if_rpc_abandoned(validator)
         bt.logging.info("validator stopped on shutdown signal")
     except DevOnlyConfigError as error:
         bt.logging.error(f"validator refused to start: {safe_error(error)}")

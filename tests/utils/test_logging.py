@@ -13,6 +13,7 @@ from endure.utils.logging import (
     EVENTS_LEVEL_NUM,
     safe_endpoint_label,
     safe_error,
+    safe_remote_text,
     setup_events_logger,
     startup_config_summary,
 )
@@ -94,6 +95,22 @@ class TestSafeLogging:
         self, endpoint: object, expected: str
     ) -> None:
         assert safe_endpoint_label(endpoint) == expected
+
+    def test_remote_text_is_bounded_to_one_printable_line(self) -> None:
+        secret = "super-secret-token"
+        injected = (
+            "ok\n2026-01-01 00:00:00 ERROR forged admin line\x1b[31m"
+            + f"wss://operator:{secret}@rpc.example.org/ws "
+            + "A" * 500
+        )
+
+        text = safe_remote_text(injected)
+
+        assert "\n" not in text
+        assert "\x1b" not in text
+        assert "secret" not in text
+        assert len(text) <= 201
+        assert text.endswith("…")
 
     def test_endpoint_label_removes_url_secrets_and_details(self) -> None:
         secret = "super-secret-token"
