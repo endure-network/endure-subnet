@@ -87,22 +87,61 @@ tar -cf - <wallet>/coldkeypub.txt <wallet>/hotkeys | base64
 | --- | --- |
 | Validator `/data` | SQLite database in the `validator-data` named volume. |
 | Validator `/data/backups` | Host-backed SQLite snapshots, independent from the primary volume. |
+| Validator `/root/.bittensor` | Neuron state in the `validator-state` named volume. |
 | Miner `/root/.bittensor/miners` | Nonce and round state required for restart-safe reveals. |
 | Neuron `/root/.bittensor/wallets` | Hotkey-only named volume, mounted read-only. |
 
-Disable automatic pruning of unused volumes on every stateful host. A named
-volume can become temporarily unreferenced during deployment and is not a
-backup boundary. Provision the validator backup directory before deployment:
+Keep "delete unused volumes" disabled on every stateful host. Coolify's Docker
+cleanup runs `docker volume prune --all --force` when that setting is on, and
+`--all` removes *named* volumes the moment they are unreferenced — a normal
+deployment's unreferenced window is short, but a failed deploy or a stopped
+stack left overnight loses its volumes at the next scheduled cleanup. A named
+volume is not a backup boundary either way. Provision the validator backup
+directory before deployment:
 
 ```bash
 sudo install -d -o root -g root -m 0700 /var/lib/endure-soak/backups
 ```
 
 Schedule a daily SQLite online backup from
-`/data/validator-live.db` to `/data/backups`, retain a documented recovery
-window, and copy snapshots off-host when possible. Restore drills must stop the
-validator, restore a copy without stale `-wal` or `-shm` files, run
-`PRAGMA integrity_check`, restart, and verify `/health` plus recent round data.
+`/data/validator-live.db` to `/data/backups` and retain a documented recovery
+window.
+
+### Off-host snapshot sync
+
+A scheduled task inside the validator container replicates the newest snapshot
+to an S3-compatible bucket (Cloudflare R2) with stdlib-only SigV4 signing:
+
+```bash
+python -m endure.ops.backup_sync
+```
+
+It requires runtime-only (never build-time) secrets `R2_ENDPOINT`, `R2_BUCKET`,
+`R2_ACCESS_KEY_ID`, and `R2_SECRET_ACCESS_KEY`; optional `R2_PREFIX` (default
+`validator-db/`), `ENDURE_BACKUP_DIR` (default `/data/backups`), and
+`ENDURE_BACKUP_MAX_AGE_HOURS` (default `26`). Scope the R2 API token to
+object read/write on the backup bucket only, and set a bucket lifecycle rule
+for retention — the task uploads and verifies, it never deletes.
+
+The task fails loudly when the newest local snapshot is older than
+`ENDURE_BACKUP_MAX_AGE_HOURS`, so a silently skipped snapshot schedule (an
+observed Coolify failure mode: missing runs leave no execution record)
+surfaces as a failed task execution. Alert on that failure and, independently
+of Coolify, monitor the age of the newest object in the bucket (for example a
+file-age heartbeat in the team's existing uptime monitor) so the alarm does
+not share fate with the scheduler it watches.
+
+### Restore drill
+
+Run at least once per soak, and after any storage change:
+
+1. Stop the validator application in Coolify.
+2. Fetch a snapshot — from `/var/lib/endure-soak/backups` on the host, or from
+   R2 for a full off-host drill — and copy it over `/data/validator-live.db`
+   on the `validator-data` volume, removing any stale `-wal` and `-shm` files.
+3. Run `PRAGMA integrity_check` on the restored file before starting anything.
+4. Start the validator; verify `/health`, `/rounds` recency, and the next
+   confirmed weight emission.
 
 Do not use `alembic downgrade` for rollback. Apply migrations forward and keep
 a restorable pre-deploy database snapshot.
