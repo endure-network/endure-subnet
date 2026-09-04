@@ -90,6 +90,8 @@ class RuntimeHealth(TypedDict):
     validator_loop_alive: bool
     tick_stale: bool
     seconds_since_last_tick: float | None
+    long_op_in_flight: NotRequired[bool]
+    seconds_since_long_op_start: NotRequired[float | None]
     consecutive_tick_failures: int
     last_tick_ok: str | None
     last_tick_error: str | None

@@ -52,11 +52,14 @@ The compose files derive the `ENDURE_SOURCE_REVISION` and
 `ENDURE_IMAGE_VERSION` build arguments from Coolify's predefined
 `SOURCE_COMMIT` variable — the commit Coolify actually checked out — so an
 auto-deploy of a new branch tip cannot build new code under a stale label.
-Outside Coolify (or if `SOURCE_COMMIT` is ever absent) the manual variables
-are the fallback: set the full 40-hex source commit and `sha-<that commit>`
-respectively. Omitting everything produces a local `dev` image; supplying only
-one manual variable fails the image build, and the soak health probe rejects a
-dev image.
+`SOURCE_COMMIT` is required. Outside Coolify, export
+`SOURCE_COMMIT=$(git rev-parse HEAD)` before building; without it the compose
+files render the identity pair `unknown`/`sha-unknown`, which the image's
+release-identity check refuses. The former `ENDURE_SOURCE_REVISION` /
+`ENDURE_IMAGE_VERSION` manual fallback and the implicit `dev`-image default are
+no longer read by these compose files — Coolify's compose parser only supports
+single-level `${VAR:-default}` interpolation, so the identity must come from
+exactly one variable.
 
 ### Testnet wallet exception
 

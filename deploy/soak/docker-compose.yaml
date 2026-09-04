@@ -17,7 +17,9 @@
 #      deploy/soak/.
 #
 # Required env: NETUID, EXTERNAL_IP (the host's public IP — published on-chain
-# for the axon), WALLETS_TAR_B64. Optional: CHAIN (network name OR a wss://
+# for the axon), WALLETS_TAR_B64, SOURCE_COMMIT (Coolify injects it; manual
+# builds must export SOURCE_COMMIT=$(git rev-parse HEAD) — see the build args
+# below). Optional: CHAIN (network name OR a wss://
 # chain RPC URL such as a keyed Dwellir testnet endpoint — bittensor >=10.3
 # ignores --subtensor.chain_endpoint, so a custom RPC must ride this flag;
 # the URL host must be allowlisted in endure/utils/config.py _TESTNET_HOSTS;
@@ -71,10 +73,12 @@ services:
       dockerfile: docker/validator.Dockerfile
       args:
         # Coolify's SOURCE_COMMIT (the actually checked-out commit) is the only
-        # identity source. Single-level ${VAR:-default} only: Coolify's own
-        # compose parser rejects the :+ operator and nested defaults with
-        # "The key must start with a letter or underscore" (2026-09-01 deploy
-        # failure), even though docker compose resolves them fine.
+        # identity source — there is no manual-variable or dev fallback; for a
+        # build outside Coolify, set SOURCE_COMMIT=$(git rev-parse HEAD) or the
+        # release-identity check refuses the rendered unknown/sha-unknown pair.
+        # Single-level ${VAR:-default} only: Coolify's own compose parser
+        # rejects the :+ operator and nested defaults that docker compose
+        # accepts.
         ENDURE_SOURCE_REVISION: ${SOURCE_COMMIT:-unknown}
         ENDURE_IMAGE_VERSION: sha-${SOURCE_COMMIT:-unknown}
     image: endure-validator:soak

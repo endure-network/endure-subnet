@@ -96,7 +96,11 @@ def _is_archive_rate_limited(error: BaseException) -> bool:
 def _is_archive_request_rate_limited(error: BaseException) -> bool:
     # In-band throttling arrives as a well-formed JSON-RPC error (-32029 or a
     # textual rate-limit message): the connection is healthy, never void it.
-    if isinstance(error, SubstrateRequestException) and error.args:
+    # Only SubstrateRequestException qualifies — a transport-level error whose
+    # text mentions rate limiting must still void the connection.
+    if not isinstance(error, SubstrateRequestException):
+        return False
+    if error.args:
         payload = error.args[0]
         if isinstance(payload, dict):
             detail = payload.get("error")
