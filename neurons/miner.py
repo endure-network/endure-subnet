@@ -62,7 +62,10 @@ _MAX_TCP_PORT = 65535
 # validator), so retrying it within the round can never succeed.
 _UNKNOWN_SYNAPSE_STATUS = 404
 # bittensor's dendrite stamps these locally when no axon response arrived:
-# 408 on timeout, 503 on unreachable/failed connections.
+# 408 on timeout, 503 on unreachable/failed connections. Axons reuse both
+# codes for priority_fn rejections — unambiguous here ONLY because the
+# validator attaches submit_commit/submit_reveal without a priority_fn;
+# revisit this classification if that ever changes.
 _TRANSPORT_FAILURE_STATUS = frozenset({408, 503})
 
 
@@ -448,24 +451,31 @@ def main() -> None:
             f"protocol_version_key={CURRENT_VERSION_KEY}"
         )
         stop = install_shutdown_handlers()
-        with Miner() as miner:
-            while not stop.is_set():
-                _force_restart_if_rpc_abandoned(miner)
-                if miner.thread is None or not miner.thread.is_alive():
-                    # The worker may have died by latching between the check
-                    # above and this liveness probe; a plain SystemExit here
-                    # would take the normal exit the latch exists to prevent.
+        miner: Miner | None = None
+        try:
+            with Miner() as miner:
+                while not stop.is_set():
                     _force_restart_if_rpc_abandoned(miner)
-                    bt.logging.error("miner watchdog exiting: miner loop thread exited")
-                    raise SystemExit(1)
-                bt.logging.info(f"Miner running... {time.time()}")
-                stop.wait(5)
-            # A shutdown signal that races the latch must not fall through to
-            # the normal exit the latch exists to prevent.
-            _force_restart_if_rpc_abandoned(miner)
-        # The RPC worker can also latch while __exit__ joins it, after the
-        # final in-body recheck; a normal exit here would drop that latch.
-        _force_restart_if_rpc_abandoned(miner)
+                    if miner.thread is None or not miner.thread.is_alive():
+                        # The worker may have died by latching between the check
+                        # above and this liveness probe; a plain SystemExit here
+                        # would take the normal exit the latch exists to prevent.
+                        _force_restart_if_rpc_abandoned(miner)
+                        bt.logging.error(
+                            "miner watchdog exiting: miner loop thread exited"
+                        )
+                        raise SystemExit(1)
+                    bt.logging.info(f"Miner running... {time.time()}")
+                    stop.wait(5)
+                # A shutdown signal that races the latch must not fall through
+                # to the normal exit the latch exists to prevent.
+                _force_restart_if_rpc_abandoned(miner)
+        finally:
+            # The RPC worker can also latch while __exit__ joins it — and
+            # __exit__ itself raises on incomplete cleanup, so this recheck
+            # must run on the exception path too, not only after a clean exit.
+            if miner is not None:
+                _force_restart_if_rpc_abandoned(miner)
         bt.logging.info("miner stopped on shutdown signal")
     except Exception as error:  # noqa: BLE001 - CLI boundary must redact SDK errors.
         bt.logging.error(f"miner failed: {type(error).__name__}: {safe_error(error)}")

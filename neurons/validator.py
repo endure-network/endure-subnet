@@ -20,8 +20,6 @@ from typing import TYPE_CHECKING, Final, Protocol, Tuple, runtime_checkable
 import bittensor as bt
 
 if TYPE_CHECKING:
-    import threading
-
     import uvicorn
 from alembic import command as alembic_command
 from alembic.config import Config as AlembicConfig
@@ -1104,25 +1102,28 @@ def main() -> None:
         )
         stop = install_shutdown_handlers()
         validator = Validator()
-        with validator:
-            while not stop.is_set():
-                _force_restart_if_rpc_abandoned(validator)
-                if (reason := validator.watchdog_exit_reason()) is not None:
-                    # The worker may have died by latching between the check
-                    # above and this liveness probe; a plain SystemExit here
-                    # would take the normal exit the latch exists to prevent.
+        try:
+            with validator:
+                while not stop.is_set():
                     _force_restart_if_rpc_abandoned(validator)
-                    bt.logging.error(f"validator watchdog exiting: {reason}")
-                    _schedule_forced_exit_after_grace()
-                    raise SystemExit(1)
-                bt.logging.info(f"Validator running... {time.time()}")
-                stop.wait(5)
-            # A shutdown signal that races the latch must not fall through to
-            # the normal exit the latch exists to prevent.
+                    if (reason := validator.watchdog_exit_reason()) is not None:
+                        # The worker may have died by latching between the check
+                        # above and this liveness probe; a plain SystemExit here
+                        # would take the normal exit the latch exists to prevent.
+                        _force_restart_if_rpc_abandoned(validator)
+                        bt.logging.error(f"validator watchdog exiting: {reason}")
+                        _schedule_forced_exit_after_grace()
+                        raise SystemExit(1)
+                    bt.logging.info(f"Validator running... {time.time()}")
+                    stop.wait(5)
+                # A shutdown signal that races the latch must not fall through
+                # to the normal exit the latch exists to prevent.
+                _force_restart_if_rpc_abandoned(validator)
+        finally:
+            # The RPC worker can also latch while __exit__ joins it — and
+            # __exit__ itself raises on incomplete cleanup, so this recheck
+            # must run on the exception path too, not only after a clean exit.
             _force_restart_if_rpc_abandoned(validator)
-        # The RPC worker can also latch while __exit__ joins it, after the
-        # final in-body recheck; a normal exit here would drop that latch.
-        _force_restart_if_rpc_abandoned(validator)
         bt.logging.info("validator stopped on shutdown signal")
     except DevOnlyConfigError as error:
         bt.logging.error(f"validator refused to start: {safe_error(error)}")

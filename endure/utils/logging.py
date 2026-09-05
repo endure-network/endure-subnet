@@ -49,10 +49,10 @@ def safe_error(exc: object) -> str:
 
 
 # C0/C1 controls plus Unicode line/paragraph separators (U+2028/U+2029) and
-# bidi marks/overrides/isolates (U+200E/U+200F, U+202A–U+202E, U+2066–U+2069):
+# bidi controls (U+061C ALM, U+200E/U+200F, U+202A–U+202E, U+2066–U+2069):
 # all can forge log line breaks or visually reorder rendered log text.
 _CONTROL_CHARS_RE = re.compile(
-    r"[\x00-\x1f\x7f-\x9f\u2028\u2029\u200e\u200f\u202a-\u202e\u2066-\u2069]+"
+    r"[\x00-\x1f\x7f-\x9f\u061c\u2028\u2029\u200e\u200f\u202a-\u202e\u2066-\u2069]+"
 )
 _REMOTE_TEXT_LIMIT = 200
 

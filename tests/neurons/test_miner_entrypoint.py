@@ -54,7 +54,7 @@ def test_main_hard_exits_when_rpc_abandonment_capacity_is_reached() -> None:
         main()
 
     assert exit_info.value.code == 1
-    hard_exit.assert_called_once_with(1)
+    hard_exit.assert_called_with(1)
 
 
 def test_main_hard_exits_when_watchdog_races_rpc_abandonment() -> None:
@@ -81,7 +81,7 @@ def test_main_hard_exits_when_watchdog_races_rpc_abandonment() -> None:
 
     # Then: the watchdog path still restarts hard instead of exiting normally.
     assert exit_info.value.code == 1
-    hard_exit.assert_called_once_with(1)
+    hard_exit.assert_called_with(1)
 
 
 def test_main_hard_exits_when_shutdown_signal_races_rpc_abandonment() -> None:
@@ -108,7 +108,7 @@ def test_main_hard_exits_when_shutdown_signal_races_rpc_abandonment() -> None:
 
     # Then: the process still restarts hard instead of exiting normally.
     assert exit_info.value.code == 1
-    hard_exit.assert_called_once_with(1)
+    hard_exit.assert_called_with(1)
 
 
 def test_main_hard_exits_when_rpc_abandonment_races_lifecycle_teardown() -> None:
@@ -142,7 +142,41 @@ def test_main_hard_exits_when_rpc_abandonment_races_lifecycle_teardown() -> None
 
     # Then: the post-teardown recheck still restarts hard.
     assert exit_info.value.code == 1
-    hard_exit.assert_called_once_with(1)
+    hard_exit.assert_called_with(1)
+
+
+def test_main_hard_exits_when_latching_teardown_also_raises() -> None:
+    from neurons.miner import main
+
+    miner = MagicMock()
+    latched = {"value": False}
+    miner.chain_rpc_restart_required.side_effect = lambda: latched["value"]
+    context = MagicMock()
+    context.__enter__.return_value = miner
+    already_stopped = threading.Event()
+    already_stopped.set()
+
+    # Given: teardown latches the worker AND reports incomplete cleanup.
+    def _latch_and_fail_teardown(*_args: object) -> None:
+        latched["value"] = True
+        raise RuntimeError("miner shutdown incomplete")
+
+    context.__exit__.side_effect = _latch_and_fail_teardown
+
+    with (
+        patch(
+            "neurons.miner.install_shutdown_handlers",
+            return_value=already_stopped,
+        ),
+        patch("neurons.miner.Miner", return_value=context),
+        patch("neurons.miner.os._exit", side_effect=SystemExit(1)) as hard_exit,
+        pytest.raises(SystemExit) as exit_info,
+    ):
+        main()
+
+    # Then: the teardown exception cannot bypass the hard restart.
+    assert exit_info.value.code == 1
+    hard_exit.assert_called_with(1)
 
 
 def test_miner_bootstraps_in_mock_mode(
