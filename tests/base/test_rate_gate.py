@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import copy
+import logging
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import bittensor as bt
 import pytest
@@ -39,7 +40,127 @@ class _Clock:
         self.now += seconds
 
 
+class _SignalingHandler(logging.Handler):
+    def __init__(self) -> None:
+        super().__init__()
+        self.emitted = threading.Event()
+        self.records: list[logging.LogRecord] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.records.append(record)
+        self.emitted.set()
+
+
 class TestAdaptiveRpcGate:
+    def test_late_set_weights_completion_is_counted_and_logged_as_error(self) -> None:
+        clock = _Clock()
+        gate = AdaptiveRpcGate(
+            clock=clock, sleeper=clock.sleep, operation_timeout_seconds=0.02
+        )
+        release = threading.Event()
+        handler = _SignalingHandler()
+        logger = logging.getLogger("bittensor")
+
+        def complete_late() -> str:
+            release.wait(timeout=1)
+            clock.now = 2.5
+            return "submitted"
+
+        logger.addHandler(handler)
+        try:
+            with pytest.raises(ChainRpcStalled):
+                gate.call(
+                    RpcPriority.ESSENTIAL,
+                    complete_late,
+                    operation_name="set_weights",
+                )
+
+            assert gate.snapshot().late_completions_total == 0
+            release.set()
+            assert handler.emitted.wait(timeout=1)
+        finally:
+            logger.removeHandler(handler)
+        snapshot = gate.snapshot()
+        assert snapshot.late_completions_total == 1
+        assert snapshot.late_set_weights_completions_total == 1
+        [record] = handler.records
+        assert record.levelno == logging.ERROR
+        assert (
+            record.getMessage()
+            == "abandoned chain RPC completed late operation=set_weights "
+            "completion=success seconds_after_timeout=2.500"
+        )
+
+    def test_late_failed_read_is_counted_and_logged_as_warning(self) -> None:
+        gate = AdaptiveRpcGate(operation_timeout_seconds=0.02)
+        release = threading.Event()
+        handler = _SignalingHandler()
+        logger = logging.getLogger("bittensor")
+
+        def fail_late() -> None:
+            release.wait(timeout=1)
+            raise RuntimeError("late failure")
+
+        logger.addHandler(handler)
+        try:
+            with pytest.raises(ChainRpcStalled):
+                gate.call(
+                    RpcPriority.ESSENTIAL,
+                    fail_late,
+                    operation_name="get_block_hash",
+                )
+
+            release.set()
+            assert handler.emitted.wait(timeout=1)
+        finally:
+            logger.removeHandler(handler)
+        snapshot = gate.snapshot()
+        assert snapshot.late_completions_total == 1
+        assert snapshot.late_set_weights_completions_total == 0
+        [record] = handler.records
+        assert record.levelno == logging.WARNING
+        message = record.getMessage()
+        assert "operation=get_block_hash" in message
+        assert "completion=raised" in message
+        assert "error_type=RuntimeError" in message
+
+    def test_normal_completion_is_not_counted_as_late(self) -> None:
+        gate = AdaptiveRpcGate(operation_timeout_seconds=1)
+
+        assert (
+            gate.call(
+                RpcPriority.ESSENTIAL,
+                lambda: "on-time",
+                operation_name="set_weights",
+            )
+            == "on-time"
+        )
+        snapshot = gate.snapshot()
+        assert snapshot.late_completions_total == 0
+        assert snapshot.late_set_weights_completions_total == 0
+
+    def test_late_completion_logging_failure_does_not_skip_cleanup(self) -> None:
+        gate = AdaptiveRpcGate(operation_timeout_seconds=0.02)
+        release = threading.Event()
+        cleaned = threading.Event()
+
+        with patch(
+            "bittensor.utils.btlogging.loggingmachine.LoggingMachine.warning",
+            side_effect=RuntimeError("logging failed"),
+        ):
+            with pytest.raises(ChainRpcStalled):
+                gate.call(
+                    RpcPriority.ESSENTIAL,
+                    lambda: release.wait(timeout=1) or "late transport",
+                    operation_name="create_subtensor",
+                    abandoned_result_cleanup=lambda _result: cleaned.set(),
+                )
+
+            release.set()
+            assert cleaned.wait(timeout=1)
+
+        assert gate.snapshot().late_completions_total == 1
+
     def test_stalled_operation_is_abandoned_with_a_typed_error(self) -> None:
         """A hung chain RPC must surface as a failure the validator loop can
         count toward its reconnect streak, not freeze the calling thread

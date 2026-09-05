@@ -326,6 +326,10 @@ class Validator(BaseValidatorNeuron):
                 "rate_limited_total": gate.rate_limited_total,
                 "deferred_total": gate.deferred_total,
                 "abandoned_generations": gate.abandoned_generations,
+                "late_completions_total": gate.late_completions_total,
+                "late_set_weights_completions_total": (
+                    gate.late_set_weights_completions_total
+                ),
             },
         }
 
