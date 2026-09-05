@@ -1,6 +1,7 @@
 import argparse
 import asyncio
 import logging
+import os
 import threading
 from collections.abc import Iterator
 from contextlib import ExitStack, contextmanager
@@ -482,6 +483,48 @@ def test_tick_in_flight_trips_watchdog_beyond_max_duration(
     assert validator.watchdog_exit_reason() == "validator tick stale"
 
 
+def test_end_long_op_publishes_heartbeat_before_clearing_the_marker(
+    mock_validator_config: bt.Config,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from neurons.validator import Validator
+
+    mock_validator_config.neuron.axon_off = True
+    mock_validator_config.neuron.disable_set_weights = True
+    mock_validator_config.endure.health_tick_max_age_seconds = 60
+    mock_validator_config.endure.health_tick_max_duration_seconds = 600
+    now = [1_000.0]
+    monkeypatch.setattr("neurons.validator.time.monotonic", lambda: now[0])
+    validator = Validator(config=mock_validator_config)
+    validator.thread = MagicMock()
+    validator.thread.is_alive.return_value = True
+    # Given: a long catch-up tick whose pre-op heartbeat is already older
+    # than the normal stale window when the operation completes.
+    validator._last_tick_monotonic = 900.0
+    validator._begin_long_op()
+    now[0] = 1_500.0
+
+    marker_present_at_heartbeat: list[bool] = []
+    original_mark = validator._mark_tick_progress
+
+    def _spy_mark() -> None:
+        marker_present_at_heartbeat.append(
+            validator._long_op_started_monotonic is not None
+        )
+        original_mark()
+
+    monkeypatch.setattr(validator, "_mark_tick_progress", _spy_mark)
+
+    # When: the long operation ends.
+    validator._end_long_op()
+
+    # Then: the heartbeat was published while the generous-window marker was
+    # still shielding staleness, so no watchdog read can observe a stale gap.
+    assert marker_present_at_heartbeat == [True]
+    assert validator._long_op_started_monotonic is None
+    assert validator.watchdog_exit_reason() is None
+
+
 def test_validator_rejects_watchdog_age_not_greater_than_tick_cadence(
     mock_validator_config: bt.Config,
 ) -> None:
@@ -629,12 +672,16 @@ def test_main_exits_nonzero_and_cleans_up_on_watchdog_failure() -> None:
             return_value=threading.Event(),
         ),
         patch("neurons.validator.Validator", return_value=context),
+        patch("neurons.validator._schedule_forced_exit_after_grace") as forced_exit,
         pytest.raises(SystemExit) as exit_info,
     ):
         main()
 
     assert exit_info.value.code == 1
     context.__exit__.assert_called_once()
+    # A wedged non-daemon tick worker can outlive SystemExit's teardown; the
+    # watchdog path must arm the bounded hard-exit fallback.
+    forced_exit.assert_called_once()
 
 
 def test_main_hard_exits_when_rpc_abandonment_capacity_is_reached() -> None:
@@ -658,7 +705,7 @@ def test_main_hard_exits_when_rpc_abandonment_capacity_is_reached() -> None:
         main()
 
     assert exit_info.value.code == 1
-    hard_exit.assert_called_once_with(1)
+    hard_exit.assert_called_with(1)
 
 
 def test_main_hard_exits_when_watchdog_races_rpc_abandonment() -> None:
@@ -683,7 +730,7 @@ def test_main_hard_exits_when_watchdog_races_rpc_abandonment() -> None:
 
     # Then: the watchdog path still restarts hard instead of exiting normally.
     assert exit_info.value.code == 1
-    hard_exit.assert_called_once_with(1)
+    hard_exit.assert_called_with(1)
 
 
 def test_main_hard_exits_when_shutdown_signal_races_rpc_abandonment() -> None:
@@ -708,7 +755,89 @@ def test_main_hard_exits_when_shutdown_signal_races_rpc_abandonment() -> None:
 
     # Then: the process still restarts hard instead of exiting normally.
     assert exit_info.value.code == 1
-    hard_exit.assert_called_once_with(1)
+    hard_exit.assert_called_with(1)
+
+
+def test_main_hard_exits_when_rpc_abandonment_races_lifecycle_teardown() -> None:
+    from neurons.validator import main
+
+    context = MagicMock()
+    latched = {"value": False}
+    context.chain_rpc_restart_required.side_effect = lambda: latched["value"]
+    context.watchdog_exit_reason.return_value = None
+    # Given: the worker latches only while __exit__ joins it, after every
+    # in-body recheck has already passed.
+    already_stopped = threading.Event()
+    already_stopped.set()
+
+    def _latch_during_teardown(*_args: object) -> None:
+        latched["value"] = True
+
+    context.__exit__.side_effect = _latch_during_teardown
+
+    with (
+        patch(
+            "neurons.validator.install_shutdown_handlers",
+            return_value=already_stopped,
+        ),
+        patch("neurons.validator.Validator", return_value=context),
+        patch("neurons.validator.os._exit", side_effect=SystemExit(1)) as hard_exit,
+        pytest.raises(SystemExit) as exit_info,
+    ):
+        main()
+
+    # Then: the post-teardown recheck still restarts hard.
+    assert exit_info.value.code == 1
+    hard_exit.assert_called_with(1)
+
+
+def test_main_hard_exits_when_latching_teardown_also_raises() -> None:
+    from neurons.validator import main
+
+    context = MagicMock()
+    latched = {"value": False}
+    context.chain_rpc_restart_required.side_effect = lambda: latched["value"]
+    context.watchdog_exit_reason.return_value = None
+    already_stopped = threading.Event()
+    already_stopped.set()
+
+    # Given: teardown latches the worker AND reports incomplete cleanup.
+    def _latch_and_fail_teardown(*_args: object) -> None:
+        latched["value"] = True
+        raise RuntimeError("validator shutdown incomplete")
+
+    context.__exit__.side_effect = _latch_and_fail_teardown
+
+    with (
+        patch(
+            "neurons.validator.install_shutdown_handlers",
+            return_value=already_stopped,
+        ),
+        patch("neurons.validator.Validator", return_value=context),
+        patch("neurons.validator.os._exit", side_effect=SystemExit(1)) as hard_exit,
+        pytest.raises(SystemExit) as exit_info,
+    ):
+        main()
+
+    # Then: the teardown exception cannot bypass the hard restart.
+    assert exit_info.value.code == 1
+    hard_exit.assert_called_with(1)
+
+
+def test_forced_exit_after_grace_arms_a_daemon_timer() -> None:
+    from neurons.validator import (
+        _WATCHDOG_TEARDOWN_GRACE_SECONDS,
+        _schedule_forced_exit_after_grace,
+    )
+
+    timer = _schedule_forced_exit_after_grace()
+    try:
+        assert timer.daemon is True
+        assert timer.interval == _WATCHDOG_TEARDOWN_GRACE_SECONDS
+        assert timer.function is os._exit
+        assert timer.args == (1,)
+    finally:
+        timer.cancel()
 
 
 def test_main_redacts_runtime_endpoint_credentials() -> None:

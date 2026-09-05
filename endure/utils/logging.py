@@ -48,13 +48,19 @@ def safe_error(exc: object) -> str:
     return _USERINFO_RE.sub("<redacted-endpoint>", text)
 
 
-_CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]+")
+# C0/C1 controls plus Unicode line/paragraph separators (U+2028/U+2029) and
+# bidi controls (U+061C ALM, U+200E/U+200F, U+202A–U+202E, U+2066–U+2069):
+# all can forge log line breaks or visually reorder rendered log text.
+_CONTROL_CHARS_RE = re.compile(
+    r"[\x00-\x1f\x7f-\x9f\u061c\u2028\u2029\u200e\u200f\u202a-\u202e\u2066-\u2069]+"
+)
 _REMOTE_TEXT_LIMIT = 200
 
 
 def safe_remote_text(value: object) -> str:
     """Bound peer-supplied text for logging: redact credentials, collapse
-    control characters (newline/ANSI log-injection vectors), and truncate.
+    control characters (newline/ANSI/Unicode-separator/bidi log-injection
+    vectors), and truncate.
     """
     text = _CONTROL_CHARS_RE.sub(" ", safe_error(value))
     if len(text) > _REMOTE_TEXT_LIMIT:
