@@ -435,6 +435,33 @@ def test_failed_tick_refreshes_loop_heartbeat(
     assert validator._long_op_started_monotonic is None
 
 
+def test_tick_budget_is_shared_between_round_service_and_provider_callback(
+    mock_validator_config: bt.Config,
+) -> None:
+    """The provider's deadline callback must observe the exact budget the
+    round service ticks with; a split budget would silently disable
+    mid-series and boundary-lookup deferral."""
+    from endure.scoring.assessment_orchestrator import ResolutionBudget
+    from neurons.validator import Validator
+
+    mock_validator_config.neuron.axon_off = True
+    mock_validator_config.neuron.disable_set_weights = True
+    validator = Validator(config=mock_validator_config)
+
+    assert validator._service._budget_factory == validator._new_tick_budget
+    budget = validator._service._budget_factory()
+
+    assert validator._current_tick_budget is budget
+    assert validator._tick_budget_exhausted() is False
+
+    clock = {"t": 0}
+    exhausted_budget = ResolutionBudget.starting_now(1, now_ns_fn=lambda: clock["t"])
+    clock["t"] = 2 * 10**9
+    validator._current_tick_budget = exhausted_budget
+
+    assert validator._tick_budget_exhausted() is True
+
+
 def test_runtime_health_reports_process_start_and_uptime(
     mock_validator_config: bt.Config,
     monkeypatch: pytest.MonkeyPatch,

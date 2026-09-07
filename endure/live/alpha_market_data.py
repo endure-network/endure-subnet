@@ -624,8 +624,16 @@ class LiveAlphaPriceProvider:
     def _with_retry[T](self, operation: Callable[[], T]) -> T:
         # Attempt-level progress marks keep the watchdog honest: each attempt
         # is bounded (request timeout + capped backoff), while a wedged thread
-        # stops marking and still trips it.
+        # stops marking and still trips it. The deadline check must live at
+        # the same granularity: boundary bisections alone are ~2x24 lookups
+        # with up to a ~68s retry ladder each, so a degraded archive could
+        # otherwise hold one tick far past the watchdog window before
+        # price_series ever runs.
         for attempt in range(1, self._config.max_attempts + 1):
+            if self._deadline_exceeded_fn is not None and self._deadline_exceeded_fn():
+                raise ResolutionDeadlineExceeded(
+                    "resolution budget exhausted during archive operation"
+                )
             if self._progress_fn is not None:
                 self._progress_fn()
             try:
