@@ -5,6 +5,7 @@ import os
 import threading
 from collections.abc import Iterator
 from contextlib import ExitStack, contextmanager
+from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -432,6 +433,30 @@ def test_failed_tick_refreshes_loop_heartbeat(
 
     assert validator.watchdog_exit_reason() is None
     assert validator._long_op_started_monotonic is None
+
+
+def test_runtime_health_reports_process_start_and_uptime(
+    mock_validator_config: bt.Config,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Restart observability: a probe that only sees "ok" cannot distinguish
+    a stable process from one that self-healed minutes ago; uptime can."""
+    from neurons.validator import Validator
+
+    mock_validator_config.neuron.axon_off = True
+    mock_validator_config.neuron.disable_set_weights = True
+    now = [1_000.0]
+    monkeypatch.setattr("neurons.validator.time.monotonic", lambda: now[0])
+    validator = Validator(config=mock_validator_config)
+    validator.thread = MagicMock()
+    validator.thread.is_alive.return_value = True
+    now[0] = 1_754.5
+
+    health = validator.runtime_health()
+
+    assert health["process_uptime_seconds"] == 754
+    started_at = datetime.fromisoformat(health["process_started_at"])
+    assert started_at.tzinfo is not None
 
 
 def test_tick_in_flight_survives_beyond_normal_stale_window(
