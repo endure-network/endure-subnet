@@ -61,6 +61,14 @@ class ResolutionBudget:
 
 UNLIMITED_RESOLUTION_BUDGET: Final = ResolutionBudget.unlimited()
 
+
+class ResolutionDeadlineExceeded(Exception):
+    """Raised by a resolver's data provider when the tick's resolution budget
+    expires mid-fetch. Distinct from data-unavailability on purpose: deadline
+    exhaustion must defer the coordinate to the next tick, never void it
+    through the unavailable-target grace path."""
+
+
 REALIZED_TARGET_RESOLVED = "resolved"
 REALIZED_TARGET_VOIDED = "voided"
 
@@ -461,7 +469,13 @@ class AssessmentScoringOrchestrator:
                     # (complete stays False, so no marker lands) and the next
                     # tick resumes from the persisted coordinates.
                     return targets
-                target = output.resolver(context, netuid, horizon)
+                try:
+                    target = output.resolver(context, netuid, horizon)
+                except ResolutionDeadlineExceeded:
+                    # The provider hit the deadline inside a single series
+                    # fetch. Same deferral semantics as the pre-call check;
+                    # fetched snapshots stay cached for the resume tick.
+                    return targets
                 if target is not None:
                     targets.append(target)
         return targets

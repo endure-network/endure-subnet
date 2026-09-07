@@ -59,6 +59,7 @@ from endure.protocol.version_contract import CURRENT_VERSION_KEY
 from endure.protocol.vertical import AssessmentRoundProgram, VerticalRuntime
 from endure.runtime.identity import runtime_identity
 from endure.runtime.resolve import resolve_runtime_provider
+from endure.scoring.assessment_orchestrator import ResolutionBudget
 from endure.scoring.market_data import recorded_mainnet_fixture_provider
 from endure.scoring.policy import DEFAULT_PAYOUT_HALF_LIFE_ROUNDS
 from endure.scoring.risk.orchestrator import RiskScoringOrchestrator
@@ -201,6 +202,7 @@ class Validator(BaseValidatorNeuron):
         # flight; None when the loop is between operations. See _tick_stale.
         self._long_op_started_monotonic: float | None = None
         self._started_monotonic = time.monotonic()
+        self._current_tick_budget = ResolutionBudget.unlimited()
         self._api_server: uvicorn.Server | None = None
         self._api_thread: threading.Thread | None = None
         self._attach_handlers()
@@ -345,6 +347,15 @@ class Validator(BaseValidatorNeuron):
         if self._last_tick_monotonic is None:
             return None
         return time.monotonic() - self._last_tick_monotonic
+
+    def _new_tick_budget(self) -> ResolutionBudget:
+        self._current_tick_budget = ResolutionBudget.starting_now(
+            int(self.config.endure.resolution_budget_seconds)
+        )
+        return self._current_tick_budget
+
+    def _tick_budget_exhausted(self) -> bool:
+        return self._current_tick_budget.exhausted()
 
     def _mark_tick_progress(self) -> None:
         """Refresh tick liveness from bounded in-tick work, so a long catch-up
@@ -508,7 +519,7 @@ class Validator(BaseValidatorNeuron):
             now_fn=_utc_now,
             max_universe_targets=entry.max_universe_targets,
             round_program=round_program,
-            resolution_budget_seconds=int(self.config.endure.resolution_budget_seconds),
+            budget_factory=self._new_tick_budget,
         )
 
     def _blacklist(self, synapse: bt.Synapse) -> Tuple[bool, str]:
@@ -1008,6 +1019,7 @@ def _build_risk_vertical_runtime(validator: Validator) -> VerticalRuntime:
                     endpoint=str(validator.config.endure.market_data_endpoint)
                 ),
                 progress_fn=validator._mark_tick_progress,
+                deadline_exceeded_fn=validator._tick_budget_exhausted,
             )
 
             def live_reveal_close_block(reveal_close: datetime) -> int:

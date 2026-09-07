@@ -112,12 +112,12 @@ realized-target/`partially_scored` resumption path, so an archive-heavy 30d
 horizon no longer holds a single tick open past the watchdog window. Wire
 formats, resolved values, scoring math, and aggregation are unchanged. Its
 watched-tree digest is
-`efcd2d4146bdd316722a8885a7b8c919c39bbf10fea634f34f076ed18ebb015d`.
+`7306241f740781e2653cad07244006c89de8bda8a93cf0e90a65d0801a562d89`.
 Its public lease authority receipt is SHA-256 over the UTF-8 lines
 `LEASE_AUTHORITY`,
 `PREVIOUS_RECEIPT=c4aa1b087b26039b30524093943467ae5074939aaf35c43c87fcb79ffc66ae13`,
 `CURRENT_VERSION_KEY=30`, and
-`CURRENT_VERSION_DIGEST=efcd2d4146bdd316722a8885a7b8c919c39bbf10fea634f34f076ed18ebb015d`,
+`CURRENT_VERSION_DIGEST=7306241f740781e2653cad07244006c89de8bda8a93cf0e90a65d0801a562d89`,
 each terminated by one LF byte. The resulting receipt is
-`53e82fdcf6b81cf2fb3fa1945dc88010ee50638f258576e0ccdee2c34a52431e`.
+`a7c268fb3a375d0ab21ba3036b13e5dc83c10a8c820bdc8a89828c786c6c709c`.
 No private ledger value is involved in any lease authority receipt.

@@ -24,6 +24,7 @@ from endure.scoring.assessment_orchestrator import (
     AssessmentScoringConfig,
     AssessmentScoringOrchestrator,
     ResolutionBudget,
+    ResolutionDeadlineExceeded,
     ScoredOutputConfig,
 )
 from endure.storage.repository import Storage
@@ -398,6 +399,48 @@ def test_exhausted_budget_truncates_resolution_and_a_later_pass_completes(
     assert resolved_netuids == [44, 51]
     targets = storage.assessment_realized_targets_for(ROUND, FORGE_LENDING_SCHEMA_ID)
     assert {target.coordinate.target_id for target in targets} == {"44", "51"}
+    assert storage.has_assessment_resolution_marker(ROUND, FORGE_LENDING_SCHEMA_ID, 5)
+
+
+def test_mid_series_deadline_defers_like_budget_truncation(storage: Storage) -> None:
+    # Given: a two-netuid universe whose second resolver hits the in-series
+    # deadline (the provider raising, not the pre-call budget check).
+    storage.open_round(
+        windows=compute_windows(date(2026, 7, 6), offsets=DEFAULT_OFFSETS),
+        schema_id=FORGE_LENDING_SCHEMA_ID,
+        universe=StaticLendingUniverseProvider(netuids=(44, 51)).fetch_universe(ROUND),
+        now_iso=NOW,
+    )
+    deadline_netuids = {51}
+
+    def resolve(
+        _context: AssessmentResolutionContext, netuid: int, horizon: int
+    ) -> AssessmentRealizedTarget:
+        if netuid in deadline_netuids:
+            raise ResolutionDeadlineExceeded(f"deadline mid-series netuid={netuid}")
+        return AssessmentRealizedTarget(
+            coordinate=AssessmentCoordinate.subnet_asset(
+                netuid=netuid, horizon_seconds=horizon, output="alpha"
+            ),
+            value=Decimal(netuid),
+            status="resolved",
+        )
+
+    orchestrator = _two_netuid_orchestrator(storage, resolve)
+
+    orchestrator.resolve_and_score(ROUND, 5, now_iso=NOW)
+
+    # Then: the completed netuid persisted, no marker landed.
+    targets = storage.assessment_realized_targets_for(ROUND, FORGE_LENDING_SCHEMA_ID)
+    assert [target.coordinate.target_id for target in targets] == ["44"]
+    assert not storage.has_assessment_resolution_marker(
+        ROUND, FORGE_LENDING_SCHEMA_ID, 5
+    )
+
+    # When: the next tick's provider no longer hits the deadline.
+    deadline_netuids.clear()
+    orchestrator.resolve_and_score(ROUND, 5, now_iso=NOW)
+
     assert storage.has_assessment_resolution_marker(ROUND, FORGE_LENDING_SCHEMA_ID, 5)
 
 

@@ -26,6 +26,7 @@ from endure.live.alpha_market_data import (
     LiveAlphaPriceProviderConfig,
 )
 from endure.protocol.risk_miner import LatestPoolObservation, baseline_risk_bundle
+from endure.scoring.assessment_orchestrator import ResolutionDeadlineExceeded
 from endure.scoring.market_data import (
     AlphaMarketDataError,
     AlphaMarketDataUnavailable,
@@ -443,6 +444,46 @@ def test_live_provider_assembles_series_at_canonical_cadence() -> None:
     )
     assert fetcher.calls == [(44, 1_600), (44, 2_200), (44, 2_800)]
     assert series.source.endswith("netuid_44_live_1600_2800")
+
+
+def test_live_provider_defers_mid_series_when_the_tick_deadline_expires() -> None:
+    # Given: a three-snapshot series whose deadline expires after the first
+    # fetch; the deadline callback flips permanently like a real exhausted
+    # tick budget.
+    fetcher = FakeSubnetFetcher(
+        responses={
+            (44, 1_600): FakeDynamicInfo(tao_in=2_000_000_000, alpha_in=1_000_000_000),
+            (44, 2_200): FakeDynamicInfo(tao_in=3_000_000_000, alpha_in=1_000_000_000),
+            (44, 2_800): FakeDynamicInfo(tao_in=4_000_000_000, alpha_in=1_000_000_000),
+        }
+    )
+    fetches_before_deadline = 1
+    provider = LiveAlphaPriceProvider(
+        config=LiveAlphaPriceProviderConfig(request_pause_seconds=Decimal("0")),
+        fetcher=fetcher,
+        deadline_exceeded_fn=lambda: len(fetcher.calls) >= fetches_before_deadline,
+    )
+
+    # When: the series fetch crosses the deadline mid-window.
+    with pytest.raises(ResolutionDeadlineExceeded):
+        provider.price_series(
+            44, window=ResolutionWindow(start_block=1_000, horizon_blocks=1_800)
+        )
+
+    # Then: exactly one snapshot was fetched, it stays cached, and a resume
+    # with the deadline cleared completes without refetching it.
+    assert fetcher.calls == [(44, 1_600)]
+    fetches_before_deadline = 10
+    series = provider.price_series(
+        44, window=ResolutionWindow(start_block=1_000, horizon_blocks=1_800)
+    )
+    assert series is not None
+    assert tuple(snapshot.block for snapshot in series.snapshots) == (
+        1_600,
+        2_200,
+        2_800,
+    )
+    assert fetcher.calls == [(44, 1_600), (44, 2_200), (44, 2_800)]
 
 
 def test_live_provider_never_fetches_past_a_misaligned_window_end() -> None:
