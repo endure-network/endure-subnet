@@ -20,8 +20,10 @@ from endure.assessment.schemas.forge_lending import (
 from endure.protocol.round_engine import DEFAULT_OFFSETS, compute_windows
 from endure.scoring.assessment_orchestrator import (
     AssessmentResolutionContext,
+    AssessmentResolver,
     AssessmentScoringConfig,
     AssessmentScoringOrchestrator,
+    ResolutionBudget,
     ScoredOutputConfig,
 )
 from endure.storage.repository import Storage
@@ -287,3 +289,140 @@ def test_active_ema_hotkey_is_zero_filled_when_it_skips_a_submission(
     )
     assert history.miner_hotkey == "hk-active"
     assert history.round_score == Decimal(0)
+
+
+def test_unlimited_budget_never_exhausts() -> None:
+    assert ResolutionBudget.unlimited().exhausted() is False
+
+
+def test_budget_exhausts_once_the_clock_passes_the_deadline() -> None:
+    clock = {"t": 0}
+    budget = ResolutionBudget.starting_now(600, now_ns_fn=lambda: clock["t"])
+
+    assert budget.exhausted() is False
+    clock["t"] = 599 * 10**9
+    assert budget.exhausted() is False
+    clock["t"] = 600 * 10**9
+    assert budget.exhausted() is True
+
+
+def _two_netuid_orchestrator(
+    storage: Storage, resolver: AssessmentResolver
+) -> AssessmentScoringOrchestrator:
+    return AssessmentScoringOrchestrator(
+        storage=storage,
+        config=AssessmentScoringConfig(
+            schema_id=FORGE_LENDING_SCHEMA_ID,
+            horizons=(5,),
+            universe_members=lambda tickers: tuple(int(ticker) for ticker in tickers),
+            accepted_values=lambda round_id: {},
+            coordinate_for=lambda netuid, horizon, output: (
+                AssessmentCoordinate.subnet_asset(
+                    netuid=netuid, horizon_seconds=horizon, output=output
+                )
+            ),
+            outputs=(
+                ScoredOutputConfig(
+                    output="alpha",
+                    resolver=resolver,
+                    spec=_Spec(
+                        0,
+                        100,
+                        AggressiveDirection.HIGHER,
+                        Decimal(1),
+                        DeviationMode.ABSOLUTE,
+                    ),
+                ),
+            ),
+        ),
+        half_life_rounds=2,
+    )
+
+
+def test_exhausted_budget_truncates_resolution_and_a_later_pass_completes(
+    storage: Storage,
+) -> None:
+    # Given: a two-netuid universe where each resolver call consumes more
+    # wall-clock than the remaining budget.
+    storage.open_round(
+        windows=compute_windows(date(2026, 7, 6), offsets=DEFAULT_OFFSETS),
+        schema_id=FORGE_LENDING_SCHEMA_ID,
+        universe=StaticLendingUniverseProvider(netuids=(44, 51)).fetch_universe(ROUND),
+        now_iso=NOW,
+    )
+    clock = {"t": 0}
+    resolved_netuids: list[int] = []
+
+    def resolve(
+        _context: AssessmentResolutionContext, netuid: int, horizon: int
+    ) -> AssessmentRealizedTarget:
+        clock["t"] += 700 * 10**9
+        resolved_netuids.append(netuid)
+        return AssessmentRealizedTarget(
+            coordinate=AssessmentCoordinate.subnet_asset(
+                netuid=netuid, horizon_seconds=horizon, output="alpha"
+            ),
+            value=Decimal(netuid),
+            status="resolved",
+        )
+
+    orchestrator = _two_netuid_orchestrator(storage, resolve)
+
+    # When: a budgeted pass runs out mid-universe.
+    orchestrator.resolve_and_score(
+        ROUND,
+        5,
+        now_iso=NOW,
+        budget=ResolutionBudget.starting_now(600, now_ns_fn=lambda: clock["t"]),
+    )
+
+    # Then: the pass persisted only the first netuid and set no marker.
+    assert resolved_netuids == [44]
+    targets = storage.assessment_realized_targets_for(ROUND, FORGE_LENDING_SCHEMA_ID)
+    assert [target.coordinate.target_id for target in targets] == ["44"]
+    assert not storage.has_assessment_resolution_marker(
+        ROUND, FORGE_LENDING_SCHEMA_ID, 5
+    )
+
+    # When: the next tick retries with a fresh budget.
+    orchestrator.resolve_and_score(
+        ROUND,
+        5,
+        now_iso=NOW,
+        budget=ResolutionBudget.starting_now(
+            600, now_ns_fn=lambda: clock["t"] - 700 * 10**9
+        ),
+    )
+
+    # Then: only the missing netuid resolved and the horizon marker landed.
+    assert resolved_netuids == [44, 51]
+    targets = storage.assessment_realized_targets_for(ROUND, FORGE_LENDING_SCHEMA_ID)
+    assert {target.coordinate.target_id for target in targets} == {"44", "51"}
+    assert storage.has_assessment_resolution_marker(ROUND, FORGE_LENDING_SCHEMA_ID, 5)
+
+
+def test_budget_exhausted_at_entry_skips_without_recording(storage: Storage) -> None:
+    _open_round(storage)
+    calls: list[int] = []
+
+    def resolve(
+        _context: AssessmentResolutionContext, netuid: int, horizon: int
+    ) -> AssessmentRealizedTarget:
+        calls.append(netuid)
+        return AssessmentRealizedTarget(
+            coordinate=AssessmentCoordinate.subnet_asset(
+                netuid=netuid, horizon_seconds=horizon, output="alpha"
+            ),
+            value=Decimal(1),
+            status="resolved",
+        )
+
+    orchestrator = _two_netuid_orchestrator(storage, resolve)
+    clock = {"t": 0}
+    budget = ResolutionBudget.starting_now(600, now_ns_fn=lambda: clock["t"])
+    clock["t"] = 601 * 10**9
+
+    assert orchestrator.resolve_and_score(ROUND, 5, now_iso=NOW, budget=budget) == {}
+
+    assert calls == []
+    assert storage.assessment_realized_targets_for(ROUND, FORGE_LENDING_SCHEMA_ID) == []

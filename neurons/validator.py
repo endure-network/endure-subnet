@@ -165,6 +165,14 @@ class Validator(BaseValidatorNeuron):
                 "endure.health_tick_max_duration_seconds must be greater than "
                 "endure.health_tick_max_age_seconds"
             )
+        if int(resolved_config.endure.resolution_budget_seconds) >= int(
+            resolved_config.endure.health_tick_max_duration_seconds
+        ):
+            raise RuntimeError(
+                "endure.resolution_budget_seconds must be less than "
+                "endure.health_tick_max_duration_seconds; a budget at or above "
+                "the watchdog window cannot prevent stale-tick restarts"
+            )
         super().__init__(
             config=resolved_config,
             runtime_provider=resolve_runtime_provider(resolved_config),
@@ -500,6 +508,7 @@ class Validator(BaseValidatorNeuron):
             now_fn=_utc_now,
             max_universe_targets=entry.max_universe_targets,
             round_program=round_program,
+            resolution_budget_seconds=int(self.config.endure.resolution_budget_seconds),
         )
 
     def _blacklist(self, synapse: bt.Synapse) -> Tuple[bool, str]:
