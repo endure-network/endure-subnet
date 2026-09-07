@@ -233,6 +233,8 @@ def test_soak_probe_requires_readiness_and_exact_release_identity() -> None:
     assert "https://api.testnet.endure.network/live" not in workflow
     assert "vars.SOAK_EXPECTED_SHA" in workflow
     assert "vars.SOAK_EXPECTED_PROTOCOL_KEY" in workflow
+    assert "SOAK_EXPECTED_PROTOCOL_KEY:?" in workflow
+    assert ":-29" not in workflow
     assert '.status == "ok"' in workflow
     assert '.schema_id == "risk.v1.subnet_alpha"' in workflow
     assert ".protocol_version_key == $key" in workflow

@@ -21,7 +21,11 @@ jobs:
         run: |
           set -euo pipefail
           [[ "$SOAK_EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]
-          expected_key="${SOAK_EXPECTED_PROTOCOL_KEY:-29}"
+          # Release identity must be explicit: a fallback key silently goes
+          # stale on the next protocol bump and turns the soak gate into a
+          # false negative. Set the repo variable alongside SOAK_EXPECTED_SHA.
+          : "${SOAK_EXPECTED_PROTOCOL_KEY:?SOAK_EXPECTED_PROTOCOL_KEY repo variable must be set}"
+          expected_key="$SOAK_EXPECTED_PROTOCOL_KEY"
           [[ "$expected_key" =~ ^[0-9]+$ ]]
           body="$(
             curl --fail --show-error --silent --retry 3 --retry-all-errors \
