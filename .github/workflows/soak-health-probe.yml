@@ -13,18 +13,28 @@ jobs:
       - name: Require the deployed staging identity to be healthy
         env:
           SOAK_EXPECTED_SHA: ${{ vars.SOAK_EXPECTED_SHA }}
+          SOAK_EXPECTED_PROTOCOL_KEY: ${{ vars.SOAK_EXPECTED_PROTOCOL_KEY }}
+          # A restart inside the last two probe intervals (5-minute cron)
+          # reads as a red run: watchdog self-heals and crash loops must
+          # surface here instead of hiding behind a recovered "ok" status.
+          SOAK_MIN_UPTIME_SECONDS: "600"
         run: |
           set -euo pipefail
           [[ "$SOAK_EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          expected_key="${SOAK_EXPECTED_PROTOCOL_KEY:-29}"
+          [[ "$expected_key" =~ ^[0-9]+$ ]]
           body="$(
             curl --fail --show-error --silent --retry 3 --retry-all-errors \
               --retry-delay 5 --connect-timeout 10 --max-time 20 \
               https://api.testnet.endure.network/health
           )"
-          jq --exit-status --arg sha "$SOAK_EXPECTED_SHA" '
+          jq --exit-status --arg sha "$SOAK_EXPECTED_SHA" \
+            --argjson key "$expected_key" \
+            --argjson min_uptime "$SOAK_MIN_UPTIME_SECONDS" '
             .status == "ok"
             and .schema_id == "risk.v1.subnet_alpha"
-            and .protocol_version_key == 29
+            and .protocol_version_key == $key
             and .source_revision == $sha
             and .image_version == ("sha-" + $sha)
+            and (.runtime.process_uptime_seconds >= $min_uptime)
           ' <<<"$body"

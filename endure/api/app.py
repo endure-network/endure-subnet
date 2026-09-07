@@ -87,6 +87,8 @@ class RuntimeHealth(TypedDict):
     consecutive empty scored rounds returns a degraded 503 response.
     """
 
+    process_started_at: NotRequired[str]
+    process_uptime_seconds: NotRequired[int]
     validator_loop_alive: bool
     tick_stale: bool
     seconds_since_last_tick: float | None

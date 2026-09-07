@@ -203,6 +203,7 @@ class Validator(BaseValidatorNeuron):
         self._long_op_started_monotonic: float | None = None
         self._started_monotonic = time.monotonic()
         self._current_tick_budget = ResolutionBudget.unlimited()
+        self._process_started_at = _utc_now().isoformat()
         self._api_server: uvicorn.Server | None = None
         self._api_thread: threading.Thread | None = None
         self._attach_handlers()
@@ -278,6 +279,8 @@ class Validator(BaseValidatorNeuron):
         )
         long_op_started = getattr(self, "_long_op_started_monotonic", None)
         return {
+            "process_started_at": self._process_started_at,
+            "process_uptime_seconds": int(time.monotonic() - self._started_monotonic),
             "validator_loop_alive": self._validator_loop_alive(),
             "tick_stale": self._tick_stale(),
             "seconds_since_last_tick": self._seconds_since_last_tick(),
