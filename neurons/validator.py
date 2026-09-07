@@ -80,6 +80,7 @@ from endure.utils.config import (
     require_explicit_netuid,
     require_serving_stage_allowed,
 )
+from endure.utils.log_shipping import configure_log_shipping
 from endure.utils.logging import safe_endpoint_label, safe_error
 
 _RECORDED_FIXTURE_NETUIDS: Final = (8, 44)
@@ -1117,6 +1118,7 @@ def _schedule_forced_exit_after_grace() -> threading.Timer:
 
 def main() -> None:
     try:
+        configure_log_shipping("endure-validator")
         identity = runtime_identity()
         bt.logging.info(
             "runtime identity "

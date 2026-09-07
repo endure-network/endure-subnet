@@ -83,6 +83,10 @@ canonical.
 | No validator axons | Confirm registration/permit state, validator health, and any `--endure.min_validator_stake_weight` floor, then allow metagraph synchronization. |
 | Pushes go out but no commit is ever acked (`0 validators hold it`) | Validators may enforce a minimum miner stake and reject under-staked hotkeys with `Insufficient stake` (the public testnet soak validator currently requires metagraph stake weight ≥ 0.3). Stake the miner hotkey above the floor, then keep the miner running — the rejection reason appears in the miner log. |
 
+Optional remote logging (`ENDURE_LOG_DRAIN`) and JSON console output
+(`ENDURE_LOG_FORMAT=json`) work the same as for validators — see
+[log shipping](validating.md#optional-log-shipping).
+
 For non-sensitive help, use the [miner support form](../.github/ISSUE_TEMPLATE/miner-support.yml)
 with commands, versions, redacted configuration, and redacted logs. Never post
 wallet material or an endpoint credential. For vulnerabilities, follow
