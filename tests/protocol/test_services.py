@@ -50,6 +50,7 @@ from endure.scoring.assessment_orchestrator import (
     AssessmentScoringConfig,
     AssessmentScoringOrchestrator,
     ResolutionBudget,
+    ResolutionDeadlineExceeded,
     ScoredOutputConfig,
 )
 from endure.scoring.lending.market_data import recorded_mainnet_fixture_provider
@@ -498,6 +499,107 @@ class TestValidatorRoundService:
         assert "2023-03-07" in orchestrator.scored
         assert service.consecutive_resolution_failures >= 1
         assert service.last_resolution_error == "RuntimeError"
+
+    def test_deadline_escaping_the_orchestrator_defers_without_counting_failure(
+        self, storage: Storage
+    ) -> None:
+        """Boundary lookups raise ResolutionDeadlineExceeded before the
+        orchestrator's own truncation handling; resolve_due must treat that
+        as deferral — no resolution-failure counter, round stays resumable."""
+
+        class _DeadlineOrchestrator:
+            def resolve_and_score(
+                self,
+                round_id: str,
+                horizon: int,
+                *,
+                now_iso: str,
+                resolution_due_at: datetime | None = None,
+                archive_hotkeys: Sequence[str] = (),
+            ) -> dict[str, Decimal]:
+                del round_id, horizon, now_iso, resolution_due_at, archive_hotkeys
+                raise ResolutionDeadlineExceeded("deadline during boundary lookup")
+
+            def weights(self) -> dict[str, Decimal]:
+                return {}
+
+            def blended_scores(self) -> dict[str, Decimal]:
+                return {}
+
+        now_holder = {"now": EPOCH + timedelta(seconds=10)}
+        service = _validator_service(
+            storage, now_holder, lending_orchestrator=_DeadlineOrchestrator()
+        )
+        service.tick(expected_miners=("hk-a",))
+        now_holder["now"] = EPOCH + timedelta(seconds=110)
+        service.tick(expected_miners=("hk-a",))
+        now_holder["now"] = EPOCH + timedelta(seconds=210)
+        service.tick(expected_miners=("hk-a",))
+
+        assert service.consecutive_resolution_failures == 0
+        assert service.last_resolution_error is None
+        assert storage.round_state("2023-03-06", FORGE_LENDING_SCHEMA_ID) == "revealed"
+
+    def test_exhausted_budget_keeps_newer_round_transitions_live(
+        self, storage: Storage
+    ) -> None:
+        """The budget bounds target resolution only: an old round exhausting
+        every tick's budget must not stop a newer round's open→revealed
+        transition and consensus publication."""
+        mono = {"t": 0}
+        real = _RecordingAssessmentOrchestrator(storage)
+
+        class _BudgetBurningOrchestrator:
+            def resolve_and_score(
+                self,
+                round_id: str,
+                horizon: int,
+                *,
+                now_iso: str,
+                resolution_due_at: datetime | None = None,
+                archive_hotkeys: Sequence[str] = (),
+            ) -> dict[str, Decimal]:
+                mono["t"] += 700 * 10**9
+                return real.resolve_and_score(
+                    round_id,
+                    horizon,
+                    now_iso=now_iso,
+                    resolution_due_at=resolution_due_at,
+                    archive_hotkeys=archive_hotkeys,
+                )
+
+            def weights(self) -> dict[str, Decimal]:
+                return real.weights()
+
+            def blended_scores(self) -> dict[str, Decimal]:
+                return real.blended_scores()
+
+        now_holder = {"now": EPOCH + timedelta(seconds=10)}
+        service = _validator_service(
+            storage,
+            now_holder,
+            lending_orchestrator=_BudgetBurningOrchestrator(),
+            budget_factory=lambda: ResolutionBudget.starting_now(
+                600, now_ns_fn=lambda: mono["t"]
+            ),
+        )
+
+        service.tick(expected_miners=("hk-a",))  # open round 0 (2023-03-06)
+        now_holder["now"] = EPOCH + timedelta(seconds=110)
+        service.tick(expected_miners=("hk-a",))  # open round 1, reveal round 0
+        # Round 0's resolution burns the whole budget in the same tick that
+        # round 1 crosses its reveal close.
+        now_holder["now"] = EPOCH + timedelta(seconds=100_000)
+        service.tick(expected_miners=("hk-a",))
+
+        assert storage.has_assessment_resolution_marker(
+            "2023-03-06", FORGE_LENDING_SCHEMA_ID, 1
+        )
+        assert not storage.has_assessment_resolution_marker(
+            "2023-03-07", FORGE_LENDING_SCHEMA_ID, 1
+        )
+        assert storage.round_state("2023-03-07", FORGE_LENDING_SCHEMA_ID) == "revealed"
+        assert service.consecutive_resolution_failures == 0
 
     def test_exhausted_budget_defers_newer_rounds_without_counting_failure(
         self, storage: Storage

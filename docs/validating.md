@@ -89,8 +89,10 @@ and [the scoring fairness deltas](specs/2026-07-20-scoring-fairness-deltas.md#1-
 Both neurons support opt-in remote logging, disabled unless configured
 ([endure/utils/log_shipping.py](../endure/utils/log_shipping.py)):
 
-- `ENDURE_LOG_DRAIN=syslog+tls://logsN.papertrailapp.com:PORT` ships every log
-  record as RFC 5424 syslog. `syslog+tcp` and `syslog+udp` are also accepted,
+- `ENDURE_LOG_DRAIN=syslog+tls://logsN.papertrailapp.com:PORT` ships every
+  record emitted through the Bittensor logger — the neuron's operational
+  stream — as RFC 5424 syslog; modules logging through their own stdlib
+  loggers fall outside the drain. `syslog+tcp` and `syslog+udp` are also accepted,
   so any syslog-compatible collector works (Papertrail, Better Stack, rsyslog,
   promtail). Only `syslog+tls` encrypts and authenticates the collector
   (certificate and hostname validation); `syslog+tcp` and `syslog+udp` are

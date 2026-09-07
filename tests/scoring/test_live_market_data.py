@@ -446,6 +446,33 @@ def test_live_provider_assembles_series_at_canonical_cadence() -> None:
     assert series.source.endswith("netuid_44_live_1600_2800")
 
 
+def test_live_provider_defers_boundary_lookup_when_the_deadline_expires() -> None:
+    # Given: a boundary bisection whose deadline expires after two archive
+    # operations (finalized head + head timestamp), before the search ends.
+    fetcher = FakeSubnetFetcher(
+        responses={},
+        finalized=10_000,
+        timestamps_by_block={block: block * 12_000 for block in range(0, 10_001)},
+    )
+    operations = {"n": 0}
+
+    def count_operation() -> bool:
+        operations["n"] += 1
+        return operations["n"] > 2
+
+    provider = LiveAlphaPriceProvider(
+        config=LiveAlphaPriceProviderConfig(request_pause_seconds=Decimal("0")),
+        fetcher=fetcher,
+        deadline_exceeded_fn=count_operation,
+    )
+
+    with pytest.raises(ResolutionDeadlineExceeded):
+        provider.first_finalized_block_at_or_after(
+            datetime.fromtimestamp(5_000 * 12, tz=UTC),
+            now=datetime.now(tz=UTC),
+        )
+
+
 def test_live_provider_defers_mid_series_when_the_tick_deadline_expires() -> None:
     # Given: a three-snapshot series whose deadline expires after the first
     # fetch; the deadline callback flips permanently like a real exhausted

@@ -200,15 +200,11 @@ class ValidatorRoundService:
         scored_any = False
         failed = False
         for round_id in self._storage.unfinished_rounds(self._schema_id):
-            if budget.exhausted():
-                # Deferral is bounded-progress, not failure: unfinished_rounds
-                # is oldest-first, so the next tick's fresh budget resumes at
-                # the same backlog without tripping the resolution counters.
-                bt.logging.info(
-                    f"resolution budget exhausted; deferring round {round_id} "
-                    "and newer to the next tick"
-                )
-                break
+            # No budget gate here on purpose: the budget bounds target
+            # resolution only (resolve_due checks it per horizon), while the
+            # cheap open→revealed transition and consensus publication inside
+            # _advance_one_round must stay live even when an old archive
+            # backlog exhausts every tick's budget.
             try:
                 scored, resolution_error = self._advance_one_round(
                     round_id,

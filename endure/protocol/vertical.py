@@ -22,6 +22,7 @@ from endure.protocol.schedulers import RoundScheduler
 from endure.scoring.assessment_orchestrator import (
     UNLIMITED_RESOLUTION_BUDGET,
     ResolutionBudget,
+    ResolutionDeadlineExceeded,
 )
 from endure.storage.repository import Storage
 
@@ -150,6 +151,17 @@ class AssessmentRoundProgram:
                     archive_hotkeys=(),
                     budget=budget,
                 )
+            except ResolutionDeadlineExceeded:
+                # Deadline exhaustion escaping the orchestrator (boundary
+                # lookups run before its truncation handling) is deferral,
+                # not failure: no error counter, no void path, resume next
+                # tick with a fresh budget.
+                all_resolved = False
+                bt.logging.info(
+                    f"resolution deadline reached in round {round_id} "
+                    f"horizon {horizon}; deferring to the next tick"
+                )
+                break
             except Exception as error:  # noqa: BLE001 — copied D6 per-horizon containment
                 last_error = type(error).__name__
                 all_resolved = False
