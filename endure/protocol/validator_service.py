@@ -18,6 +18,7 @@ import bittensor as bt
 from endure.assessment.registry import UniverseProvider, UniverseSnapshot
 from endure.protocol.schedulers import RoundScheduler
 from endure.protocol.vertical import RoundProgram
+from endure.scoring.assessment_orchestrator import ResolutionBudget
 from endure.storage.repository import Storage
 
 
@@ -33,7 +34,11 @@ class ValidatorRoundService:
         now_fn: Callable[[], datetime],
         round_program: RoundProgram,
         max_universe_targets: int | None = None,
+        resolution_budget_seconds: int | None = None,
+        budget_factory: Callable[[], ResolutionBudget] | None = None,
     ) -> None:
+        if resolution_budget_seconds is not None and resolution_budget_seconds <= 0:
+            raise ValueError("resolution_budget_seconds must be positive")
         self._storage = storage
         self._scheduler = scheduler
         self._universe_provider = universe_provider
@@ -42,6 +47,13 @@ class ValidatorRoundService:
         self._round_program = round_program
         self._now_fn = now_fn
         self._max_universe_targets = max_universe_targets
+        if budget_factory is not None:
+            self._budget_factory = budget_factory
+        elif resolution_budget_seconds is None:
+            self._budget_factory = ResolutionBudget.unlimited
+        else:
+            seconds = resolution_budget_seconds
+            self._budget_factory = lambda: ResolutionBudget.starting_now(seconds)
         # A universe-fetch failure is degraded-but-non-fatal: the tick swallows
         # it so the loop survives, but a swallowed failure must not read as
         # healthy. These count consecutive failures (reset on the next
@@ -108,8 +120,9 @@ class ValidatorRoundService:
     ) -> dict[str, Decimal] | None:
         """Advance the loop; returns fresh weights when scoring happened."""
         now = self._now_fn()
+        budget = self._budget_factory()
         self._open_active_round(now)
-        scored = self._advance_rounds(now, expected_miners, archive_hotkeys)
+        scored = self._advance_rounds(now, expected_miners, archive_hotkeys, budget)
         if not scored:
             return None
         return self._round_program.weights()
@@ -181,16 +194,27 @@ class ValidatorRoundService:
         self,
         now: datetime,
         expected_miners: Sequence[str],
-        archive_hotkeys: Sequence[str] = (),
+        archive_hotkeys: Sequence[str],
+        budget: ResolutionBudget,
     ) -> bool:
         scored_any = False
         failed = False
         for round_id in self._storage.unfinished_rounds(self._schema_id):
+            if budget.exhausted():
+                # Deferral is bounded-progress, not failure: unfinished_rounds
+                # is oldest-first, so the next tick's fresh budget resumes at
+                # the same backlog without tripping the resolution counters.
+                bt.logging.info(
+                    f"resolution budget exhausted; deferring round {round_id} "
+                    "and newer to the next tick"
+                )
+                break
             try:
                 scored, resolution_error = self._advance_one_round(
                     round_id,
                     now,
                     expected_miners,
+                    budget,
                 )
             except Exception as error:  # noqa: BLE001 — contain per round: a wedged round must not block newer ones
                 failed = True
@@ -230,6 +254,7 @@ class ValidatorRoundService:
         round_id: str,
         now: datetime,
         expected_miners: Sequence[str],
+        budget: ResolutionBudget,
     ) -> tuple[bool, str | None]:
         windows = self._storage.round_windows(round_id, self._schema_id)
         if windows is None:
@@ -240,4 +265,6 @@ class ValidatorRoundService:
             state = "revealed"
         if state not in ("revealed", "partially_scored"):
             return False, None
-        return self._round_program.resolve_due(round_id, windows, now, expected_miners)
+        return self._round_program.resolve_due(
+            round_id, windows, now, expected_miners, budget
+        )

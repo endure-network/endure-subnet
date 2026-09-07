@@ -444,6 +444,7 @@ def test_tick_in_flight_survives_beyond_normal_stale_window(
     mock_validator_config.neuron.disable_set_weights = True
     mock_validator_config.endure.health_tick_max_age_seconds = 60
     mock_validator_config.endure.health_tick_max_duration_seconds = 600
+    mock_validator_config.endure.resolution_budget_seconds = 60
     now = [1_000.0]
     monkeypatch.setattr("neurons.validator.time.monotonic", lambda: now[0])
     validator = Validator(config=mock_validator_config)
@@ -471,6 +472,7 @@ def test_tick_in_flight_trips_watchdog_beyond_max_duration(
     mock_validator_config.neuron.disable_set_weights = True
     mock_validator_config.endure.health_tick_max_age_seconds = 60
     mock_validator_config.endure.health_tick_max_duration_seconds = 600
+    mock_validator_config.endure.resolution_budget_seconds = 60
     now = [1_000.0]
     monkeypatch.setattr("neurons.validator.time.monotonic", lambda: now[0])
     validator = Validator(config=mock_validator_config)
@@ -493,6 +495,7 @@ def test_end_long_op_publishes_heartbeat_before_clearing_the_marker(
     mock_validator_config.neuron.disable_set_weights = True
     mock_validator_config.endure.health_tick_max_age_seconds = 60
     mock_validator_config.endure.health_tick_max_duration_seconds = 600
+    mock_validator_config.endure.resolution_budget_seconds = 60
     now = [1_000.0]
     monkeypatch.setattr("neurons.validator.time.monotonic", lambda: now[0])
     validator = Validator(config=mock_validator_config)
@@ -553,6 +556,22 @@ def test_validator_rejects_startup_grace_not_greater_than_tick_cadence(
         Validator(config=mock_validator_config)
 
 
+def test_validator_rejects_resolution_budget_at_or_above_watchdog_window(
+    mock_validator_config: bt.Config,
+) -> None:
+    from neurons.validator import Validator
+
+    mock_validator_config.neuron.axon_off = True
+    mock_validator_config.neuron.disable_set_weights = True
+    mock_validator_config.endure.health_tick_max_duration_seconds = 1800
+    mock_validator_config.endure.resolution_budget_seconds = 1800
+
+    with pytest.raises(
+        RuntimeError, match="less than endure.health_tick_max_duration_seconds"
+    ):
+        Validator(config=mock_validator_config)
+
+
 def test_validator_rejects_duration_not_greater_than_stale_age(
     mock_validator_config: bt.Config,
 ) -> None:
@@ -562,6 +581,7 @@ def test_validator_rejects_duration_not_greater_than_stale_age(
     mock_validator_config.neuron.disable_set_weights = True
     mock_validator_config.endure.health_tick_max_age_seconds = 300
     mock_validator_config.endure.health_tick_max_duration_seconds = 300
+    mock_validator_config.endure.resolution_budget_seconds = 60
 
     with pytest.raises(
         RuntimeError, match="greater than endure.health_tick_max_age_seconds"

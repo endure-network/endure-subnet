@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
@@ -45,9 +45,11 @@ from endure.protocol.vertical import (
 )
 from endure.scoring.assessment_orchestrator import (
     NEUTRAL_RESOLUTION_CONTEXT,
+    UNLIMITED_RESOLUTION_BUDGET,
     AssessmentResolutionContext,
     AssessmentScoringConfig,
     AssessmentScoringOrchestrator,
+    ResolutionBudget,
     ScoredOutputConfig,
 )
 from endure.scoring.lending.market_data import recorded_mainnet_fixture_provider
@@ -171,8 +173,9 @@ class _AssessmentOrchestratorAdapter(AssessmentScoringOrchestrator):
         resolution_due_at: datetime | None = None,
         archive_hotkeys: Sequence[str] = (),
         context: AssessmentResolutionContext = NEUTRAL_RESOLUTION_CONTEXT,
+        budget: ResolutionBudget = UNLIMITED_RESOLUTION_BUDGET,
     ) -> dict[str, Decimal]:
-        del context
+        del context, budget
         if horizon is None:
             raise ValueError(horizon)
         return self._delegate.resolve_and_score(
@@ -224,6 +227,7 @@ def _validator_service(
     sessions: tuple[date, ...] = SESSIONS,
     schema_id: str = FORGE_LENDING_SCHEMA_ID,
     max_universe_targets: int | None = None,
+    budget_factory: Callable[[], ResolutionBudget] | None = None,
 ) -> ValidatorRoundService:
     scheduler = SyntheticScheduler(
         sessions=sessions, epoch=EPOCH, period_seconds=PERIOD
@@ -252,6 +256,7 @@ def _validator_service(
         now_fn=lambda: now_holder["now"],
         max_universe_targets=max_universe_targets,
         round_program=round_program,
+        budget_factory=budget_factory,
     )
 
 
@@ -493,6 +498,75 @@ class TestValidatorRoundService:
         assert "2023-03-07" in orchestrator.scored
         assert service.consecutive_resolution_failures >= 1
         assert service.last_resolution_error == "RuntimeError"
+
+    def test_exhausted_budget_defers_newer_rounds_without_counting_failure(
+        self, storage: Storage
+    ) -> None:
+        """Budget exhaustion is bounded progress, not an error: the tick stops
+        at the round where the budget ran out, trips no resolution counter,
+        and the next tick's fresh budget finishes the backlog."""
+        mono = {"t": 0}
+        real = _RecordingAssessmentOrchestrator(storage)
+
+        class _SlowOrchestrator:
+            def resolve_and_score(
+                self,
+                round_id: str,
+                horizon: int,
+                *,
+                now_iso: str,
+                resolution_due_at: datetime | None = None,
+                archive_hotkeys: Sequence[str] = (),
+            ) -> dict[str, Decimal]:
+                mono["t"] += 700 * 10**9
+                return real.resolve_and_score(
+                    round_id,
+                    horizon,
+                    now_iso=now_iso,
+                    resolution_due_at=resolution_due_at,
+                    archive_hotkeys=archive_hotkeys,
+                )
+
+            def weights(self) -> dict[str, Decimal]:
+                return real.weights()
+
+            def blended_scores(self) -> dict[str, Decimal]:
+                return real.blended_scores()
+
+        now_holder = {"now": EPOCH + timedelta(seconds=10)}
+        service = _validator_service(
+            storage,
+            now_holder,
+            lending_orchestrator=_SlowOrchestrator(),
+            budget_factory=lambda: ResolutionBudget.starting_now(
+                600, now_ns_fn=lambda: mono["t"]
+            ),
+        )
+
+        service.tick(expected_miners=("hk-a",))  # open round 0 (2023-03-06)
+        now_holder["now"] = EPOCH + timedelta(seconds=110)
+        service.tick(expected_miners=("hk-a",))  # open round 1, reveal round 0
+        # Jump far past every horizon's resolution: both rounds are due, but
+        # round 0's resolution burns the whole tick budget.
+        now_holder["now"] = EPOCH + timedelta(seconds=100_000)
+        service.tick(expected_miners=("hk-a",))
+
+        assert storage.has_assessment_resolution_marker(
+            "2023-03-06", FORGE_LENDING_SCHEMA_ID, 1
+        )
+        assert not storage.has_assessment_resolution_marker(
+            "2023-03-07", FORGE_LENDING_SCHEMA_ID, 1
+        )
+        assert service.consecutive_resolution_failures == 0
+        assert service.last_resolution_error is None
+
+        service.tick(expected_miners=("hk-a",))
+
+        assert storage.has_assessment_resolution_marker(
+            "2023-03-07", FORGE_LENDING_SCHEMA_ID, 1
+        )
+        assert storage.round_state("2023-03-07", FORGE_LENDING_SCHEMA_ID) == "closed"
+        assert service.consecutive_resolution_failures == 0
 
     def test_one_failing_horizon_does_not_block_a_due_sibling_horizon(
         self, storage: Storage
