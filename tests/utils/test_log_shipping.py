@@ -164,7 +164,7 @@ class TestResilientSyslogHandler:
         try:
             try:
                 raise ConnectionError(
-                    "archive failed: wss://user:SECRETTOKEN@archive.example:443"
+                    "archive failed: wss://user:SECRETTOKEN@127.0.0.1:443"
                 )
             except ConnectionError:
                 record = logging.LogRecord(
