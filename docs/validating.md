@@ -92,7 +92,9 @@ Both neurons support opt-in remote logging, disabled unless configured
 - `ENDURE_LOG_DRAIN=syslog+tls://logsN.papertrailapp.com:PORT` ships every log
   record as RFC 5424 syslog. `syslog+tcp` and `syslog+udp` are also accepted,
   so any syslog-compatible collector works (Papertrail, Better Stack, rsyslog,
-  promtail). Shipping is non-blocking by construction: records cross a bounded
+  promtail). Only `syslog+tls` encrypts and authenticates the collector
+  (certificate and hostname validation); `syslog+tcp` and `syslog+udp` are
+  cleartext — use them only toward a collector on a trusted network. Shipping is non-blocking by construction: records cross a bounded
   in-process queue that drops on overflow, the network emitter runs on its own
   daemon thread with lazy reconnect, and shipped text is sanitized against log
   injection before it leaves the process. A dead collector costs dropped

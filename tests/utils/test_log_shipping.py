@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import json
 import logging
+import logging.handlers
 import queue
 import socket
 import socketserver
+import sys
 import threading
 
 import pytest
@@ -138,6 +140,78 @@ class TestResilientSyslogHandler:
             server.shutdown()
 
         assert lines and lines[0].decode().endswith("shipped over tcp\n")
+
+    def test_traceback_with_credentials_ships_sanitized_through_the_queue(
+        self,
+    ) -> None:
+        """The drain's exception sanitization works via QueueHandler.prepare
+        folding the traceback into the message on the emitting side; this
+        pins that mechanism so it stays deliberate rather than incidental."""
+        receiver = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        receiver.bind(("127.0.0.1", 0))
+        receiver.settimeout(5)
+        port = receiver.getsockname()[1]
+        drain = ResilientSyslogHandler(
+            DrainTarget(scheme="syslog+udp", host="127.0.0.1", port=port)
+        )
+        drain.setFormatter(SyslogFrameFormatter("endure-validator"))
+        record_queue: queue.Queue[logging.LogRecord] = queue.Queue(maxsize=10)
+        bounded = BoundedQueueHandler(record_queue)
+        listener = logging.handlers.QueueListener(
+            record_queue, drain, respect_handler_level=True
+        )
+        listener.start()
+        try:
+            try:
+                raise ConnectionError(
+                    "archive failed: wss://user:SECRETTOKEN@archive.example:443"
+                )
+            except ConnectionError:
+                record = logging.LogRecord(
+                    name="bittensor",
+                    level=logging.ERROR,
+                    pathname=__file__,
+                    lineno=1,
+                    msg="resolution crashed",
+                    args=(),
+                    exc_info=sys.exc_info(),
+                )
+            bounded.emit(record)
+            payload = receiver.recv(65535).decode()
+        finally:
+            listener.stop()
+            drain.close()
+            receiver.close()
+
+        assert "ConnectionError" in payload
+        assert "SECRETTOKEN" not in payload
+        assert "<redacted-endpoint>" in payload
+        assert payload.count("\n") == 1
+
+    def test_failed_connect_starts_a_cooldown_that_skips_reconnects(self) -> None:
+        clock = {"t": 0.0}
+        connect_attempts = {"n": 0}
+
+        class _AlwaysDownHandler(ResilientSyslogHandler):
+            def _connect(self) -> socket.socket:
+                connect_attempts["n"] += 1
+                raise OSError("collector down")
+
+        handler = _AlwaysDownHandler(
+            DrainTarget(scheme="syslog+tcp", host="127.0.0.1", port=6514),
+            reconnect_cooldown_seconds=30.0,
+            now_fn=lambda: clock["t"],
+        )
+        handler.setFormatter(SyslogFrameFormatter("endure-validator"))
+
+        handler.emit(_record("connects and fails"))
+        handler.emit(_record("inside cooldown: dropped without a connect"))
+        clock["t"] = 31.0
+        handler.emit(_record("after cooldown: connects again"))
+        handler.close()
+
+        assert connect_attempts["n"] == 2
+        assert handler.dropped_frames == 3
 
     def test_unreachable_collector_drops_frames_without_raising(self) -> None:
         dead_port_probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)

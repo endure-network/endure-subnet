@@ -25,7 +25,8 @@ import os
 import queue
 import socket
 import ssl
-from collections.abc import Mapping
+import time
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Final
@@ -33,13 +34,14 @@ from urllib.parse import urlsplit
 
 import bittensor as bt
 
-from endure.utils.logging import safe_remote_text
+from endure.utils.logging import safe_error, safe_remote_text
 
 LOG_DRAIN_ENV: Final = "ENDURE_LOG_DRAIN"
 LOG_FORMAT_ENV: Final = "ENDURE_LOG_FORMAT"
 DRAIN_SCHEMES: Final = frozenset({"syslog+udp", "syslog+tcp", "syslog+tls"})
 DRAIN_QUEUE_CAPACITY: Final = 1000
 DRAIN_CONNECT_TIMEOUT_SECONDS: Final = 5.0
+DRAIN_RECONNECT_COOLDOWN_SECONDS: Final = 30.0
 DRAIN_MAX_MESSAGE_CHARS: Final = 8192
 _SYSLOG_FACILITY_USER: Final = 1
 _SYSLOG_SEVERITY_BY_LEVEL: Final = (
@@ -85,14 +87,13 @@ class SyslogFrameFormatter(logging.Formatter):
         self._hostname = socket.gethostname() or "unknown"
 
     def format(self, record: logging.LogRecord) -> str:
+        # No exc_info branch on purpose: QueueHandler.prepare() runs on the
+        # emitting thread, folds the formatted traceback into the message,
+        # and nulls exc_info before enqueueing — so the traceback arrives
+        # here inside getMessage() and passes through the same sanitizer.
         message = safe_remote_text(
             record.getMessage(), max_length=DRAIN_MAX_MESSAGE_CHARS
         )
-        if record.exc_info:
-            message = safe_remote_text(
-                f"{message} | {self.formatException(record.exc_info)}",
-                max_length=DRAIN_MAX_MESSAGE_CHARS,
-            )
         priority = _SYSLOG_FACILITY_USER * 8 + _syslog_severity(record.levelno)
         timestamp = datetime.fromtimestamp(record.created, UTC).isoformat()
         return (
@@ -107,10 +108,10 @@ class JsonLineFormatter(logging.Formatter):
             "timestamp": datetime.fromtimestamp(record.created, UTC).isoformat(),
             "level": record.levelname,
             "name": record.name,
-            "message": record.getMessage(),
+            "message": safe_error(record.getMessage()),
         }
         if record.exc_info:
-            payload["exception"] = self.formatException(record.exc_info)
+            payload["exception"] = safe_error(self.formatException(record.exc_info))
         return json.dumps(payload, sort_keys=True)
 
 
@@ -142,12 +143,17 @@ class ResilientSyslogHandler(logging.Handler):
         target: DrainTarget,
         *,
         timeout_seconds: float = DRAIN_CONNECT_TIMEOUT_SECONDS,
+        reconnect_cooldown_seconds: float = DRAIN_RECONNECT_COOLDOWN_SECONDS,
         ssl_context: ssl.SSLContext | None = None,
+        now_fn: Callable[[], float] = time.monotonic,
     ) -> None:
         super().__init__()
         self._target = target
         self._timeout_seconds = timeout_seconds
+        self._reconnect_cooldown_seconds = reconnect_cooldown_seconds
         self._ssl_context = ssl_context
+        self._now_fn = now_fn
+        self._retry_at_monotonic = 0.0
         self._socket: socket.socket | None = None
         self.dropped_frames = 0
 
@@ -168,6 +174,12 @@ class ResilientSyslogHandler(logging.Handler):
 
     def emit(self, record: logging.LogRecord) -> None:
         frame = (self.format(record) + "\n").encode("utf-8", errors="replace")
+        if self._socket is None and self._now_fn() < self._retry_at_monotonic:
+            # Cooldown after a failed collector: without it, every queued
+            # record pays a full connect timeout against a dead endpoint and
+            # drain throughput collapses to one frame per timeout.
+            self.dropped_frames += 1
+            return
         try:
             if self._socket is None:
                 self._socket = self._connect()
@@ -178,6 +190,7 @@ class ResilientSyslogHandler(logging.Handler):
         except OSError:
             self.dropped_frames += 1
             self._close_socket()
+            self._retry_at_monotonic = self._now_fn() + self._reconnect_cooldown_seconds
 
     def _close_socket(self) -> None:
         if self._socket is not None:
