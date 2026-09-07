@@ -57,14 +57,14 @@ _CONTROL_CHARS_RE = re.compile(
 _REMOTE_TEXT_LIMIT = 200
 
 
-def safe_remote_text(value: object) -> str:
+def safe_remote_text(value: object, *, max_length: int = _REMOTE_TEXT_LIMIT) -> str:
     """Bound peer-supplied text for logging: redact credentials, collapse
     control characters (newline/ANSI/Unicode-separator/bidi log-injection
     vectors), and truncate.
     """
     text = _CONTROL_CHARS_RE.sub(" ", safe_error(value))
-    if len(text) > _REMOTE_TEXT_LIMIT:
-        return text[:_REMOTE_TEXT_LIMIT] + "…"
+    if len(text) > max_length:
+        return text[:max_length] + "…"
     return text
 
 

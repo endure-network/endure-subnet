@@ -47,6 +47,7 @@ from endure.utils.config import (
     require_explicit_netuid,
     require_serving_stage_allowed,
 )
+from endure.utils.log_shipping import configure_log_shipping
 from endure.utils.logging import safe_error, safe_remote_text
 
 
@@ -443,6 +444,7 @@ def _force_restart_if_rpc_abandoned(miner: Miner) -> None:
 
 def main() -> None:
     try:
+        configure_log_shipping("endure-miner")
         identity = runtime_identity()
         bt.logging.info(
             "runtime identity "

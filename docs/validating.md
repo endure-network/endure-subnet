@@ -84,6 +84,28 @@ decays that coordinate's EMA; never-active expected miners have no EMA state to
 decay. See [assessment_orchestrator.py](../endure/scoring/assessment_orchestrator.py)
 and [the scoring fairness deltas](specs/2026-07-20-scoring-fairness-deltas.md#1--absence-aware-scoring).
 
+## Optional log shipping
+
+Both neurons support opt-in remote logging, disabled unless configured
+([endure/utils/log_shipping.py](../endure/utils/log_shipping.py)):
+
+- `ENDURE_LOG_DRAIN=syslog+tls://logsN.papertrailapp.com:PORT` ships every log
+  record as RFC 5424 syslog. `syslog+tcp` and `syslog+udp` are also accepted,
+  so any syslog-compatible collector works (Papertrail, Better Stack, rsyslog,
+  promtail). Shipping is non-blocking by construction: records cross a bounded
+  in-process queue that drops on overflow, the network emitter runs on its own
+  daemon thread with lazy reconnect, and shipped text is sanitized against log
+  injection before it leaves the process. A dead collector costs dropped
+  frames, never a stalled neuron.
+- `ENDURE_LOG_FORMAT=json` switches console output to one JSON object per line
+  for container-level collectors (docker log drivers, vector, promtail).
+
+The drain ships exactly what the configured logging level emits: bittensor's
+default console level is WARNING, so pass `--logging.info` (as production
+deployments already do) for the drain to carry the operational INFO stream.
+A malformed `ENDURE_LOG_DRAIN` URL fails startup loudly; an unreachable
+collector does not.
+
 For non-sensitive assistance use the [validator support form](../.github/ISSUE_TEMPLATE/validator-support.yml).
 For security reports use [SECURITY.md](../SECURITY.md); never send wallet
 material, tokens, or unredacted deployment configuration.
