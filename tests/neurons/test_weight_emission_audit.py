@@ -2503,6 +2503,7 @@ class TestWeightEmissionAudit:
         validator._last_tick_error = None
         validator._last_tick_monotonic = None
         validator._started_monotonic = 0.0
+        validator._process_started_at = "2026-09-07T00:00:00+00:00"
         validator.config.endure.health_startup_grace_seconds = 1
         validator.thread = MagicMock()
         validator.thread.is_alive.return_value = True
@@ -2545,6 +2546,7 @@ class TestWeightEmissionAudit:
         validator._last_tick_error = None
         validator._last_tick_monotonic = None
         validator._started_monotonic = 0.0
+        validator._process_started_at = "2026-09-07T00:00:00+00:00"
         validator.config.endure.health_startup_grace_seconds = 1
         validator.thread = MagicMock()
         validator.thread.is_alive.return_value = True
@@ -2587,6 +2589,7 @@ class TestWeightEmissionAudit:
         validator._last_tick_error = None
         validator._last_tick_monotonic = None
         validator._started_monotonic = 0.0
+        validator._process_started_at = "2026-09-07T00:00:00+00:00"
         validator.config.endure.health_startup_grace_seconds = 1
         validator.thread = MagicMock()
         validator.thread.is_alive.return_value = True

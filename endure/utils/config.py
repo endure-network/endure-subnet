@@ -476,6 +476,18 @@ def add_args(cls, parser):
         ),
     )
     parser.add_argument(
+        "--endure.resolution_budget_seconds",
+        type=_positive_int,
+        default=600,
+        help=(
+            "Wall-clock budget for target resolution within a single tick. "
+            "Work exceeding it is deferred to the next tick via the "
+            "partially_scored resumption path, keeping every tick well under "
+            "health_tick_max_duration_seconds (a 30d horizon needs thousands "
+            "of paced archive RPCs — hours of work no single tick may carry)."
+        ),
+    )
+    parser.add_argument(
         "--endure.health_tick_max_duration_seconds",
         type=_positive_int,
         default=1800,

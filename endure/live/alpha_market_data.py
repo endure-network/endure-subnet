@@ -26,6 +26,7 @@ from async_substrate_interface.sync_substrate import SubstrateInterface
 
 from endure.live.sleeping import sleep_decimal
 from endure.protocol.risk_miner import LatestPoolObservation
+from endure.scoring.assessment_orchestrator import ResolutionDeadlineExceeded
 from endure.scoring.market_data import (
     SUBTENSOR_RESERVE_PRICE_SOURCE,
     AlphaMarketDataError,
@@ -374,7 +375,7 @@ class BittensorSubnetInfoFetcher:
 class LiveAlphaPriceProvider:
     """Archive-backed Alpha price/reserve provider for the R6 served runtime."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 — keyword-only validator-wiring seams
         self,
         *,
         config: LiveAlphaPriceProviderConfig,
@@ -382,6 +383,7 @@ class LiveAlphaPriceProvider:
         sleep: Sleeper = sleep_decimal,
         now_fn: Callable[[], float] = time.monotonic,
         progress_fn: Callable[[], None] | None = None,
+        deadline_exceeded_fn: Callable[[], bool] | None = None,
     ) -> None:
         if config.max_attempts <= 0:
             raise AlphaMarketDataError("max_attempts must be positive")
@@ -396,6 +398,7 @@ class LiveAlphaPriceProvider:
         self._sleep = sleep
         self._now_fn = now_fn
         self._progress_fn = progress_fn
+        self._deadline_exceeded_fn = deadline_exceeded_fn
         self._snapshots: dict[tuple[int, int], AlphaPriceSnapshot] = {}
         self._series: OrderedDict[tuple[int, ResolutionWindow], AlphaPriceSeries] = (
             OrderedDict()
@@ -492,6 +495,15 @@ class LiveAlphaPriceProvider:
         consecutive_archive_failures = 0
         archive_unavailable = False
         for block in _canonical_blocks(window):
+            if self._deadline_exceeded_fn is not None and self._deadline_exceeded_fn():
+                # A 30d series is thousands of paced RPCs; the tick budget can
+                # expire mid-series. Fetched snapshots stay in _snapshots, so
+                # the resume tick re-enters warm. Deferral must not reach the
+                # unavailable-target grace path — that would void a resolvable
+                # coordinate — hence the dedicated exception.
+                raise ResolutionDeadlineExceeded(
+                    f"resolution budget exhausted mid-series netuid={netuid}"
+                )
             if block > current_block:
                 skipped_future_block = True
             result = self._snapshot_at(
@@ -612,8 +624,16 @@ class LiveAlphaPriceProvider:
     def _with_retry[T](self, operation: Callable[[], T]) -> T:
         # Attempt-level progress marks keep the watchdog honest: each attempt
         # is bounded (request timeout + capped backoff), while a wedged thread
-        # stops marking and still trips it.
+        # stops marking and still trips it. The deadline check must live at
+        # the same granularity: boundary bisections alone are ~2x24 lookups
+        # with up to a ~68s retry ladder each, so a degraded archive could
+        # otherwise hold one tick far past the watchdog window before
+        # price_series ever runs.
         for attempt in range(1, self._config.max_attempts + 1):
+            if self._deadline_exceeded_fn is not None and self._deadline_exceeded_fn():
+                raise ResolutionDeadlineExceeded(
+                    "resolution budget exhausted during archive operation"
+                )
             if self._progress_fn is not None:
                 self._progress_fn()
             try:

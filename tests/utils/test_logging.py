@@ -112,6 +112,21 @@ class TestSafeLogging:
         assert len(text) <= 201
         assert text.endswith("…")
 
+    def test_remote_text_strips_unicode_separators_and_bidi_controls(self) -> None:
+        injected = (
+            "ok\u2028forged line\u2029tail"
+            "\u202eDESREVER\u202c\u200e\u200f\u061c\u2066isolated\u2069"
+        )
+
+        text = safe_remote_text(injected)
+
+        for forbidden in ("\u2028", "\u2029", "\u200e", "\u200f", "\u061c"):
+            assert forbidden not in text
+        for forbidden in ("\u202a", "\u202c", "\u202e", "\u2066", "\u2069"):
+            assert forbidden not in text
+        assert "forged line" in text
+        assert "isolated" in text
+
     def test_endpoint_label_removes_url_secrets_and_details(self) -> None:
         secret = "super-secret-token"
         label = safe_endpoint_label(

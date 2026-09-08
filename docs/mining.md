@@ -12,7 +12,7 @@ generic query.
 
 1. Clone the public repository and, with a Python 3.12 executable available,
    run `make bootstrap` to install the pinned uv `0.11.32` and Gitleaks. The
-   signed `v0.1.0-rc.1` tag is created only after live candidate acceptance.
+   signed `v0.1.0-rc.2` tag is created only after live candidate acceptance.
 2. Install the locked environment with `make dev-install` (`uv sync --locked
    --extra dev`; operators who need no test tooling can use `make install`
    instead). Then run
@@ -82,6 +82,10 @@ canonical.
 | Late commit/reveal | Synchronize the host clock and read the round windows from the validator. |
 | No validator axons | Confirm registration/permit state, validator health, and any `--endure.min_validator_stake_weight` floor, then allow metagraph synchronization. |
 | Pushes go out but no commit is ever acked (`0 validators hold it`) | Validators may enforce a minimum miner stake and reject under-staked hotkeys with `Insufficient stake` (the public testnet soak validator currently requires metagraph stake weight ≥ 0.3). Stake the miner hotkey above the floor, then keep the miner running — the rejection reason appears in the miner log. |
+
+Optional remote logging (`ENDURE_LOG_DRAIN`) and JSON console output
+(`ENDURE_LOG_FORMAT=json`) work the same as for validators — see
+[log shipping](validating.md#optional-log-shipping).
 
 For non-sensitive help, use the [miner support form](../.github/ISSUE_TEMPLATE/miner-support.yml)
 with commands, versions, redacted configuration, and redacted logs. Never post

@@ -10,10 +10,10 @@ so constants cannot drift outside the contract again.
 from pathlib import Path
 
 ACTIVATED_VERSION_REGISTRY_DIGEST = (
-    "1c8ce3a3f1104689f0e540bfad3d9dd1449c8d425d60f615aa3ce2de4acc42f0"
+    "6a59400fabcddcb541abdca37b5269178c5caa697277f6d0f74cdf1d692c398d"
 )
 ACTIVATED_VERSION_HISTORY_DIGEST = (
-    "c529e9225d197b2e6cfcd4711390992d882c4903e7f0f355d81c62a992315821"
+    "0573cb986294ad81c79bc1f070476c7d194fdd211109631f60a346d442285a8d"
 )
 
 WATCHED_PATHS = (
@@ -27,9 +27,9 @@ WATCHED_PATHS = (
 # Previous accepted protocol snapshot. When watched paths change, promote the
 # current values into the previous fields, then write the new digest and bump
 # the current version key.
-PREVIOUS_VERSION_KEY = 28
+PREVIOUS_VERSION_KEY = 29
 PREVIOUS_VERSION_DIGEST = (
-    "05da1df37dc67de435d0954d9b102be45922c6956822643ff1dcc7a892176e26"
+    "d3b9126c2bad0045e497e6f5f7362309c004d340f927cc91638d4df84344379b"
 )
 
 # Production serving status and CURRENT_VERSION_KEY stay unchanged until R6.
@@ -95,6 +95,14 @@ PREVIOUS_VERSION_DIGEST = (
 # instead of leaving the round open forever. Wire formats, scoring math, and
 # aggregation of parseable bundles are unchanged; validators and miners still
 # cut over in lockstep under the new key.
+# 30: target resolution is budgeted per tick. A tick resolves targets only
+# while its wall-clock resolution budget lasts; remaining horizons and rounds
+# defer to the next tick through the persisted realized-target /
+# partially_scored resumption path, so an archive-heavy 30d horizon no longer
+# holds one tick open past the watchdog window. Wire formats, resolved values,
+# scoring math, and aggregation are unchanged — only intra-validator pacing
+# moves — so validator and miner lockstep is required only by the existing
+# digest-pinning mechanism.
 #
 # 20: Alpha Risk calendar-independent daily rounds
 # (docs/specs/2026-07-18-alpha-risk-24x7-rounds.md). The served Alpha schema
@@ -109,7 +117,7 @@ PREVIOUS_VERSION_DIGEST = (
 # defers horizon resolution (24h grace before voiding) instead of permanently
 # voiding it. Wire formats, scoring math, and tier thresholds are unchanged;
 # resolved values become identical across independent validators.
-CURRENT_VERSION_KEY = 29
+CURRENT_VERSION_KEY = 30
 CURRENT_VERSION_DIGEST = (
-    "d3b9126c2bad0045e497e6f5f7362309c004d340f927cc91638d4df84344379b"
+    "3904a799a6560082a05b0ff62274cf4c71547cf1f5dfd0311418d2f4e574ef14"
 )

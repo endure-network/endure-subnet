@@ -84,12 +84,12 @@ over the UTF-8 lines `LEASE_AUTHORITY`,
 each terminated by one LF byte, produces
 `fa41045b844d60c22340a5ed0fd8118cc53c83031490eea755c2cdb05c9ccd71`.
 
-Key `29` is leased exclusively to the final `v0.1.0-rc.1` candidate. It removes
-stale source citations and an obsolete reference-miner roadmap promise, and
-consensus publication now skips an accepted bundle that no longer parses — the
-policy scoring already applied — instead of leaving the round open. Wire
-formats, scoring math, and the aggregation of parseable bundles are unchanged.
-Its watched-tree digest is
+Key `29` was leased exclusively to the final `v0.1.0-rc.1` candidate. It
+removes stale source citations and an obsolete reference-miner roadmap
+promise, and consensus publication now skips an accepted bundle that no longer
+parses — the policy scoring already applied — instead of leaving the round
+open. Wire formats, scoring math, and the aggregation of parseable bundles are
+unchanged. Its watched-tree digest is
 `d3b9126c2bad0045e497e6f5f7362309c004d340f927cc91638d4df84344379b`.
 Its public lease authority receipt is SHA-256 over the UTF-8 lines
 `LEASE_AUTHORITY`,
@@ -98,4 +98,26 @@ Its public lease authority receipt is SHA-256 over the UTF-8 lines
 `CURRENT_VERSION_DIGEST=d3b9126c2bad0045e497e6f5f7362309c004d340f927cc91638d4df84344379b`,
 each terminated by one LF byte. The resulting receipt is
 `c4aa1b087b26039b30524093943467ae5074939aaf35c43c87fcb79ffc66ae13`.
-No private ledger value is involved in either lease authority receipt.
+
+Key `29` is recorded as `activation-0042`. It first appeared on the public
+first-parent staging lineage in commit
+`c072b9a6dd65327daca85fa152099cc392414cbe`; applying the source-bound receipt
+format above produces
+`d8bd3956158777b7f4355e9298abe2a7d411ef42914b3d5520fdd4bc0edc5f71`.
+
+Key `30` is leased exclusively to the `v0.1.0-rc.2` candidate. It budgets
+target resolution per validator tick: work exceeding the wall-clock resolution
+budget defers to the next tick through the persisted
+realized-target/`partially_scored` resumption path, so an archive-heavy 30d
+horizon no longer holds a single tick open past the watchdog window. Wire
+formats, resolved values, scoring math, and aggregation are unchanged. Its
+watched-tree digest is
+`3904a799a6560082a05b0ff62274cf4c71547cf1f5dfd0311418d2f4e574ef14`.
+Its public lease authority receipt is SHA-256 over the UTF-8 lines
+`LEASE_AUTHORITY`,
+`PREVIOUS_RECEIPT=c4aa1b087b26039b30524093943467ae5074939aaf35c43c87fcb79ffc66ae13`,
+`CURRENT_VERSION_KEY=30`, and
+`CURRENT_VERSION_DIGEST=3904a799a6560082a05b0ff62274cf4c71547cf1f5dfd0311418d2f4e574ef14`,
+each terminated by one LF byte. The resulting receipt is
+`77afcb26d890245818340f23cb191c3192d682664006fd9bf2d9251a7537a304`.
+No private ledger value is involved in any lease authority receipt.
