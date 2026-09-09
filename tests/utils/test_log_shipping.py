@@ -85,6 +85,18 @@ class TestJsonLineFormatter:
         assert payload["message"] == "round opened"
         assert "\n" not in line
 
+    def test_escapes_bidi_controls_and_stays_ascii(self) -> None:
+        # Given: a message carrying RTL-override and paragraph-separator
+        # controls that could reorder or forge terminal output if emitted raw.
+        line = JsonLineFormatter().format(
+            _record("safe\u202edesrever\u202c end\u2029next")
+        )
+
+        assert line.isascii()
+        assert "\u202e" not in line
+        payload = json.loads(line)
+        assert payload["message"] == "safe\u202edesrever\u202c end\u2029next"
+
 
 class TestBoundedQueueHandler:
     def test_drops_instead_of_blocking_when_full(self) -> None:
@@ -214,18 +226,23 @@ class TestResilientSyslogHandler:
         assert handler.dropped_frames == 3
 
     def test_unreachable_collector_drops_frames_without_raising(self) -> None:
-        dead_port_probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        dead_port_probe.bind(("127.0.0.1", 0))
-        dead_port = dead_port_probe.getsockname()[1]
-        dead_port_probe.close()
-        handler = ResilientSyslogHandler(
-            DrainTarget(scheme="syslog+tcp", host="127.0.0.1", port=dead_port),
-            timeout_seconds=0.5,
-        )
-        handler.setFormatter(SyslogFrameFormatter("endure-validator"))
+        # Given: a port held bound but never listening — connects are refused
+        # deterministically, and holding the socket open prevents another
+        # process from grabbing the port mid-test.
+        dead_port_holder = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        dead_port_holder.bind(("127.0.0.1", 0))
+        dead_port = dead_port_holder.getsockname()[1]
+        try:
+            handler = ResilientSyslogHandler(
+                DrainTarget(scheme="syslog+tcp", host="127.0.0.1", port=dead_port),
+                timeout_seconds=0.5,
+            )
+            handler.setFormatter(SyslogFrameFormatter("endure-validator"))
 
-        handler.emit(_record("nobody listening"))
-        handler.close()
+            handler.emit(_record("nobody listening"))
+            handler.close()
+        finally:
+            dead_port_holder.close()
 
         assert handler.dropped_frames == 1
 

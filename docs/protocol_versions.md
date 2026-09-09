@@ -105,7 +105,9 @@ first-parent staging lineage in commit
 format above produces
 `d8bd3956158777b7f4355e9298abe2a7d411ef42914b3d5520fdd4bc0edc5f71`.
 
-Key `30` is leased exclusively to the `v0.1.0-rc.2` candidate. It budgets
+Key `30` is leased exclusively to the `v0.1.0-rc.2`/`v0.1.0-rc.3` candidate
+line — `v0.1.0-rc.3` changes no watched protocol path, so the digest and
+lease receipt carry over unchanged. It budgets
 target resolution per validator tick: work exceeding the wall-clock resolution
 budget defers to the next tick through the persisted
 realized-target/`partially_scored` resumption path, so an archive-heavy 30d

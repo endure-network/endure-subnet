@@ -442,6 +442,20 @@ def _force_restart_if_rpc_abandoned(miner: Miner) -> None:
     os._exit(1)
 
 
+_WATCHDOG_TEARDOWN_GRACE_SECONDS = 60
+
+
+def _schedule_forced_exit_after_grace() -> threading.Timer:
+    # SystemExit only terminates the process once every non-daemon thread
+    # unwinds — and whatever killed the miner loop thread may have left one
+    # wedged. A daemon timer guarantees the supervisor gets a dead process to
+    # restart while still giving graceful teardown a bounded head start.
+    timer = threading.Timer(_WATCHDOG_TEARDOWN_GRACE_SECONDS, os._exit, args=(1,))
+    timer.daemon = True
+    timer.start()
+    return timer
+
+
 def main() -> None:
     try:
         configure_log_shipping("endure-miner")
@@ -466,6 +480,7 @@ def main() -> None:
                         bt.logging.error(
                             "miner watchdog exiting: miner loop thread exited"
                         )
+                        _schedule_forced_exit_after_grace()
                         raise SystemExit(1)
                     bt.logging.info(f"Miner running... {time.time()}")
                     stop.wait(5)

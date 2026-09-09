@@ -257,7 +257,7 @@
   "current_lease": {
     "authority_sha256": "77afcb26d890245818340f23cb191c3192d682664006fd9bf2d9251a7537a304",
     "digest": "3904a799a6560082a05b0ff62274cf4c71547cf1f5dfd0311418d2f4e574ef14",
-    "holder": "release/v0.1.0-rc.2",
+    "holder": "release/v0.1.0-rc.3",
     "key": 30
   },
   "previous_activation_id": "activation-0042",
