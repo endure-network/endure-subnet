@@ -1,6 +1,6 @@
 # Endure Subnet
 
-> **Experimental testnet alpha — `v0.1.0-rc.2` candidate.** Endure is not
+> **Experimental testnet alpha — `v0.1.0-rc.3` candidate.** Endure is not
 > production software, is not economically ready, and must not be used for
 > mainnet operation. Alpha Risk serving is code-gated to testnet pending the soak gate.
 > The current protocol key is `30` ([contract](endure/protocol/version_contract.py));

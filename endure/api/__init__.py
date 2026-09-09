@@ -27,15 +27,23 @@ class RoundResolutionHealth(TypedDict):
     overdue_rounds: list[RoundResolutionHealthDetail]
 
 
-def assessment_round_resolution_health(
+def assessment_round_resolution_health(  # noqa: PLR0913 — keyword-only classification knobs
     progress_rows: Sequence[AssessmentRoundResolutionProgress],
     horizons: Sequence[int],
     *,
     now: datetime,
     sample_limit: int,
     due_seconds: Mapping[int, int] | None = None,
+    overdue_grace_seconds: int = 0,
 ) -> RoundResolutionHealth:
-    """Classify unfinished rounds as expected pending or operationally overdue."""
+    """Classify unfinished rounds as expected pending or operationally overdue.
+
+    A horizon is overdue only once ``now`` passes ``due_at`` by more than
+    ``overdue_grace_seconds``: resolution runs in the first budgeted tick
+    after the due boundary, so "overdue" must mean the design window was
+    missed, not that the catch-up work is currently in flight. The reported
+    ``due_at`` stays the true due time either way.
+    """
     pending_rounds: list[RoundResolutionHealthDetail] = []
     overdue_rounds: list[RoundResolutionHealthDetail] = []
     pending_count = 0
@@ -54,7 +62,7 @@ def assessment_round_resolution_health(
                 "horizon_seconds": horizon,
                 "due_at": due_at.isoformat(),
             }
-            if now > due_at:
+            if now > due_at + timedelta(seconds=overdue_grace_seconds):
                 overdue_horizons.append(horizon_health)
             else:
                 pending_horizons.append(horizon_health)

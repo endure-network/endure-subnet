@@ -84,6 +84,52 @@ def test_main_hard_exits_when_watchdog_races_rpc_abandonment() -> None:
     hard_exit.assert_called_with(1)
 
 
+def test_main_arms_forced_exit_when_miner_loop_thread_dies() -> None:
+    from neurons.miner import main
+
+    miner = MagicMock()
+    miner.chain_rpc_restart_required.return_value = False
+    # Given: the miner loop thread has died without tripping the RPC latch.
+    miner.thread = None
+    context = MagicMock()
+    context.__enter__.return_value = miner
+
+    with (
+        patch(
+            "neurons.miner.install_shutdown_handlers",
+            return_value=threading.Event(),
+        ),
+        patch("neurons.miner.Miner", return_value=context),
+        patch("neurons.miner._schedule_forced_exit_after_grace") as forced_exit,
+        pytest.raises(SystemExit) as exit_info,
+    ):
+        main()
+
+    assert exit_info.value.code == 1
+    context.__exit__.assert_called_once()
+    # Then: a wedged non-daemon thread can outlive SystemExit's teardown; the
+    # watchdog path must arm the bounded hard-exit fallback.
+    forced_exit.assert_called_once()
+
+
+def test_forced_exit_after_grace_arms_a_daemon_timer() -> None:
+    import os
+
+    from neurons.miner import (
+        _WATCHDOG_TEARDOWN_GRACE_SECONDS,
+        _schedule_forced_exit_after_grace,
+    )
+
+    timer = _schedule_forced_exit_after_grace()
+    try:
+        assert timer.daemon is True
+        assert timer.interval == _WATCHDOG_TEARDOWN_GRACE_SECONDS
+        assert timer.function is os._exit
+        assert timer.args == (1,)
+    finally:
+        timer.cancel()
+
+
 def test_main_hard_exits_when_shutdown_signal_races_rpc_abandonment() -> None:
     from neurons.miner import main
 
@@ -825,12 +871,14 @@ def test_main_exits_nonzero_and_cleans_up_on_worker_failure() -> None:
             "neurons.miner.install_shutdown_handlers", return_value=threading.Event()
         ),
         patch("neurons.miner.Miner", return_value=context),
+        patch("neurons.miner._schedule_forced_exit_after_grace") as forced_exit,
         pytest.raises(SystemExit) as exit_info,
     ):
         main()
 
     assert exit_info.value.code == 1
     context.__exit__.assert_called_once()
+    forced_exit.assert_called_once()
 
 
 def test_main_stops_cleanly_when_the_shutdown_event_is_set() -> None:

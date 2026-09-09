@@ -7,7 +7,7 @@ from endure import _encode_spec_version
 
 
 def test_package_version_matches_fixed_width_encoder() -> None:
-    assert endure.__version__ == "0.1.0rc2"
+    assert endure.__version__ == "0.1.0rc3"
     assert endure.__spec_version__ == _encode_spec_version(endure.__version__)
     assert endure.__spec_version__ == _encode_spec_version("0.1.0")
 
