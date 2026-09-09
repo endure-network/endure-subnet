@@ -33,11 +33,6 @@ _MAX_ABANDONED_GENERATIONS = 3
 
 
 @runtime_checkable
-class _Closable(Protocol):
-    def close(self) -> None: ...
-
-
-@runtime_checkable
 class _FinalizedSubstrate(Protocol):
     def get_chain_finalised_head(self) -> str: ...
 

@@ -81,7 +81,7 @@ canonical.
 | `NO_COMMIT` or `HASH_MISMATCH` | Confirm durable state, the same nonce, and the exact committed bundle. |
 | Late commit/reveal | Synchronize the host clock and read the round windows from the validator. |
 | No validator axons | Confirm registration/permit state, validator health, and any `--endure.min_validator_stake_weight` floor, then allow metagraph synchronization. |
-| Pushes go out but no commit is ever acked (`0 validators hold it`) | Validators may enforce a minimum miner stake and reject under-staked hotkeys with `Insufficient stake` (the public testnet soak validator currently requires metagraph stake weight ≥ 0.3). Stake the miner hotkey above the floor, then keep the miner running — the rejection reason appears in the miner log. |
+| Pushes go out but no commit is ever acked (`0 validators hold it`) | Validators may enforce a minimum miner stake (`--endure.min_miner_stake`) and reject under-staked hotkeys with `Insufficient stake`. The public testnet soak validator's floor is deployment-configured (0.3 at the time of writing) and can change without a release; the authoritative signal is the rejection reason in the miner log. Stake the miner hotkey above the floor, then keep the miner running. |
 
 Optional remote logging (`ENDURE_LOG_DRAIN`) and JSON console output
 (`ENDURE_LOG_FORMAT=json`) work the same as for validators — see

@@ -66,13 +66,27 @@ metagraph axon discovery and consumer HTTP discovery.
 
 Alpha Risk intentionally keeps rounds open until both the 5-day and 30-day
 horizons resolve, so a steady-state backlog is expected. `/health` separates
-that backlog under `round_resolution`: `pending_rounds` have only future
-deadlines and do not degrade readiness; `overdue_rounds` are missing at least
-one marker after its deadline and return 503. The runtime
+that backlog under `round_resolution`: `pending_rounds` do not degrade
+readiness; `overdue_rounds` return 503. A horizon coming due is resolved by
+the first budgeted tick after the due boundary, which can legitimately take
+minutes of archive work, so a round only counts as overdue once its deadline
+is exceeded by a full worst-case tick: the configured
+`--endure.health_tick_max_duration_seconds` (default 1800). Until that grace
+elapses the round stays `pending`. The runtime
 `consecutive_resolution_failures` field is a current-process retry signal: it
 resets after a failure-free tick and on restart, so it is not a historical
 failure ledger. Use persisted horizon markers and the overdue classification
 when assessing old rounds.
+
+The health timing knobs are validated together at startup and refuse to boot
+when inconsistent: `--endure.health_tick_max_age_seconds` and
+`--endure.health_startup_grace_seconds` must each exceed
+`--endure.tick_seconds`, `--endure.health_tick_max_duration_seconds` must
+exceed `health_tick_max_age_seconds`, and
+`--endure.resolution_budget_seconds` must stay below
+`health_tick_max_duration_seconds` so a budgeted resolution pass can never
+outlive the watchdog window. Raising `health_tick_max_duration_seconds` also
+widens the overdue grace above.
 
 Weights are derived from resolved assessment scores and emitted through the
 validator lifecycle. Shared policy is defined in

@@ -314,6 +314,9 @@ class Validator(BaseValidatorNeuron):
                 if compression_enabled(self.config)
                 else {}
             ),
+            "overdue_grace_seconds": int(
+                self.config.endure.health_tick_max_duration_seconds
+            ),
             "last_set_weights_ok": self._last_set_weights_ok,
             "consecutive_set_weights_failures": self._consecutive_set_weights_failures,
             "weight_emission_degraded": weight_emission_degraded,

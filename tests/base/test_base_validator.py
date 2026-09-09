@@ -806,6 +806,30 @@ class TestRunSubtensorReconnect:
         finally:
             release.set()
 
+    def test_rebuild_wrap_failure_retains_existing_generation(
+        self,
+        validator: _ConcreteValidator,
+        mock_runtime_provider: MockRuntimeProvider,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        existing_subtensor = validator.subtensor
+        existing_gate = validator.rpc_gate
+        closeless_transport = object()
+        monkeypatch.setattr(
+            mock_runtime_provider,
+            "create_subtensor",
+            MagicMock(return_value=closeless_transport),
+        )
+        error_mock = MagicMock()
+        monkeypatch.setattr(bt.logging, "error", error_mock)
+
+        validator._reconnect_subtensor()
+
+        assert validator.subtensor is existing_subtensor
+        assert validator.rpc_gate is existing_gate
+        rendered = str(error_mock.call_args.args[0])
+        assert "existing generation retained" in rendered
+
     def test_run_marks_restart_required_at_third_abandonment(
         self,
         validator_config: bt.Config,
