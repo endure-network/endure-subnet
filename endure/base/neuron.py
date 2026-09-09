@@ -189,7 +189,24 @@ class BaseNeuron(ABC):
             )
             return
         old_subtensor = self.gated_subtensor
-        replacement_subtensor = GatedSubtensor(replacement, replacement_gate)
+        try:
+            replacement_subtensor = GatedSubtensor(replacement, replacement_gate)
+        except Exception as wrap_error:
+            replacement_gate.close_generation()
+            close = getattr(replacement, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception as close_error:
+                    bt.logging.debug(
+                        f"Closing unwrapped replacement failed: "
+                        f"{safe_error(close_error)}"
+                    )
+            bt.logging.error(
+                f"Subtensor rebuild failed to wrap the transport; existing "
+                f"generation retained: {safe_error(wrap_error)}"
+            )
+            return
         self.rpc_gate = replacement_gate
         self.gated_subtensor = replacement_subtensor
         self.subtensor = replacement_subtensor

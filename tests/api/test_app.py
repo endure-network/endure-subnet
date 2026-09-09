@@ -113,6 +113,7 @@ def _runtime(
     weight_emission_degraded: bool = False,
     rpc_degraded: bool = False,
     assessment_due_seconds: dict[int, int] | None = None,
+    overdue_grace_seconds: int | None = None,
 ) -> RuntimeHealth:
     runtime: RuntimeHealth = {
         "validator_loop_alive": validator_loop_alive,
@@ -142,6 +143,8 @@ def _runtime(
     }
     if assessment_due_seconds is not None:
         runtime["assessment_due_seconds"] = assessment_due_seconds
+    if overdue_grace_seconds is not None:
+        runtime["overdue_grace_seconds"] = overdue_grace_seconds
     return runtime
 
 
@@ -379,6 +382,63 @@ class TestRiskRoundResolutionHealth:
                 HORIZON_5D_SECONDS: 5,
                 HORIZON_30D_SECONDS: 10,
             }
+        )
+
+        response = TestClient(
+            build_app(
+                storage=storage,
+                schema_id=RISK_SCHEMA_ID,
+                publisher="risk",
+                runtime_health=lambda: runtime,
+            )
+        ).get("/health")
+
+        assert response.status_code == 200
+        assert response.json()["round_resolution"]["overdue_round_count"] == 0
+
+    def test_runtime_supplied_grace_overrides_default(
+        self, storage: Storage, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        reveal_close = self._open_round(storage)
+        monkeypatch.setattr(
+            "endure.api.app._utc_now", lambda: reveal_close + timedelta(seconds=66)
+        )
+        runtime = _runtime(
+            assessment_due_seconds={
+                HORIZON_5D_SECONDS: 5,
+                HORIZON_30D_SECONDS: 10,
+            },
+            overdue_grace_seconds=60,
+        )
+
+        response = TestClient(
+            build_app(
+                storage=storage,
+                schema_id=RISK_SCHEMA_ID,
+                publisher="risk",
+                runtime_health=lambda: runtime,
+            )
+        ).get("/health")
+
+        assert response.status_code == 503
+        [overdue] = response.json()["round_resolution"]["overdue_rounds"]
+        assert [item["horizon_seconds"] for item in overdue["overdue_horizons"]] == [
+            HORIZON_5D_SECONDS
+        ]
+
+    def test_runtime_supplied_grace_boundary_remains_pending(
+        self, storage: Storage, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        reveal_close = self._open_round(storage)
+        monkeypatch.setattr(
+            "endure.api.app._utc_now", lambda: reveal_close + timedelta(seconds=65)
+        )
+        runtime = _runtime(
+            assessment_due_seconds={
+                HORIZON_5D_SECONDS: 5,
+                HORIZON_30D_SECONDS: 10,
+            },
+            overdue_grace_seconds=60,
         )
 
         response = TestClient(

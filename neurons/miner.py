@@ -392,7 +392,11 @@ class Miner(BaseMinerNeuron):
             bt.logging.warning("Received a request without a dendrite or hotkey.")
             return True, "Missing dendrite or hotkey"
 
-        if synapse.dendrite.hotkey not in self.metagraph.hotkeys:
+        # One generation per admission check: resync_metagraph swaps
+        # self.metagraph atomically, so consecutive attribute reads could
+        # otherwise pair an index from one generation with another's arrays.
+        metagraph = self.metagraph
+        if synapse.dendrite.hotkey not in metagraph.hotkeys:
             if not self.config.blacklist.allow_non_registered:
                 bt.logging.trace(
                     f"Blacklisting unregistered hotkey {synapse.dendrite.hotkey}"
@@ -400,10 +404,10 @@ class Miner(BaseMinerNeuron):
                 return True, "Unrecognized hotkey"
             return False, "Unregistered callers allowed by config"
 
-        uid = self.metagraph.hotkeys.index(synapse.dendrite.hotkey)
+        uid = metagraph.hotkeys.index(synapse.dendrite.hotkey)
         if (
             self.config.blacklist.force_validator_permit
-            and not self.metagraph.validator_permit[uid]
+            and not metagraph.validator_permit[uid]
         ):
             bt.logging.warning(
                 f"Blacklisting a request from non-validator hotkey {synapse.dendrite.hotkey}"
@@ -420,11 +424,13 @@ class Miner(BaseMinerNeuron):
             bt.logging.warning("Received a request without a dendrite or hotkey.")
             return 0.0
 
-        if synapse.dendrite.hotkey not in self.metagraph.hotkeys:
+        # Same single-generation snapshot rationale as blacklist() above.
+        metagraph = self.metagraph
+        if synapse.dendrite.hotkey not in metagraph.hotkeys:
             return 0.0
 
-        caller_uid = self.metagraph.hotkeys.index(synapse.dendrite.hotkey)
-        priority = float(self.metagraph.S[caller_uid])
+        caller_uid = metagraph.hotkeys.index(synapse.dendrite.hotkey)
+        priority = float(metagraph.S[caller_uid])
         bt.logging.trace(
             f"Prioritizing {synapse.dendrite.hotkey} with value: {priority}"
         )

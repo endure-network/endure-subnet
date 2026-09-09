@@ -63,8 +63,10 @@ _EMPTY_SCORED_ROUNDS_HEALTH_THRESHOLD = 2
 # A horizon coming due is resolved by the first budgeted tick after the due
 # boundary, which can legitimately take minutes of archive work; with zero
 # grace the 2026-09-09 00:08Z soak probe read a healthy midnight catch-up as
-# degraded/503. One worst-case tick (the health_tick_max_duration_seconds
-# default) must elapse past due before "overdue" means a missed window.
+# degraded/503. One worst-case tick must elapse past due before "overdue"
+# means a missed window. The validator supplies its configured
+# health_tick_max_duration_seconds via runtime_health; this constant is only
+# the fallback for runtimes that do not report one (mock/dev builds).
 _OVERDUE_GRACE_SECONDS = 1800
 _RUNTIME_COUNTER_KEYS = (
     "consecutive_universe_failures",
@@ -119,6 +121,7 @@ class RuntimeHealth(TypedDict):
     failed_weight_submissions_total: NotRequired[int]
     rpc_gate: NotRequired[RpcGateHealth]
     assessment_due_seconds: NotRequired[dict[int, int]]
+    overdue_grace_seconds: NotRequired[int]
 
 
 @dataclass(frozen=True, slots=True)
@@ -348,7 +351,11 @@ def _register_core_routes(
                 due_seconds=(
                     None if runtime is None else runtime.get("assessment_due_seconds")
                 ),
-                overdue_grace_seconds=_OVERDUE_GRACE_SECONDS,
+                overdue_grace_seconds=(
+                    _OVERDUE_GRACE_SECONDS
+                    if runtime is None
+                    else runtime.get("overdue_grace_seconds", _OVERDUE_GRACE_SECONDS)
+                ),
             )
             payload["round_resolution"] = round_resolution
             degraded = round_resolution["overdue_round_count"] > 0
