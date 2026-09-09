@@ -340,7 +340,7 @@ class TestRiskRoundResolutionHealth:
     ) -> None:
         reveal_close = self._open_round(storage)
         monkeypatch.setattr(
-            "endure.api.app._utc_now", lambda: reveal_close + timedelta(seconds=6)
+            "endure.api.app._utc_now", lambda: reveal_close + timedelta(seconds=1806)
         )
         runtime = _runtime(
             assessment_due_seconds={
@@ -372,7 +372,7 @@ class TestRiskRoundResolutionHealth:
     ) -> None:
         reveal_close = self._open_round(storage)
         monkeypatch.setattr(
-            "endure.api.app._utc_now", lambda: reveal_close + timedelta(seconds=5)
+            "endure.api.app._utc_now", lambda: reveal_close + timedelta(seconds=1805)
         )
         runtime = _runtime(
             assessment_due_seconds={
@@ -392,6 +392,28 @@ class TestRiskRoundResolutionHealth:
 
         assert response.status_code == 200
         assert response.json()["round_resolution"]["overdue_round_count"] == 0
+
+    def test_midnight_catchup_within_grace_stays_healthy(
+        self, storage: Storage, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        reveal_close = self._open_round(storage)
+        monkeypatch.setattr(
+            "endure.api.app._utc_now",
+            lambda: reveal_close + timedelta(days=5, seconds=480),
+        )
+
+        response = TestClient(
+            build_app(storage=storage, schema_id=RISK_SCHEMA_ID, publisher="risk")
+        ).get("/health")
+
+        assert response.status_code == 200
+        health = response.json()["round_resolution"]
+        assert health["overdue_round_count"] == 0
+        [pending] = health["pending_rounds"]
+        assert [item["horizon_seconds"] for item in pending["pending_horizons"]] == [
+            HORIZON_5D_SECONDS,
+            HORIZON_30D_SECONDS,
+        ]
 
     def test_completed_short_horizon_reports_only_long_horizon_pending(
         self, storage: Storage, monkeypatch: pytest.MonkeyPatch
