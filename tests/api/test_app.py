@@ -75,7 +75,7 @@ class TestHealthAndSchemas:
         assert response.status_code == 200
         body = response.json()
         assert body["schema_id"] == FORGE_LENDING_SCHEMA_ID
-        assert body["version"] == "0.1.0rc2"
+        assert body["version"] == "0.1.0rc3"
         assert body["protocol_version_key"] == 30
         assert body["source_revision"] == "unknown"
         assert body["image_version"] == "dev"

@@ -10,7 +10,7 @@ so constants cannot drift outside the contract again.
 from pathlib import Path
 
 ACTIVATED_VERSION_REGISTRY_DIGEST = (
-    "6a59400fabcddcb541abdca37b5269178c5caa697277f6d0f74cdf1d692c398d"
+    "1cbd7fa973d7bb34bc8a112e3d289974dcc109c445c284c9ca50782bef08f9f8"
 )
 ACTIVATED_VERSION_HISTORY_DIGEST = (
     "0573cb986294ad81c79bc1f070476c7d194fdd211109631f60a346d442285a8d"
