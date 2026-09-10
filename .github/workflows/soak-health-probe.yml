@@ -14,6 +14,7 @@ jobs:
         env:
           SOAK_EXPECTED_SHA: ${{ vars.SOAK_EXPECTED_SHA }}
           SOAK_EXPECTED_PROTOCOL_KEY: ${{ vars.SOAK_EXPECTED_PROTOCOL_KEY }}
+          SOAK_EXPECTED_CONTENT_REVISION: ${{ vars.SOAK_EXPECTED_CONTENT_REVISION }}
           # A restart inside the last two probe intervals (5-minute cron)
           # reads as a red run: watchdog self-heals and crash loops must
           # surface here instead of hiding behind a recovered "ok" status.
@@ -27,12 +28,19 @@ jobs:
           : "${SOAK_EXPECTED_PROTOCOL_KEY:?SOAK_EXPECTED_PROTOCOL_KEY repo variable must be set}"
           expected_key="$SOAK_EXPECTED_PROTOCOL_KEY"
           [[ "$expected_key" =~ ^[0-9]+$ ]]
+          # source_revision/image_version are builder-attested build args; only
+          # content_revision hashes the sources actually running, so a stale
+          # image carrying correct build args fails here and nowhere else.
+          # Record the value at release time: python -m scripts.content_revision
+          : "${SOAK_EXPECTED_CONTENT_REVISION:?SOAK_EXPECTED_CONTENT_REVISION repo variable must be set}"
+          [[ "$SOAK_EXPECTED_CONTENT_REVISION" =~ ^[0-9a-f]{64}$ ]]
           body="$(
             curl --fail --show-error --silent --retry 3 --retry-all-errors \
               --retry-delay 5 --connect-timeout 10 --max-time 20 \
               https://api.testnet.endure.network/health
           )"
           jq --exit-status --arg sha "$SOAK_EXPECTED_SHA" \
+            --arg content "$SOAK_EXPECTED_CONTENT_REVISION" \
             --argjson key "$expected_key" \
             --argjson min_uptime "$SOAK_MIN_UPTIME_SECONDS" '
             .status == "ok"
@@ -40,5 +48,6 @@ jobs:
             and .protocol_version_key == $key
             and .source_revision == $sha
             and .image_version == ("sha-" + $sha)
+            and .content_revision == $content
             and (.runtime.process_uptime_seconds >= $min_uptime)
           ' <<<"$body"
