@@ -31,6 +31,12 @@ compatibility in [version_contract.py](../endure/protocol/version_contract.py).
 - A durable database location and a tested backup/restore procedure. Restarts
   resume durable round, commit, reveal, and scoring state only when this storage
   is retained.
+- Modest hardware — Endure does no GPU compute and runs as a single Python 3.12
+  process over SQLite, so CPU and memory needs are light. Size disk for
+  round/commit/reveal/scoring history that grows over time, and give the process
+  a low-latency link to the archive endpoint. Representative validator sizing is
+  deliberately unpublished until the testnet soak produces measured numbers (see
+  the [README](../README.md)).
 - A reachable axon and a separately exposed read API. Publish only the axon
   address required by Bittensor; put the HTTP API behind TLS, authentication or
   rate limits appropriate to your deployment.
@@ -97,6 +103,15 @@ state that misses a resolved coordinate receives a zero observation, which
 decays that coordinate's EMA; never-active expected miners have no EMA state to
 decay. See [assessment_orchestrator.py](../endure/scoring/assessment_orchestrator.py)
 and [the scoring fairness deltas](specs/2026-07-20-scoring-fairness-deltas.md#1--absence-aware-scoring).
+
+Until at least one coordinate resolves and scores, the validator abstains from
+weight emission rather than burning or emitting uniform weights: an all-zero
+score vector would otherwise fall through to the SDK's uniform fallback and
+inject noise into consensus. The same abstention holds whenever the configured
+market-data source is unreachable — resolution fails, no new scores land, and
+`/health` degrades — so a validator started before its archive endpoint is live
+stays up and serves commits/reveals but sets no weights. There is no
+burn-to-owner mode; emission resumes automatically once a coordinate scores.
 
 ## Optional log shipping
 
