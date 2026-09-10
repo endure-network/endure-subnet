@@ -24,6 +24,7 @@ import bittensor as bt
 from endure import __spec_version__ as spec_version
 from endure.base.rate_gate import (
     AdaptiveRpcGate,
+    ChainRpcRestartRequired,
     GatedSubtensor,
     RateLimited,
     RpcPriority,
@@ -33,7 +34,11 @@ from endure.runtime.types import RuntimeProvider
 
 # Sync calls set weights and also resyncs the metagraph.
 from endure.utils.config import add_args, check_config, config
-from endure.utils.logging import safe_endpoint_label, startup_config_summary
+from endure.utils.logging import (
+    safe_endpoint_label,
+    safe_error,
+    startup_config_summary,
+)
 from endure.utils.misc import ttl_get_block
 
 
@@ -116,6 +121,7 @@ class BaseNeuron(ABC):
         self._last_metagraph_sync: int | None = None
         self._last_weights_attempt: int | None = None
         self._consecutive_provider_throttles = 0
+        self._chain_rpc_restart_required = False
 
     @abstractmethod
     def run(self) -> None: ...
@@ -157,6 +163,44 @@ class BaseNeuron(ABC):
         finally:
             # A deferred RPC is normal control flow, never a reason to skip a checkpoint.
             self.save_state()
+
+    def chain_rpc_restart_required(self) -> bool:
+        """Report whether abandoned RPC workers require a hard process exit."""
+        return self._chain_rpc_restart_required
+
+    def _reconnect_subtensor(self, *, reason: str = "manual recovery") -> None:
+        bt.logging.warning(f"Rebuilding subtensor connection: {reason}")
+        replacement_gate = self.rpc_gate.replacement()
+        try:
+            replacement = replacement_gate.call(
+                RpcPriority.ESSENTIAL,
+                lambda: self.runtime_provider.create_subtensor(self.config),
+                operation_name="create_subtensor",
+                abandoned_result_cleanup=lambda subtensor: subtensor.close(),
+            )
+        except ChainRpcRestartRequired:
+            self._chain_rpc_restart_required = True
+            raise
+        except Exception as create_error:
+            replacement_gate.close_generation()
+            bt.logging.error(
+                f"Subtensor rebuild failed; existing generation retained: "
+                f"{safe_error(create_error)}"
+            )
+            return
+        old_subtensor = self.gated_subtensor
+        replacement_subtensor = GatedSubtensor(replacement, replacement_gate)
+        self.rpc_gate = replacement_gate
+        self.gated_subtensor = replacement_subtensor
+        self.subtensor = replacement_subtensor
+        try:
+            # Real method on bittensor.core.subtensor.Subtensor; hidden from
+            # pyright by the bt lazy-import facade (same gap as check_registered).
+            old_subtensor.close()
+        except Exception as close_error:
+            bt.logging.debug(
+                f"Closing wedged subtensor failed: {safe_error(close_error)}"
+            )
 
     def refresh_uid(self) -> None:
         """Re-derive ``uid`` from the current metagraph after a resync.

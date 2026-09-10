@@ -8,8 +8,11 @@ ARG ENDURE_SOURCE_REVISION="unknown"
 ARG ENDURE_SOURCE_URL="https://github.com/endure-network/endure-subnet"
 ARG ENDURE_IMAGE_VERSION="dev"
 
+# PYTHONPATH makes the /app copies win over site-packages, so the process runs
+# the checkout layout (`neurons/` beside `endure/`) that content_revision hashes.
 ENV ENDURE_SOURCE_REVISION=$ENDURE_SOURCE_REVISION \
-    ENDURE_IMAGE_VERSION=$ENDURE_IMAGE_VERSION
+    ENDURE_IMAGE_VERSION=$ENDURE_IMAGE_VERSION \
+    PYTHONPATH=/app
 
 LABEL org.opencontainers.image.revision=$ENDURE_SOURCE_REVISION \
       org.opencontainers.image.source=$ENDURE_SOURCE_URL \

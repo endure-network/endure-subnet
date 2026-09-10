@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "endure"
-version = "0.1.0rc1"
+version = "0.1.0rc3"
 description = "Endure — Bittensor risk-intelligence subnet"
 readme = "README.md"
 license = "MIT"

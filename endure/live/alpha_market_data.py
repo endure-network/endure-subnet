@@ -26,6 +26,7 @@ from async_substrate_interface.sync_substrate import SubstrateInterface
 
 from endure.live.sleeping import sleep_decimal
 from endure.protocol.risk_miner import LatestPoolObservation
+from endure.scoring.assessment_orchestrator import ResolutionDeadlineExceeded
 from endure.scoring.market_data import (
     SUBTENSOR_RESERVE_PRICE_SOURCE,
     AlphaMarketDataError,
@@ -49,6 +50,7 @@ LIVE_MARKET_DATA_TIMEOUT_WORKERS: Final = 1
 LIVE_MARKET_DATA_MAX_ABANDONED_WORKERS: Final = 3
 LIVE_MARKET_DATA_MAX_CONSECUTIVE_ARCHIVE_FAILURES: Final = 2
 LIVE_MARKET_DATA_RATE_LIMIT_COOLDOWN_SECONDS: Final = 60.0
+LIVE_MARKET_DATA_MIN_REQUEST_INTERVAL_SECONDS: Final = 0.5
 LIVE_MARKET_DATA_HEAD_CACHE_TTL_SECONDS: Final = 30.0
 LIVE_MARKET_DATA_MAX_SERIES_CACHE_ENTRIES: Final = 64
 LIVE_MARKET_DATA_SNAPSHOT_RETENTION_BLOCKS: Final = 30 * 24 * 60 * 60 // BLOCK_SECONDS
@@ -79,6 +81,7 @@ ARCHIVE_CONNECTION_FAILURES: Final = (
 
 
 _HTTP_TOO_MANY_REQUESTS: Final = 429
+_JSONRPC_RATE_LIMIT_CODE: Final = -32029
 
 
 def _is_archive_rate_limited(error: BaseException) -> bool:
@@ -89,6 +92,25 @@ def _is_archive_rate_limited(error: BaseException) -> bool:
     if getattr(response, "status_code", None) == _HTTP_TOO_MANY_REQUESTS:
         return True
     return str(_HTTP_TOO_MANY_REQUESTS) in str(error)
+
+
+def _is_archive_request_rate_limited(error: BaseException) -> bool:
+    # In-band throttling arrives as a well-formed JSON-RPC error (-32029 or a
+    # textual rate-limit message): the connection is healthy, never void it.
+    # Only SubstrateRequestException qualifies — a transport-level error whose
+    # text mentions rate limiting must still void the connection.
+    if not isinstance(error, SubstrateRequestException):
+        return False
+    if error.args:
+        payload = error.args[0]
+        if isinstance(payload, dict):
+            detail = payload.get("error")
+            if (
+                isinstance(detail, dict)
+                and detail.get("code") == _JSONRPC_RATE_LIMIT_CODE
+            ):
+                return True
+    return "rate limit" in str(error).lower()
 
 
 class SupportsInt(Protocol):
@@ -165,7 +187,7 @@ class BittensorSubnetInfoFetcher:
     before introducing any concurrent caller.
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 — keyword-only test-injection seams
         self,
         endpoint: str,
         *,
@@ -173,11 +195,22 @@ class BittensorSubnetInfoFetcher:
         subtensor: SubtensorLike | None = None,
         subtensor_factory: Callable[[], SubtensorLike] | None = None,
         now_fn: Callable[[], float] = time.monotonic,
+        min_request_interval_seconds: float = (
+            LIVE_MARKET_DATA_MIN_REQUEST_INTERVAL_SECONDS
+        ),
+        pace_sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         if request_timeout_seconds <= 0:
             raise AlphaMarketDataError("request_timeout_seconds must be positive")
+        if min_request_interval_seconds < 0:
+            raise AlphaMarketDataError(
+                "min_request_interval_seconds must be non-negative"
+            )
         self._request_timeout_seconds = request_timeout_seconds
         self._now_fn = now_fn
+        self._min_request_interval_seconds = min_request_interval_seconds
+        self._pace_sleep = pace_sleep
+        self._last_request_at: float | None = None
         self._cooldown_until = 0.0
         self._make_subtensor: Callable[[], SubtensorLike]
         if subtensor is not None:
@@ -286,17 +319,30 @@ class BittensorSubnetInfoFetcher:
         return substrate
 
     def _call_archive_operation[T](self, operation: Callable[[], T]) -> T:
+        self._pace_request()
         try:
             return self._call_with_timeout(operation)
         except Exception as error:  # noqa: BLE001 — SDK failures must void snapshots
             # The cached SDK connection may be poisoned after any operation error.
             # A 429 additionally guards the next reconnect behind the cooldown.
-            self._subtensor = None
-            self._substrate = None
+            if not _is_archive_request_rate_limited(error):
+                self._subtensor = None
+                self._substrate = None
             self._apply_rate_limit_cooldown(error)
             if isinstance(error, ARCHIVE_FETCH_FAILURES):
                 raise
             raise ConnectionError("archive operation failed") from error
+
+    def _pace_request(self) -> None:
+        # The archive enforces a per-second request budget; spacing submissions
+        # keeps a multi-thousand-query backfill under it instead of burning
+        # retries on -32029 rejections.
+        last = self._last_request_at
+        if last is not None:
+            wait = self._min_request_interval_seconds - (self._now_fn() - last)
+            if wait > 0:
+                self._pace_sleep(wait)
+        self._last_request_at = self._now_fn()
 
     def _call_with_timeout[T](self, operation: Callable[[], T]) -> T:
         with self._abandoned_workers_condition:
@@ -329,13 +375,15 @@ class BittensorSubnetInfoFetcher:
 class LiveAlphaPriceProvider:
     """Archive-backed Alpha price/reserve provider for the R6 served runtime."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 — keyword-only validator-wiring seams
         self,
         *,
         config: LiveAlphaPriceProviderConfig,
         fetcher: AlphaSubnetInfoFetcher | None = None,
         sleep: Sleeper = sleep_decimal,
         now_fn: Callable[[], float] = time.monotonic,
+        progress_fn: Callable[[], None] | None = None,
+        deadline_exceeded_fn: Callable[[], bool] | None = None,
     ) -> None:
         if config.max_attempts <= 0:
             raise AlphaMarketDataError("max_attempts must be positive")
@@ -349,6 +397,8 @@ class LiveAlphaPriceProvider:
         )
         self._sleep = sleep
         self._now_fn = now_fn
+        self._progress_fn = progress_fn
+        self._deadline_exceeded_fn = deadline_exceeded_fn
         self._snapshots: dict[tuple[int, int], AlphaPriceSnapshot] = {}
         self._series: OrderedDict[tuple[int, ResolutionWindow], AlphaPriceSeries] = (
             OrderedDict()
@@ -445,6 +495,15 @@ class LiveAlphaPriceProvider:
         consecutive_archive_failures = 0
         archive_unavailable = False
         for block in _canonical_blocks(window):
+            if self._deadline_exceeded_fn is not None and self._deadline_exceeded_fn():
+                # A 30d series is thousands of paced RPCs; the tick budget can
+                # expire mid-series. Fetched snapshots stay in _snapshots, so
+                # the resume tick re-enters warm. Deferral must not reach the
+                # unavailable-target grace path — that would void a resolvable
+                # coordinate — hence the dedicated exception.
+                raise ResolutionDeadlineExceeded(
+                    f"resolution budget exhausted mid-series netuid={netuid}"
+                )
             if block > current_block:
                 skipped_future_block = True
             result = self._snapshot_at(
@@ -563,7 +622,20 @@ class LiveAlphaPriceProvider:
             return _SnapshotFetchResult(snapshot=None, connection_available=True)
 
     def _with_retry[T](self, operation: Callable[[], T]) -> T:
+        # Attempt-level progress marks keep the watchdog honest: each attempt
+        # is bounded (request timeout + capped backoff), while a wedged thread
+        # stops marking and still trips it. The deadline check must live at
+        # the same granularity: boundary bisections alone are ~2x24 lookups
+        # with up to a ~68s retry ladder each, so a degraded archive could
+        # otherwise hold one tick far past the watchdog window before
+        # price_series ever runs.
         for attempt in range(1, self._config.max_attempts + 1):
+            if self._deadline_exceeded_fn is not None and self._deadline_exceeded_fn():
+                raise ResolutionDeadlineExceeded(
+                    "resolution budget exhausted during archive operation"
+                )
+            if self._progress_fn is not None:
+                self._progress_fn()
             try:
                 return operation()
             except ARCHIVE_FETCH_FAILURES as error:
@@ -572,6 +644,10 @@ class LiveAlphaPriceProvider:
                     if isinstance(error, LookupError):
                         raise LookupError(message) from None
                     raise ConnectionError(message) from None
+                bt.logging.warning(
+                    f"archive attempt {attempt}/{self._config.max_attempts} "
+                    f"failed; retrying: {safe_error(error)}"
+                )
                 self._sleep(
                     self._config.request_pause_seconds * (Decimal(2) ** (attempt - 1))
                 )

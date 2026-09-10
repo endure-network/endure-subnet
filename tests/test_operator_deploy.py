@@ -129,6 +129,10 @@ def test_runtime_images_embed_oci_source_identity() -> None:
         assert "org.opencontainers.image.revision=$ENDURE_SOURCE_REVISION" in dockerfile
         assert "org.opencontainers.image.source=$ENDURE_SOURCE_URL" in dockerfile
         assert "org.opencontainers.image.version=$ENDURE_IMAGE_VERSION" in dockerfile
+        # Without PYTHONPATH=/app the entrypoint imports `endure` from
+        # site-packages, where no `neurons/` sits beside it, and
+        # content_revision fails at boot instead of attesting the sources.
+        assert "PYTHONPATH=/app" in dockerfile
 
 
 def test_runtime_images_validate_release_identity_before_dependencies() -> None:
@@ -193,8 +197,8 @@ def test_release_identity_check_refuses_a_mismatched_version() -> None:
 
 def test_coolify_soak_compose_passes_exact_identity_as_build_args() -> None:
     expected = {
-        "ENDURE_SOURCE_REVISION": "${ENDURE_SOURCE_REVISION:-unknown}",
-        "ENDURE_IMAGE_VERSION": "${ENDURE_IMAGE_VERSION:-dev}",
+        "ENDURE_SOURCE_REVISION": "${SOURCE_COMMIT:-unknown}",
+        "ENDURE_IMAGE_VERSION": "sha-${SOURCE_COMMIT:-unknown}",
     }
     for relative_path, service in (
         ("deploy/soak/docker-compose.yaml", "validator"),

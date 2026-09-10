@@ -2,11 +2,66 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
+from functools import cache
+from pathlib import Path
 
 _UNKNOWN_REVISION = "unknown"
 _LOCAL_IMAGE_VERSION = "dev"
+
+# The installed `endure` package root. An image copies these sources verbatim,
+# so hashing them yields the same digest as hashing `endure/` in a checkout of
+# the commit the image was built from. The adjacent `neurons/` entrypoints ship
+# with every supported layout (checkout and image) and are equally executable,
+# so identity must cover them too.
+_PACKAGE_ROOT = Path(__file__).resolve().parents[1]
+_HASHED_SOURCE_ROOTS = (_PACKAGE_ROOT, _PACKAGE_ROOT.parent / "neurons")
+
+
+def hash_python_sources(root: Path) -> str:
+    """Return a stable sha256 over every `*.py` file under `root`.
+
+    Paths are sorted and hashed relative to `root`, so the digest depends only
+    on file names and contents, not on the absolute install location. The byte
+    separators keep the path/content boundary unambiguous. Interpreter caches
+    are excluded because they are build artifacts, not source.
+
+    Raises if `root` holds no sources, so a wrong path cannot be reported as a
+    confident digest of nothing.
+    """
+    digest = hashlib.sha256()
+    hashed = 0
+    for path in sorted(root.rglob("*.py")):
+        if "__pycache__" in path.parts:
+            continue
+        digest.update(path.relative_to(root).as_posix().encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+        digest.update(b"\0")
+        hashed += 1
+    if hashed == 0:
+        raise RuntimeError(f"no Python sources found under {root}")
+    return digest.hexdigest()
+
+
+@cache
+def content_revision() -> str:
+    """Return the digest of the `endure` and `neurons` sources this process runs.
+
+    Unlike `source_revision`, this is computed from the code itself rather than
+    declared by whoever built the image, so it cannot drift from what is
+    actually running. Reproduce it from a checkout of the same commit with
+    `python -m scripts.content_revision`.
+    """
+    digest = hashlib.sha256()
+    for root in _HASHED_SOURCE_ROOTS:
+        digest.update(root.name.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(hash_python_sources(root).encode("utf-8"))
+        digest.update(b"\0")
+    return digest.hexdigest()
 
 
 def runtime_identity() -> dict[str, str]:
@@ -27,4 +82,5 @@ def runtime_identity() -> dict[str, str]:
     return {
         "source_revision": source_revision,
         "image_version": image_version,
+        "content_revision": content_revision(),
     }

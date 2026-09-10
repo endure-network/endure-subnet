@@ -12,7 +12,7 @@ generic query.
 
 1. Clone the public repository and, with a Python 3.12 executable available,
    run `make bootstrap` to install the pinned uv `0.11.32` and Gitleaks. The
-   signed `v0.1.0-rc.1` tag is created only after live candidate acceptance.
+   signed `v0.1.0-rc.3` tag is created only after live candidate acceptance.
 2. Install the locked environment with `make dev-install` (`uv sync --locked
    --extra dev`; operators who need no test tooling can use `make install`
    instead). Then run
@@ -34,6 +34,12 @@ validator permit. Mock/local development keeps the configurable permissive
 behavior, but live operation ignores attempts to allow unregistered callers.
 The reference miner discovers permitted validator axons through the netuid-504
 metagraph. The separately hosted consumer API is not a miner routing endpoint.
+By default, every serving peer with a validator permit is eligible: the
+`--endure.min_validator_stake_weight` gate is `0` (disabled). Operators may set
+a positive floor against Bittensor's metagraph total stake weight (`S`), which
+combines alpha stake with discounted root TAO stake and is not a TAO balance.
+A positive floor can prevent low-weight validators from receiving every commit
+and reveal, so live miners emit a startup warning whenever it is active.
 
 Persist the miner's state directory across restarts. The persisted commit/reveal
 state is required to reveal the same bundle and nonce after a restart.
@@ -74,7 +80,12 @@ canonical.
 | `VERSION_MISMATCH` | Upgrade to the release matching [the protocol contract](../endure/protocol/version_contract.py). |
 | `NO_COMMIT` or `HASH_MISMATCH` | Confirm durable state, the same nonce, and the exact committed bundle. |
 | Late commit/reveal | Synchronize the host clock and read the round windows from the validator. |
-| No validator axons | Confirm registration/permit state and validator health, then allow metagraph synchronization. |
+| No validator axons | Confirm registration/permit state, validator health, and any `--endure.min_validator_stake_weight` floor, then allow metagraph synchronization. |
+| Pushes go out but no commit is ever acked (`0 validators hold it`) | Validators may enforce a minimum miner stake and reject under-staked hotkeys with `Insufficient stake` (the public testnet soak validator currently requires metagraph stake weight ≥ 0.3). Stake the miner hotkey above the floor, then keep the miner running — the rejection reason appears in the miner log. |
+
+Optional remote logging (`ENDURE_LOG_DRAIN`) and JSON console output
+(`ENDURE_LOG_FORMAT=json`) work the same as for validators — see
+[log shipping](validating.md#optional-log-shipping).
 
 For non-sensitive help, use the [miner support form](../.github/ISSUE_TEMPLATE/miner-support.yml)
 with commands, versions, redacted configuration, and redacted logs. Never post

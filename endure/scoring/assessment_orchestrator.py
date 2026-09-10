@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -19,6 +20,54 @@ from endure.assessment.schemas.wire import AggressiveDirection, DeviationMode
 from endure.scoring.context import TR_CONTEXT
 from endure.scoring.weights import ema_update, normalize_weights
 from endure.storage.repository import Storage
+
+_NANOSECONDS_PER_SECOND: Final = 1_000_000_000
+
+
+@dataclass(frozen=True, slots=True)
+class ResolutionBudget:
+    """Wall-clock cap on one tick's target-resolution work.
+
+    A 30d Alpha Risk horizon costs thousands of paced archive RPCs — far
+    more than the watchdog's per-tick duration window — so resolution must
+    yield between resolver calls and resume on the next tick via the
+    persisted realized-target/``partially_scored`` machinery. Deadlines are
+    integer monotonic nanoseconds: operational timing, not a risk value, and
+    the Decimal guardrail bans float in this path. ``None`` means unbudgeted
+    (dev runtimes and instant fixture providers).
+    """
+
+    deadline_monotonic_ns: int | None
+    now_ns_fn: Callable[[], int] = time.monotonic_ns
+
+    @classmethod
+    def unlimited(cls) -> ResolutionBudget:
+        return cls(deadline_monotonic_ns=None)
+
+    @classmethod
+    def starting_now(
+        cls, seconds: int, *, now_ns_fn: Callable[[], int] = time.monotonic_ns
+    ) -> ResolutionBudget:
+        return cls(
+            deadline_monotonic_ns=(now_ns_fn() + seconds * _NANOSECONDS_PER_SECOND),
+            now_ns_fn=now_ns_fn,
+        )
+
+    def exhausted(self) -> bool:
+        if self.deadline_monotonic_ns is None:
+            return False
+        return self.now_ns_fn() >= self.deadline_monotonic_ns
+
+
+UNLIMITED_RESOLUTION_BUDGET: Final = ResolutionBudget.unlimited()
+
+
+class ResolutionDeadlineExceeded(Exception):
+    """Raised by a resolver's data provider when the tick's resolution budget
+    expires mid-fetch. Distinct from data-unavailability on purpose: deadline
+    exhaustion must defer the coordinate to the next tick, never void it
+    through the unavailable-target grace path."""
+
 
 REALIZED_TARGET_RESOLVED = "resolved"
 REALIZED_TARGET_VOIDED = "voided"
@@ -243,12 +292,18 @@ class AssessmentScoringOrchestrator:
         resolution_due_at: datetime | None = None,
         archive_hotkeys: Sequence[str] = (),
         context: AssessmentResolutionContext = NEUTRAL_RESOLUTION_CONTEXT,
+        budget: ResolutionBudget = UNLIMITED_RESOLUTION_BUDGET,
     ) -> dict[str, Decimal]:
         _ = resolution_due_at
         scoring_horizon = self._single_horizon() if horizon is None else horizon
         if self._storage.has_assessment_resolution_marker(
             round_id, self._config.schema_id, scoring_horizon
         ):
+            return {}
+        if budget.exhausted():
+            # An exhausted budget at entry means this pass could resolve
+            # nothing; skip without recording so deferral stays a pure no-op
+            # (no empty scoring-pass writes, no zero-fill against absentees).
             return {}
         universe = self._storage.universe_for(round_id, self._config.schema_id)
         if universe is None:
@@ -266,7 +321,7 @@ class AssessmentScoringOrchestrator:
             target.coordinate for target in existing_targets
         )
         targets = self._resolve_targets(
-            context, netuids, scoring_horizon, existing_coordinates
+            context, netuids, scoring_horizon, existing_coordinates, budget
         )
         complete = expected_coordinates.issubset(
             existing_coordinates | {target.coordinate for target in targets}
@@ -401,6 +456,7 @@ class AssessmentScoringOrchestrator:
         netuids: Sequence[int],
         horizon: int,
         existing_coordinates: frozenset[AssessmentCoordinate],
+        budget: ResolutionBudget,
     ) -> list[AssessmentRealizedTarget]:
         targets: list[AssessmentRealizedTarget] = []
         for netuid in netuids:
@@ -408,7 +464,18 @@ class AssessmentScoringOrchestrator:
                 coordinate = self._config.coordinate_for(netuid, horizon, output.output)
                 if coordinate in existing_coordinates:
                     continue
-                target = output.resolver(context, netuid, horizon)
+                if budget.exhausted():
+                    # Truncated mid-pass: resolved targets are still recorded
+                    # (complete stays False, so no marker lands) and the next
+                    # tick resumes from the persisted coordinates.
+                    return targets
+                try:
+                    target = output.resolver(context, netuid, horizon)
+                except ResolutionDeadlineExceeded:
+                    # The provider hit the deadline inside a single series
+                    # fetch. Same deferral semantics as the pre-call check;
+                    # fetched snapshots stay cached for the resume tick.
+                    return targets
                 if target is not None:
                     targets.append(target)
         return targets

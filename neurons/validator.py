@@ -9,6 +9,8 @@ EMAs whenever scoring happens.
 """
 
 import asyncio
+import os
+import threading
 import time
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -18,8 +20,6 @@ from typing import TYPE_CHECKING, Final, Protocol, Tuple, runtime_checkable
 import bittensor as bt
 
 if TYPE_CHECKING:
-    import threading
-
     import uvicorn
 from alembic import command as alembic_command
 from alembic.config import Config as AlembicConfig
@@ -59,6 +59,7 @@ from endure.protocol.version_contract import CURRENT_VERSION_KEY
 from endure.protocol.vertical import AssessmentRoundProgram, VerticalRuntime
 from endure.runtime.identity import runtime_identity
 from endure.runtime.resolve import resolve_runtime_provider
+from endure.scoring.assessment_orchestrator import ResolutionBudget
 from endure.scoring.market_data import recorded_mainnet_fixture_provider
 from endure.scoring.policy import DEFAULT_PAYOUT_HALF_LIFE_ROUNDS
 from endure.scoring.risk.orchestrator import RiskScoringOrchestrator
@@ -79,6 +80,7 @@ from endure.utils.config import (
     require_explicit_netuid,
     require_serving_stage_allowed,
 )
+from endure.utils.log_shipping import configure_log_shipping
 from endure.utils.logging import safe_endpoint_label, safe_error
 
 _RECORDED_FIXTURE_NETUIDS: Final = (8, 44)
@@ -158,6 +160,21 @@ class Validator(BaseValidatorNeuron):
                 "endure.health_startup_grace_seconds must be greater than "
                 "endure.tick_seconds"
             )
+        if int(resolved_config.endure.health_tick_max_duration_seconds) <= int(
+            resolved_config.endure.health_tick_max_age_seconds
+        ):
+            raise RuntimeError(
+                "endure.health_tick_max_duration_seconds must be greater than "
+                "endure.health_tick_max_age_seconds"
+            )
+        if int(resolved_config.endure.resolution_budget_seconds) >= int(
+            resolved_config.endure.health_tick_max_duration_seconds
+        ):
+            raise RuntimeError(
+                "endure.resolution_budget_seconds must be less than "
+                "endure.health_tick_max_duration_seconds; a budget at or above "
+                "the watchdog window cannot prevent stale-tick restarts"
+            )
         super().__init__(
             config=resolved_config,
             runtime_provider=resolve_runtime_provider(resolved_config),
@@ -182,7 +199,12 @@ class Validator(BaseValidatorNeuron):
         self._last_tick_ok: str | None = None
         self._last_tick_monotonic: float | None = None
         self._last_tick_error: str | None = None
+        # Anchors the watchdog's generous window while a long tick/sync is in
+        # flight; None when the loop is between operations. See _tick_stale.
+        self._long_op_started_monotonic: float | None = None
         self._started_monotonic = time.monotonic()
+        self._current_tick_budget = ResolutionBudget.unlimited()
+        self._process_started_at = _utc_now().isoformat()
         self._api_server: uvicorn.Server | None = None
         self._api_thread: threading.Thread | None = None
         self._attach_handlers()
@@ -249,16 +271,24 @@ class Validator(BaseValidatorNeuron):
         )
         weight_emission_degraded = (
             gate.degraded
+            or gate.abandoned_generations > 0
             or self._consecutive_set_weights_failures > 0
             or unresolved_unconfirmed
             or deadline_overdue
             or fallback_overdue
             or unknown_block_open
         )
+        long_op_started = getattr(self, "_long_op_started_monotonic", None)
         return {
+            "process_started_at": self._process_started_at,
+            "process_uptime_seconds": int(time.monotonic() - self._started_monotonic),
             "validator_loop_alive": self._validator_loop_alive(),
             "tick_stale": self._tick_stale(),
             "seconds_since_last_tick": self._seconds_since_last_tick(),
+            "long_op_in_flight": long_op_started is not None,
+            "seconds_since_long_op_start": (
+                None if long_op_started is None else time.monotonic() - long_op_started
+            ),
             "consecutive_tick_failures": self._tick_failures,
             "last_tick_ok": self._last_tick_ok,
             "last_tick_error": self._last_tick_error,
@@ -309,6 +339,7 @@ class Validator(BaseValidatorNeuron):
                 "degraded": gate.degraded,
                 "rate_limited_total": gate.rate_limited_total,
                 "deferred_total": gate.deferred_total,
+                "abandoned_generations": gate.abandoned_generations,
             },
         }
 
@@ -321,8 +352,56 @@ class Validator(BaseValidatorNeuron):
             return None
         return time.monotonic() - self._last_tick_monotonic
 
+    def _new_tick_budget(self) -> ResolutionBudget:
+        self._current_tick_budget = ResolutionBudget.starting_now(
+            int(self.config.endure.resolution_budget_seconds)
+        )
+        return self._current_tick_budget
+
+    def _tick_budget_exhausted(self) -> bool:
+        return self._current_tick_budget.exhausted()
+
+    def _mark_tick_progress(self) -> None:
+        """Refresh tick liveness from bounded in-tick work, so a long catch-up
+        tick survives the watchdog while a wedged thread still trips it."""
+        self._last_tick_monotonic = time.monotonic()
+
+    def _begin_long_op(self) -> None:
+        # Keep the earliest anchor if a long operation is already in flight, so
+        # the generous window measures the whole run, not the latest bracket.
+        # getattr tolerates the base constructor's first sync(), which runs
+        # before Validator.__init__ finishes declaring its state fields.
+        if getattr(self, "_long_op_started_monotonic", None) is None:
+            self._long_op_started_monotonic = time.monotonic()
+
+    def _end_long_op(self) -> None:
+        # Heartbeat before clearing the marker: a watchdog read between the
+        # two writes must see a fresh tick, not the pre-long-op age with the
+        # generous-window marker already gone.
+        self._mark_tick_progress()
+        self._long_op_started_monotonic = None
+
+    def sync(self):
+        # Every chain RPC inside sync() is deadline-bounded by the rpc gate, so
+        # bracketing it with liveness marks is honest: a wedged gate operation
+        # still raises within its deadline instead of marking forever, while a
+        # slow-but-bounded sync no longer stacks its silence onto the tail of a
+        # long forward pass.
+        self._mark_tick_progress()
+        self._begin_long_op()
+        try:
+            super().sync()
+        finally:
+            self._end_long_op()
+            self._mark_tick_progress()
+
     def _tick_stale(self) -> bool:
         now = time.monotonic()
+        long_op_started = getattr(self, "_long_op_started_monotonic", None)
+        if long_op_started is not None:
+            return now - long_op_started > int(
+                self.config.endure.health_tick_max_duration_seconds
+            )
         if self._last_tick_monotonic is None:
             return now - self._started_monotonic > int(
                 self.config.endure.health_startup_grace_seconds
@@ -444,6 +523,7 @@ class Validator(BaseValidatorNeuron):
             now_fn=_utc_now,
             max_universe_targets=entry.max_universe_targets,
             round_program=round_program,
+            budget_factory=self._new_tick_budget,
         )
 
     def _blacklist(self, synapse: bt.Synapse) -> Tuple[bool, str]:
@@ -876,6 +956,7 @@ class Validator(BaseValidatorNeuron):
 
     async def forward(self) -> None:
         """One round-service tick; updates scores when new resolutions land."""
+        self._begin_long_op()
         try:
             weights = await asyncio.to_thread(
                 self._service.tick,
@@ -898,6 +979,7 @@ class Validator(BaseValidatorNeuron):
                 f"{safe_error(error)}"
             )
         finally:
+            self._end_long_op()
             # Heartbeat means the loop completed an attempt, not that external
             # work succeeded. Failure counters degrade /health separately;
             # only an unresponsive loop should trigger a forced restart.
@@ -939,7 +1021,9 @@ def _build_risk_vertical_runtime(validator: Validator) -> VerticalRuntime:
             live_provider = LiveAlphaPriceProvider(
                 config=LiveAlphaPriceProviderConfig(
                     endpoint=str(validator.config.endure.market_data_endpoint)
-                )
+                ),
+                progress_fn=validator._mark_tick_progress,
+                deadline_exceeded_fn=validator._tick_budget_exhausted,
             )
 
             def live_reveal_close_block(reveal_close: datetime) -> int:
@@ -1008,8 +1092,33 @@ def _build_forge_vertical_runtime(validator: Validator) -> VerticalRuntime:
     )
 
 
+def _force_restart_if_rpc_abandoned(validator: Validator) -> None:
+    if validator.chain_rpc_restart_required() is not True:
+        return
+    bt.logging.error(
+        "validator forcing process restart after chain RPC "
+        "abandonment capacity was reached"
+    )
+    os._exit(1)
+
+
+_WATCHDOG_TEARDOWN_GRACE_SECONDS = 60
+
+
+def _schedule_forced_exit_after_grace() -> threading.Timer:
+    # SystemExit only terminates the process once every non-daemon thread
+    # unwinds — and the wedged tick worker that trips the watchdog may never
+    # return. A daemon timer guarantees the supervisor gets a dead process to
+    # restart while still giving graceful teardown a bounded head start.
+    timer = threading.Timer(_WATCHDOG_TEARDOWN_GRACE_SECONDS, os._exit, args=(1,))
+    timer.daemon = True
+    timer.start()
+    return timer
+
+
 def main() -> None:
     try:
+        configure_log_shipping("endure-validator")
         identity = runtime_identity()
         bt.logging.info(
             "runtime identity "
@@ -1019,13 +1128,28 @@ def main() -> None:
         )
         stop = install_shutdown_handlers()
         validator = Validator()
-        with validator:
-            while not stop.is_set():
-                if (reason := validator.watchdog_exit_reason()) is not None:
-                    bt.logging.error(f"validator watchdog exiting: {reason}")
-                    raise SystemExit(1)
-                bt.logging.info(f"Validator running... {time.time()}")
-                stop.wait(5)
+        try:
+            with validator:
+                while not stop.is_set():
+                    _force_restart_if_rpc_abandoned(validator)
+                    if (reason := validator.watchdog_exit_reason()) is not None:
+                        # The worker may have died by latching between the check
+                        # above and this liveness probe; a plain SystemExit here
+                        # would take the normal exit the latch exists to prevent.
+                        _force_restart_if_rpc_abandoned(validator)
+                        bt.logging.error(f"validator watchdog exiting: {reason}")
+                        _schedule_forced_exit_after_grace()
+                        raise SystemExit(1)
+                    bt.logging.info(f"Validator running... {time.time()}")
+                    stop.wait(5)
+                # A shutdown signal that races the latch must not fall through
+                # to the normal exit the latch exists to prevent.
+                _force_restart_if_rpc_abandoned(validator)
+        finally:
+            # The RPC worker can also latch while __exit__ joins it — and
+            # __exit__ itself raises on incomplete cleanup, so this recheck
+            # must run on the exception path too, not only after a clean exit.
+            _force_restart_if_rpc_abandoned(validator)
         bt.logging.info("validator stopped on shutdown signal")
     except DevOnlyConfigError as error:
         bt.logging.error(f"validator refused to start: {safe_error(error)}")

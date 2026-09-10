@@ -17,6 +17,7 @@
 
 import argparse
 import asyncio
+import copy
 import sys
 import threading
 import traceback
@@ -26,6 +27,7 @@ from typing import Union
 import bittensor as bt
 
 from endure.base.neuron import BaseNeuron
+from endure.base.rate_gate import ChainRpcRestartRequired, ChainRpcStalled
 from endure.base.shutdown import join_thread_or_raise
 from endure.runtime.types import RuntimeProvider
 from endure.utils.config import add_miner_args
@@ -74,6 +76,7 @@ class BaseMinerNeuron(BaseNeuron):
         self.is_running: bool = False
         self.thread: Union[threading.Thread, None] = None
         self._shutdown_event = threading.Event()
+        self._metagraph_lock = threading.Lock()
         self.lock = asyncio.Lock()
 
     @abstractmethod
@@ -113,6 +116,11 @@ class BaseMinerNeuron(BaseNeuron):
             self.axon.serve(netuid=self.config.netuid, subtensor=self.subtensor)
             self.axon.start()
             bt.logging.info(f"Miner starting at block: {self.block}")
+        except ChainRpcRestartRequired as err:
+            bt.logging.error(f"chain RPC restart required: {safe_error(err)}")
+            self._chain_rpc_restart_required = True
+            self.should_exit = True
+            return
         except Exception as error:  # noqa: BLE001 - worker boundary must redact.
             bt.logging.error(f"Miner startup failed: {safe_error(error)}")
             bt.logging.debug(safe_error(traceback.format_exc()))
@@ -145,6 +153,15 @@ class BaseMinerNeuron(BaseNeuron):
                     last_sync_block = self.block
                     self.step += 1
 
+                except ChainRpcRestartRequired as err:
+                    bt.logging.error(f"chain RPC restart required: {safe_error(err)}")
+                    self._chain_rpc_restart_required = True
+                    self.should_exit = True
+                    break
+                except ChainRpcStalled as err:
+                    bt.logging.error(f"chain RPC stalled: {safe_error(err)}")
+                    self._reconnect_subtensor(reason=f"{err.operation_name} timeout")
+                    self._shutdown_event.wait(1)
                 # Unforeseen errors are logged per-iteration and the loop
                 # continues: a transient sync/metagraph/chain failure must not
                 # silently kill the miner service (mirrors the validator loop).
@@ -229,6 +246,8 @@ class BaseMinerNeuron(BaseNeuron):
         """Refresh the miner's metagraph view."""
         bt.logging.info("resync_metagraph()")
 
-        # Sync the metagraph.
-        self.metagraph.sync(subtensor=self.subtensor)
-        self.refresh_uid()
+        refreshed_metagraph = copy.deepcopy(self.metagraph)
+        refreshed_metagraph.sync(subtensor=self.subtensor)
+        with self._metagraph_lock:
+            self.metagraph = refreshed_metagraph
+            self.refresh_uid()

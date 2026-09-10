@@ -27,6 +27,7 @@ from endure.assessment.schemas.subnet_alpha_risk import (
 )
 from endure.protocol.canonical import canonical_bundle_bytes
 from endure.protocol.round_engine import DEFAULT_OFFSETS, compute_windows
+from endure.runtime.identity import content_revision
 from endure.scoring.assessment_orchestrator import REALIZED_TARGET_RESOLVED
 from endure.storage.repository import Storage
 from endure.storage.tables import rounds
@@ -74,10 +75,11 @@ class TestHealthAndSchemas:
         assert response.status_code == 200
         body = response.json()
         assert body["schema_id"] == FORGE_LENDING_SCHEMA_ID
-        assert body["version"] == "0.1.0rc1"
-        assert body["protocol_version_key"] == 29
+        assert body["version"] == "0.1.0rc3"
+        assert body["protocol_version_key"] == 30
         assert body["source_revision"] == "unknown"
         assert body["image_version"] == "dev"
+        assert body["content_revision"] == content_revision()
 
     def test_schemas_discovery(self, client: TestClient) -> None:
         response = client.get("/schemas")
@@ -105,6 +107,8 @@ def _runtime(
     validator_loop_alive: bool = True,
     tick_stale: bool = False,
     seconds_since_last_tick: float | None = 1.5,
+    long_op_in_flight: bool = False,
+    seconds_since_long_op_start: float | None = None,
     set_weights_failures: int = 0,
     weight_emission_degraded: bool = False,
     rpc_degraded: bool = False,
@@ -114,6 +118,8 @@ def _runtime(
         "validator_loop_alive": validator_loop_alive,
         "tick_stale": tick_stale,
         "seconds_since_last_tick": seconds_since_last_tick,
+        "long_op_in_flight": long_op_in_flight,
+        "seconds_since_long_op_start": seconds_since_long_op_start,
         "consecutive_tick_failures": tick_failures,
         "last_tick_ok": NOW,
         "last_tick_error": None,
@@ -131,6 +137,7 @@ def _runtime(
             "degraded": rpc_degraded,
             "rate_limited_total": 0,
             "deferred_total": 0,
+            "abandoned_generations": 0,
         },
     }
     if assessment_due_seconds is not None:
@@ -200,6 +207,18 @@ class TestRuntimeHealth:
 
         assert response.status_code == 503
         assert response.json()["status"] == "degraded"
+
+    def test_long_op_in_flight_is_ok_and_visible(self, storage: Storage) -> None:
+        response = self._client(
+            storage,
+            _runtime(long_op_in_flight=True, seconds_since_long_op_start=42.0),
+        ).get("/health")
+
+        assert response.status_code == 200
+        runtime = response.json()["runtime"]
+        assert runtime["long_op_in_flight"] is True
+        assert runtime["seconds_since_long_op_start"] == 42.0
+        assert runtime["tick_stale"] is False
 
     def test_rounds_not_opening_degrade_to_503(self, storage: Storage) -> None:
         response = self._client(storage, _runtime(universe_failures=2)).get("/health")
@@ -321,7 +340,7 @@ class TestRiskRoundResolutionHealth:
     ) -> None:
         reveal_close = self._open_round(storage)
         monkeypatch.setattr(
-            "endure.api.app._utc_now", lambda: reveal_close + timedelta(seconds=6)
+            "endure.api.app._utc_now", lambda: reveal_close + timedelta(seconds=1806)
         )
         runtime = _runtime(
             assessment_due_seconds={
@@ -353,7 +372,7 @@ class TestRiskRoundResolutionHealth:
     ) -> None:
         reveal_close = self._open_round(storage)
         monkeypatch.setattr(
-            "endure.api.app._utc_now", lambda: reveal_close + timedelta(seconds=5)
+            "endure.api.app._utc_now", lambda: reveal_close + timedelta(seconds=1805)
         )
         runtime = _runtime(
             assessment_due_seconds={
@@ -373,6 +392,28 @@ class TestRiskRoundResolutionHealth:
 
         assert response.status_code == 200
         assert response.json()["round_resolution"]["overdue_round_count"] == 0
+
+    def test_midnight_catchup_within_grace_stays_healthy(
+        self, storage: Storage, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        reveal_close = self._open_round(storage)
+        monkeypatch.setattr(
+            "endure.api.app._utc_now",
+            lambda: reveal_close + timedelta(days=5, seconds=480),
+        )
+
+        response = TestClient(
+            build_app(storage=storage, schema_id=RISK_SCHEMA_ID, publisher="risk")
+        ).get("/health")
+
+        assert response.status_code == 200
+        health = response.json()["round_resolution"]
+        assert health["overdue_round_count"] == 0
+        [pending] = health["pending_rounds"]
+        assert [item["horizon_seconds"] for item in pending["pending_horizons"]] == [
+            HORIZON_5D_SECONDS,
+            HORIZON_30D_SECONDS,
+        ]
 
     def test_completed_short_horizon_reports_only_long_horizon_pending(
         self, storage: Storage, monkeypatch: pytest.MonkeyPatch

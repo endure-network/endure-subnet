@@ -6,6 +6,8 @@ import re
 import threading
 import time
 from collections.abc import Callable, Iterator
+from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import TimeoutError as _FuturesTimeout
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -20,6 +22,14 @@ _MIN_ADAPTIVE_RATE = 1.0 / 60.0
 _MAX_RETRY_AFTER_SECONDS = 60.0
 _CR4_REVEAL_EVENT_ATTRIBUTE_COUNT = 2
 _MAX_COMMITMENT_EPOCHS = 100
+# Generous per-operation ceiling: a legitimate gated operation fans out to at
+# most tens of paced websocket frames (~2/s), so anything beyond this is a
+# stalled transport, not slow work. Observed in soak 2026-08-30: one hung
+# chain RPC froze the validator loop for 25 minutes until the watchdog killed
+# the process; a bounded call instead surfaces a failure the loop's
+# consecutive-failure reconnect machinery can recover from.
+_DEFAULT_OPERATION_TIMEOUT_SECONDS = 90.0
+_MAX_ABANDONED_GENERATIONS = 3
 
 
 @runtime_checkable
@@ -125,6 +135,10 @@ class MissingCr4ScheduleOperations(TypeError):
     pass
 
 
+class RpcGenerationAlreadyBound(RuntimeError):
+    pass
+
+
 class WeightEvidenceLimitExceeded(RuntimeError):
     pass
 
@@ -148,6 +162,33 @@ class RateLimited(Exception):
         return f"chain RPC deferred until monotonic {self.retry_after_monotonic}"
 
 
+@dataclass(slots=True)
+class ChainRpcStalled(Exception):
+    """A transport generation exceeded its deadline and was poisoned."""
+
+    operation_name: str
+    timeout_seconds: float
+
+    def __str__(self) -> str:
+        return (
+            f"chain RPC operation {self.operation_name!r} exceeded "
+            f"{self.timeout_seconds}s; transport generation was poisoned"
+        )
+
+
+@dataclass(slots=True)
+class ChainRpcRestartRequired(RuntimeError):
+    """The process exhausted its bounded allowance for abandoned workers."""
+
+    abandoned_generations: int
+
+    def __str__(self) -> str:
+        return (
+            "chain RPC abandoned-generation capacity reached "
+            f"({self.abandoned_generations}); process restart required"
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class RateGateSnapshot:
     """Small operator-facing view of the gate's current adaptive state."""
@@ -157,6 +198,15 @@ class RateGateSnapshot:
     retry_after_monotonic: float
     rate_limited_total: int
     deferred_total: int
+    abandoned_generations: int
+
+
+class _AbandonedGenerationState:
+    """Mutable count shared by every replacement transport generation."""
+
+    def __init__(self) -> None:
+        self.count = 0
+        self.condition = threading.Condition()
 
 
 class AdaptiveRpcGate:
@@ -167,9 +217,14 @@ class AdaptiveRpcGate:
         *,
         clock: Callable[[], float] = time.monotonic,
         sleeper: Callable[[float], None] = time.sleep,
+        operation_timeout_seconds: float = _DEFAULT_OPERATION_TIMEOUT_SECONDS,
+        _abandoned_state: _AbandonedGenerationState | None = None,
     ) -> None:
+        if operation_timeout_seconds <= 0:
+            raise ValueError("operation_timeout_seconds must be positive")
         self._clock = clock
         self._sleeper = sleeper
+        self._operation_timeout_seconds = operation_timeout_seconds
         self._initial_rate = 1.0
         self._adaptive_rate = self._initial_rate
         self._next_request_monotonic = 0.0
@@ -177,8 +232,59 @@ class AdaptiveRpcGate:
         self._rate_limited_total = 0
         self._deferred_total = 0
         self._lock = threading.Lock()
+        self._executor = self._new_executor()
+        self._generation_lock = threading.Lock()
+        self._transport_close: Callable[[], None] | None = None
+        self._transport_identity: int | None = None
+        self._poisoned_operation_name: str | None = None
+        self._abandoned_state = _abandoned_state or _AbandonedGenerationState()
 
-    def call[T](self, priority: RpcPriority, operation: Callable[[], T]) -> T:
+    @staticmethod
+    def _new_executor() -> ThreadPoolExecutor:
+        return ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="chain-rpc-generation"
+        )
+
+    def bind_transport_close(
+        self, close: Callable[[], None], *, transport_identity: int | None = None
+    ) -> None:
+        """Bind the websocket close operation owned by this worker generation."""
+        with self._generation_lock:
+            if self._transport_close is not None:
+                same_transport = (
+                    transport_identity is not None
+                    and self._transport_identity == transport_identity
+                ) or (transport_identity is None and self._transport_close == close)
+                if same_transport:
+                    return
+                raise RpcGenerationAlreadyBound
+            self._transport_close = close
+            self._transport_identity = transport_identity
+
+    def replacement(self) -> AdaptiveRpcGate:
+        """Create a fresh worker generation sharing the abandonment budget."""
+        replacement = type(self)(
+            clock=self._clock,
+            sleeper=self._sleeper,
+            operation_timeout_seconds=self._operation_timeout_seconds,
+            _abandoned_state=self._abandoned_state,
+        )
+        with self._lock:
+            replacement._adaptive_rate = self._adaptive_rate
+            replacement._next_request_monotonic = self._next_request_monotonic
+            replacement._retry_after_monotonic = self._retry_after_monotonic
+            replacement._rate_limited_total = self._rate_limited_total
+            replacement._deferred_total = self._deferred_total
+        return replacement
+
+    def call[T](
+        self,
+        priority: RpcPriority,
+        operation: Callable[[], T],
+        *,
+        operation_name: str = "chain_rpc",
+        abandoned_result_cleanup: Callable[[T], None] | None = None,
+    ) -> T:
         """Run one operation or raise a non-blocking scheduled-work signal."""
         reservation_monotonic: float | None = None
         while True:
@@ -199,7 +305,11 @@ class AdaptiveRpcGate:
                     break
             self._sleeper(pacing_delay)
         try:
-            result = operation()
+            result = self._call_bounded(
+                operation,
+                operation_name=operation_name,
+                abandoned_result_cleanup=abandoned_result_cleanup,
+            )
         except Exception as error:
             if not _is_rate_limited(error):
                 raise
@@ -217,16 +327,104 @@ class AdaptiveRpcGate:
                 self._record_success(success_observed_at, reservation_monotonic)
         return result
 
+    def _call_bounded[T](
+        self,
+        operation: Callable[[], T],
+        *,
+        operation_name: str,
+        abandoned_result_cleanup: Callable[[T], None] | None,
+    ) -> T:
+        # The lock gives each caller a full deadline after the prior serialized
+        # operation completes. The executor and websocket have identical
+        # lifetimes: timeout poisons both before any later caller can submit.
+        with self._generation_lock:
+            with self._abandoned_state.condition:
+                if self._abandoned_state.count >= _MAX_ABANDONED_GENERATIONS:
+                    raise ChainRpcRestartRequired(self._abandoned_state.count)
+            if self._poisoned_operation_name is not None:
+                raise ChainRpcStalled(
+                    operation_name=self._poisoned_operation_name,
+                    timeout_seconds=self._operation_timeout_seconds,
+                )
+            future = self._executor.submit(operation)
+            try:
+                return future.result(timeout=self._operation_timeout_seconds)
+            except _FuturesTimeout:
+                self._poisoned_operation_name = operation_name
+                future.cancel()
+                self._executor.shutdown(wait=False, cancel_futures=True)
+                if not future.cancelled():
+                    with self._abandoned_state.condition:
+                        self._abandoned_state.count += 1
+                    future.add_done_callback(
+                        lambda completed: self._complete_abandoned_generation(
+                            completed, abandoned_result_cleanup
+                        )
+                    )
+                close = self._transport_close
+                if close is not None:
+                    threading.Thread(
+                        target=self._close_poisoned_transport,
+                        args=(close,),
+                        name="chain-rpc-poison-close",
+                        daemon=True,
+                    ).start()
+                raise ChainRpcStalled(
+                    operation_name=operation_name,
+                    timeout_seconds=self._operation_timeout_seconds,
+                ) from None
+
+    @staticmethod
+    def _close_poisoned_transport(close: Callable[[], None]) -> None:
+        try:
+            close()
+        except Exception as error:  # noqa: BLE001 - timeout remains authoritative
+            bt.logging.debug(
+                f"chain RPC poisoned transport close failed: {type(error).__name__}"
+            )
+
+    def _complete_abandoned_generation[T](
+        self,
+        future: Future[T],
+        cleanup: Callable[[T], None] | None,
+    ) -> None:
+        try:
+            if cleanup is not None and not future.cancelled():
+                error = future.exception()
+                if error is None:
+                    cleanup(future.result())
+        except Exception as error:  # noqa: BLE001 - release the shared capacity.
+            bt.logging.debug(
+                f"chain RPC abandoned result cleanup failed: {type(error).__name__}"
+            )
+        finally:
+            with self._abandoned_state.condition:
+                self._abandoned_state.count -= 1
+                self._abandoned_state.condition.notify_all()
+
+    def close_generation(self) -> None:
+        """Reject new work, close the transport, and retire the worker."""
+        with self._generation_lock:
+            if self._poisoned_operation_name is None:
+                self._poisoned_operation_name = "closed"
+                close = self._transport_close
+                if close is not None:
+                    close()
+                self._executor.shutdown(wait=False, cancel_futures=True)
+
     def snapshot(self) -> RateGateSnapshot:
         """Return a stable health payload without exposing mutable gate state."""
         now = self._clock()
         with self._lock:
+            with self._abandoned_state.condition:
+                abandoned_generations = self._abandoned_state.count
             return RateGateSnapshot(
                 adaptive_rate=self._adaptive_rate,
                 degraded=now < self._retry_after_monotonic,
                 retry_after_monotonic=self._retry_after_monotonic,
                 rate_limited_total=self._rate_limited_total,
                 deferred_total=self._deferred_total,
+                abandoned_generations=abandoned_generations,
             )
 
     def ready(self) -> bool:
@@ -285,6 +483,16 @@ class GatedSubtensor(bt.Subtensor):
     def __init__(self, delegate: bt.Subtensor, gate: AdaptiveRpcGate) -> None:
         self._delegate = delegate
         self._gate = gate
+        close = getattr(delegate, "close", None)
+        if not callable(close):
+            raise MissingCloseOperation
+
+        def close_transport() -> None:
+            close()
+
+        self._gate.bind_transport_close(
+            close_transport, transport_identity=id(delegate)
+        )
         self._priority = ContextVar(
             f"rpc_priority_{id(self)}", default=RpcPriority.METAGRAPH
         )
@@ -300,16 +508,15 @@ class GatedSubtensor(bt.Subtensor):
 
     def close(self) -> None:
         """Close the live transport without scheduling it as chain work."""
-        delegate = self._delegate
-        if not isinstance(delegate, _Closable):
-            raise MissingCloseOperation
-        delegate.close()
+        self._gate.close_generation()
 
     def get_block_hash(self, block: int | None = None) -> str:
         delegate = self._weight_evidence_delegate()
         return str(
             self._gate.call(
-                self._priority.get(), lambda: delegate.get_block_hash(block)
+                self._priority.get(),
+                lambda: delegate.get_block_hash(block),
+                operation_name="get_block_hash",
             )
         )
 
@@ -319,6 +526,7 @@ class GatedSubtensor(bt.Subtensor):
             self._gate.call(
                 self._priority.get(),
                 lambda: delegate.commit_reveal_enabled(netuid=netuid),
+                operation_name="commit_reveal_enabled",
             )
         )
 
@@ -330,6 +538,7 @@ class GatedSubtensor(bt.Subtensor):
                 lambda: delegate.substrate.get_block_number(
                     delegate.substrate.get_chain_finalised_head()
                 ),
+                operation_name="finalized_block",
             )
         )
 
@@ -340,6 +549,7 @@ class GatedSubtensor(bt.Subtensor):
             lambda: delegate.get_hyperparameter(
                 param_name="LastUpdate", netuid=netuid, block=block
             ),
+            operation_name="last_updates_at",
         )
         if not isinstance(values, (list, tuple)):
             raise TypeError("LastUpdate must be a sequence")
@@ -352,6 +562,7 @@ class GatedSubtensor(bt.Subtensor):
         values = self._gate.call(
             self._priority.get(),
             lambda: delegate.weights(netuid=netuid, block=block),
+            operation_name="weights_at",
         )
         return tuple(
             (int(uid), tuple((int(target), int(weight)) for target, weight in row))
@@ -363,6 +574,7 @@ class GatedSubtensor(bt.Subtensor):
         neurons = self._gate.call(
             self._priority.get(),
             lambda: delegate.neurons_lite(netuid=netuid, block=block),
+            operation_name="hotkeys_at",
         )
         return tuple(
             sorted((int(neuron.uid), str(neuron.hotkey)) for neuron in neurons)
@@ -383,6 +595,7 @@ class GatedSubtensor(bt.Subtensor):
                     page_size=_MAX_COMMITMENT_EPOCHS,
                     max_results=_MAX_COMMITMENT_EPOCHS + 1,
                 ),
+                operation_name="timelocked_weight_commits_at",
             )
         )
         if len(records) > _MAX_COMMITMENT_EPOCHS:
@@ -405,6 +618,7 @@ class GatedSubtensor(bt.Subtensor):
                 lambda block=block: delegate.substrate.get_events(
                     delegate.get_block_hash(block)
                 ),
+                operation_name="timelocked_weight_reveals_between",
             )
             for record in events:
                 event = record.get("event", record)
@@ -436,10 +650,12 @@ class GatedSubtensor(bt.Subtensor):
         schedule = self._gate.call(
             self._priority.get(),
             lambda: delegate.get_epoch_schedule_state(netuid, block),
+            operation_name="get_epoch_schedule_state",
         )
         hyperparameters = self._gate.call(
             self._priority.get(),
             lambda: delegate.get_subnet_hyperparameters(netuid, block),
+            operation_name="get_subnet_hyperparameters",
         )
         return cr4_reveal_deadline_block(
             Cr4EpochSchedule(
@@ -502,6 +718,7 @@ class GatedSubtensor(bt.Subtensor):
                 .call(
                     super(GatedSubtensor, self).__getattribute__("_priority").get(),
                     lambda: attribute(*args, **kwargs),
+                    operation_name=name,
                 )
             )
 

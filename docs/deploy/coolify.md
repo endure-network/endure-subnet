@@ -48,12 +48,18 @@ Optional settings are `CHAIN` (default `test`), `MARKET_DATA_ENDPOINT`,
 URL must be stored as a Coolify secret and must use a host accepted by the
 runtime serving-stage guard.
 
-The compose files pass `ENDURE_SOURCE_REVISION` and `ENDURE_IMAGE_VERSION`
-through as Docker build arguments. Configure both as Coolify build-time
-variables, not runtime-only variables: use the full 40-hex source commit and
-`sha-<that commit>` respectively. Omitting both produces a local `dev` image;
-supplying only one fails the image build, and the soak health probe rejects a
-dev image.
+The compose files derive the `ENDURE_SOURCE_REVISION` and
+`ENDURE_IMAGE_VERSION` build arguments from Coolify's predefined
+`SOURCE_COMMIT` variable — the commit Coolify actually checked out — so an
+auto-deploy of a new branch tip cannot build new code under a stale label.
+`SOURCE_COMMIT` is required. Outside Coolify, export
+`SOURCE_COMMIT=$(git rev-parse HEAD)` before building; without it the compose
+files render the identity pair `unknown`/`sha-unknown`, which the image's
+release-identity check refuses. The former `ENDURE_SOURCE_REVISION` /
+`ENDURE_IMAGE_VERSION` manual fallback and the implicit `dev`-image default are
+no longer read by these compose files — Coolify's compose parser only supports
+single-level `${VAR:-default}` interpolation, so the identity must come from
+exactly one variable.
 
 ### Testnet wallet exception
 

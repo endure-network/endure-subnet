@@ -16,6 +16,10 @@ from endure.protocol.round_engine import DEFAULT_OFFSETS, compute_windows
 from endure.protocol.schedulers import FixedUtcScheduler, scheduler_for_schema
 from endure.protocol.validator_service import ValidatorRoundService
 from endure.protocol.vertical import AssessmentRoundProgram
+from endure.scoring.assessment_orchestrator import (
+    UNLIMITED_RESOLUTION_BUDGET,
+    ResolutionBudget,
+)
 from endure.storage.repository import Storage
 
 
@@ -45,7 +49,9 @@ class _RiskAssessmentScorer:
         now_iso: str,
         resolution_due_at: datetime | None = None,
         archive_hotkeys: Sequence[str] = (),
+        budget: ResolutionBudget = UNLIMITED_RESOLUTION_BUDGET,
     ) -> dict[str, Decimal]:
+        del budget
         assert resolution_due_at is not None
         self.resolution_calls.append((round_id, horizon, resolution_due_at))
         self._storage.record_assessment_scoring_pass(
