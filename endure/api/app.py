@@ -34,6 +34,7 @@ from prometheus_client import (
     generate_latest,
 )
 from prometheus_client.core import CounterMetricFamily
+from prometheus_client.registry import Collector
 
 from endure import __version__
 from endure.api import RoundResolutionHealth, assessment_round_resolution_health
@@ -161,7 +162,7 @@ class _CounterMetric:
 
 
 @dataclass(frozen=True, slots=True)
-class _CounterProjection:
+class _CounterProjection(Collector):
     metrics: tuple[_CounterMetric, ...]
 
     def collect(self) -> tuple[CounterMetricFamily, ...]:
