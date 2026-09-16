@@ -143,11 +143,11 @@ exists, the ported SDK processing in
 chain's `min_allowed_weights` hyperparameter: if the metagraph is smaller than
 that value it emits uniform weights, and if fewer positive-score miners exist
 than it requires, every registered UID is padded with a `1e-5` floor weight —
-both paths pay hotkeys the scoring layer gave zero. Testnet netuid `504`
-currently sets `min_allowed_weights = 1`, which makes both paths unreachable;
-verify the hyperparameter with `btcli` before operating on any other subnet,
-and treat `min_allowed_weights = 1` as a launch requirement wherever Endure
-controls the subnet.
+both paths pay hotkeys the scoring layer gave zero. A subnet whose
+`min_allowed_weights` hyperparameter is `1` makes both paths unreachable;
+verify the value with `btcli` before operating on any subnet, and treat
+`min_allowed_weights = 1` as a launch requirement wherever Endure controls
+the subnet.
 
 ## Optional log shipping
 
