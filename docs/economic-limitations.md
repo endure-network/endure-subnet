@@ -28,6 +28,14 @@ independence and does not prevent one operator from running multiple identical
 hotkeys. Consensus and emission calculations still treat registered hotkeys as
 independent participants.
 
+The live testnet soak illustrates that disclosure directly: Endure operates
+five identical reference-baseline miners alongside external participants, and
+while external coverage and history mature, those baselines draw the large
+majority of testnet emissions (about 97% in September 2026). This matches the
+calibration expectations for identical baselines against few differentiated
+competitors and is a soak reference signal, not evidence of independent miner
+economics.
+
 Duplicate/Sybil resistance, Alpha-specific economic acceptance criteria, at
 least two independently operated validators, and one complete 30-day
 resolution cycle are stable-release and mainnet blockers. No consumer should

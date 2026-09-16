@@ -40,8 +40,16 @@ compatibility in [version_contract.py](../endure/protocol/version_contract.py).
 - A reachable axon and a separately exposed read API. Publish only the axon
   address required by Bittensor; put the HTTP API behind TLS, authentication or
   rate limits appropriate to your deployment.
-- An archive endpoint passed through `--endure.market_data_endpoint`; redact it
-  in public reports if it contains credentials.
+- Two chain connections with different jobs. The subtensor connection
+  (`--subtensor.network`) carries metagraph sync, commit/reveal identity, and
+  weight extrinsics for netuid `504`; the archive market-data connection
+  (`--endure.market_data_endpoint`) resolves Alpha observables against
+  Bittensor **mainnet** and must reach an archive node. Budget them
+  separately: resolution is archive-query-heavy, and a shared or rate-limited
+  endpoint degrades scoring before it degrades liveness. Bittensor `>=10.3`
+  ignores `--subtensor.chain_endpoint`, so a custom subtensor RPC (for example
+  a keyed provider URL) must be passed as the `--subtensor.network` value
+  itself. Redact keyed endpoints in public reports.
 - A synchronized system clock. Keep coldkeys and all recovery material off the
   server and out of support requests.
 
@@ -94,6 +102,22 @@ exceed `health_tick_max_age_seconds`, and
 outlive the watchdog window. Raising `health_tick_max_duration_seconds` also
 widens the overdue grace above.
 
+Beyond `round_resolution`, monitor the `runtime` block of `/health`:
+
+| Field | Healthy | Alert when |
+| --- | --- | --- |
+| `validator_loop_alive`, `tick_stale` | `true`, `false` | the loop dies or ticks go stale — the process is up but not working |
+| `consecutive_tick_failures`, `consecutive_universe_failures`, `consecutive_resolution_failures` | `0` | values climb — persistent market-data or chain trouble |
+| `weight_emission_degraded`, `consecutive_set_weights_failures` | `false`, `0` | any degradation — emissions at risk |
+| `last_confirmed_weights_at` | advances regularly | it stalls for multiple epochs while positive scores exist |
+| `open_weight_submissions`, `oldest_open_weight_submission_age_blocks` | small, young | submissions age without confirmation |
+| `rpc_gate.degraded`, `rpc_gate.rate_limited_total` | `false`, stable | endpoint throttling — revisit the two-connection prerequisite |
+
+`failed_weight_submissions_total` is cumulative across the process lifetime,
+so only its growth rate is a signal. `/health` does not report which RPC
+endpoints the process is connected to; confirm endpoint identity from the
+deployment configuration, not from health output.
+
 Weights are derived from resolved assessment scores and emitted through the
 validator lifecycle. Shared policy is defined in
 [policy.py](../endure/scoring/policy.py), with EMA and normalization helpers in
@@ -112,6 +136,18 @@ market-data source is unreachable — resolution fails, no new scores land, and
 `/health` degrades — so a validator started before its archive endpoint is live
 stays up and serves commits/reveals but sets no weights. There is no
 burn-to-owner mode; emission resumes automatically once a coordinate scores.
+
+Abstention protects the all-zero case only. When at least one positive score
+exists, the ported SDK processing in
+[weight_utils.py](../endure/base/utils/weight_utils.py) must still satisfy the
+chain's `min_allowed_weights` hyperparameter: if the metagraph is smaller than
+that value it emits uniform weights, and if fewer positive-score miners exist
+than it requires, every registered UID is padded with a `1e-5` floor weight —
+both paths pay hotkeys the scoring layer gave zero. Testnet netuid `504`
+currently sets `min_allowed_weights = 1`, which makes both paths unreachable;
+verify the hyperparameter with `btcli` before operating on any other subnet,
+and treat `min_allowed_weights = 1` as a launch requirement wherever Endure
+controls the subnet.
 
 ## Optional log shipping
 
