@@ -44,6 +44,55 @@ and reveal, so live miners emit a startup warning whenever it is active.
 Persist the miner's state directory across restarts. The persisted commit/reveal
 state is required to reveal the same bundle and nonce after a restart.
 
+## Eligibility and the earnings timeline
+
+There is no minimum runtime, warm-up round count, or registration-age gate.
+Qualification is event-driven:
+
+1. Register the hotkey on netuid `504`.
+2. Clear the receiving validator's stake floor (`--endure.min_miner_stake`,
+   compared against metagraph total stake weight `S`). The floor is
+   deployment-configured per validator; see
+   [Troubleshooting](#troubleshooting-and-support) for the soak validator's
+   current value.
+3. Land one valid commit and matching reveal in the same round.
+
+Your first accepted round enters you into the scoring set defined by
+[the fairness deltas](specs/2026-07-20-scoring-fairness-deltas.md#1--absence-aware-scoring):
+`current submitters ∪ (active-EMA hotkeys ∩ historically eligible hotkeys)`.
+Nothing before that round is charged against you — a later joiner is never
+zero-filled retroactively. From that round onward, every expected coordinate
+you skip becomes a zero observation once it resolves.
+
+The payout clock that follows, using the shipped horizons (5 and 30 days) and
+EMA half-life (5 rounds):
+
+| Milestone | Time from first accepted submission |
+| --- | --- |
+| In the scoring set | immediately |
+| First resolved scores → first nonzero weight | ~6 days (the round's 5-day horizon resolves) |
+| 30-day coordinates begin contributing | ~31 days |
+| Track record saturated at your accuracy level | a few half-lives beyond each horizon's first resolution |
+
+Registration alone earns nothing: a hotkey that never lands an accepted round
+has no EMA state and receives zero weight. Weights follow the decaying track
+record, not single rounds — one missed round dents the EMA, and sustained
+absence decays every coordinate toward the archival threshold (`0.01`), after
+which the hotkey leaves the scoring set entirely.
+
+## Cover the full universe
+
+The round universe is every whitelisted netuid × both horizons × all four
+outputs. Read it per round from `/rounds/{round_id}/universe`; recent testnet
+rounds list 12 netuids, which yields 96 scored coordinates. Once you are in
+the scoring set, zero-fill applies to the whole universe: submitting only one
+horizon, or a subset of netuids, zero-fills the rest and scales your blended
+score down by the missing fraction before weight sharpening. Cubic sharpening
+then amplifies the gap — a miner matching another's accuracy on half the
+universe earns roughly one eighth of the weight, not one half. Submitting a
+defensible estimate for every coordinate strictly dominates skipping it: a
+scored attempt can only beat the zero the skip guarantees.
+
 ## Commit, reveal, and scoring
 
 For each frozen round universe, construct the Alpha Risk bundle, commit its
@@ -52,6 +101,21 @@ advertised reveal window. A reveal without that validator's commit, a late
 message, a version mismatch, or a changed bundle is rejected. Inspect
 `/rounds/{round_id}/universe` and the validator logs/API rather than guessing
 windows.
+
+The scheduler anchors each round to its `round_id` date
+([24x7 rounds spec](specs/2026-07-18-alpha-risk-24x7-rounds.md)):
+
+| Window | UTC |
+| --- | --- |
+| Commit opens | 11:00 |
+| Commit closes | 19:30 |
+| Observation anchor | 20:00 |
+| Reveal opens | 20:30 |
+| Reveal closes | 00:00 the following day |
+
+Horizons run from reveal close, so a round's 5-day coordinates resolve six
+calendar days after its commit morning. The persisted windows served by the
+validator remain authoritative.
 
 The schema defines the outputs, horizons, units, validation, and all numerical
 scoring definitions: [subnet_alpha_risk.py](../endure/assessment/schemas/subnet_alpha_risk.py).
@@ -72,6 +136,29 @@ The shared scoring policy is defined by
 [policy.py](../endure/scoring/policy.py) and the EMA/normalization helpers by
 [weights.py](../endure/scoring/weights.py). Code, not this guide, remains
 canonical.
+
+In plain terms, the incentive design pays for verified accuracy and nothing
+else:
+
+- Each coordinate scores your revealed value against the realized outcome. A
+  grace band absorbs small misses (for example 200 bps on drawdown, 500 bps on
+  volatility); beyond it the score falls linearly to zero at the cutoff. Bands
+  are asymmetric: calling an asset safer than it turned out to be — the
+  aggressive direction — hits the cutoff three times sooner than the cautious
+  miss.
+- Round results fold into a per-coordinate EMA with a five-round half-life:
+  payouts track a rolling record, not one lucky or unlucky day. Absence decays
+  it; archival removes fully decayed hotkeys.
+- Weights apply `gamma = 3` sharpening to blended records before
+  normalization, so sustained accuracy gaps compound: a `0.9` record out-earns
+  a `0.5` record roughly six to one, and near-zero records earn effectively
+  nothing.
+
+The constants above are protocol-key-`30` testnet values
+([policy.py](../endure/scoring/policy.py),
+[subnet_alpha_risk.py](../endure/assessment/schemas/subnet_alpha_risk.py)) and
+remain tunable before the serving freeze; see
+[economic limitations](economic-limitations.md).
 
 ## Troubleshooting and support
 

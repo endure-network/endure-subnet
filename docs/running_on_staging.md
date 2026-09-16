@@ -32,5 +32,20 @@ direct source operation or the
 images. The Endure team's current Coolify implementation remains a separate
 [maintainer runbook](deploy/coolify.md).
 
+## Testnet soak gate
+
+The soak gate is the promotion evidence the mainnet decision consumes. It
+passes when the deployed staging environment shows, over seven consecutive
+days with an unchanged deployed revision:
+
+- zero unexplained validator restarts (planned redeploys reset the window);
+- zero `overdue_rounds` in `/health`;
+- scheduled soak probes green outside a ten-minute post-restart grace window;
+- confirmed weight emissions on every day where positive scores existed.
+
+Any redeploy, revision change, or unexplained restart resets the seven-day
+clock. The gate is evaluated against probe history and persisted `/health`
+evidence, not operator recollection.
+
 Mainnet remains code-gated and requires a separate promotion decision after the
 testnet soak gate passes.
