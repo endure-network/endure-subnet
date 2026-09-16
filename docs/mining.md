@@ -83,8 +83,8 @@ which the hotkey leaves the scoring set entirely.
 ## Cover the full universe
 
 The round universe is every whitelisted netuid × both horizons × all four
-outputs. Read it per round from `/rounds/{round_id}/universe`; recent testnet
-rounds list 12 netuids, which yields 96 scored coordinates. Once you are in
+outputs. Read it per round from `/rounds/{round_id}/universe`; a 12-netuid
+whitelist yields 96 scored coordinates. Once you are in
 the scoring set, zero-fill applies to the whole universe: submitting only one
 horizon, or a subset of netuids, zero-fills the rest and scales your blended
 score down by the missing fraction before weight sharpening. Cubic sharpening
@@ -168,7 +168,7 @@ remain tunable before the serving freeze; see
 | `NO_COMMIT` or `HASH_MISMATCH` | Confirm durable state, the same nonce, and the exact committed bundle. |
 | Late commit/reveal | Synchronize the host clock and read the round windows from the validator. |
 | No validator axons | Confirm registration/permit state, validator health, and any `--endure.min_validator_stake_weight` floor, then allow metagraph synchronization. |
-| Pushes go out but no commit is ever acked (`0 validators hold it`) | Validators may enforce a minimum miner stake (`--endure.min_miner_stake`) and reject under-staked hotkeys with `Insufficient stake`. The public testnet soak validator's floor is deployment-configured (0.3 at the time of writing) and can change without a release; the authoritative signal is the rejection reason in the miner log. Stake the miner hotkey above the floor, then keep the miner running. |
+| Pushes go out but no commit is ever acked (`0 validators hold it`) | Validators may enforce a minimum miner stake (`--endure.min_miner_stake`) and reject under-staked hotkeys with `Insufficient stake`. The public testnet soak validator's floor is deployment-configured and can change without a release; the authoritative signal is the rejection reason in the miner log. Stake the miner hotkey above the floor, then keep the miner running. |
 
 Optional remote logging (`ENDURE_LOG_DRAIN`) and JSON console output
 (`ENDURE_LOG_FORMAT=json`) work the same as for validators — see
