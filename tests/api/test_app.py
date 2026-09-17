@@ -987,18 +987,26 @@ class TestPublicApiHardening:
         assert response.headers.get("access-control-allow-origin") == "*"
 
 
-@pytest.mark.parametrize("netuids", [None, (8, 44), ()])
+@pytest.mark.parametrize("mode", ["default", "subset", "empty"])
 def test_risk_leaderboard_filters_active_memory_but_raw_scores_preserve_it(
     storage: Storage,
-    netuids: tuple[int, ...] | None,
+    mode: str,
 ) -> None:
+    from endure.assessment.subnet_alpha_universe import ALPHA_RISK_WHITELISTED_NETUIDS
     from endure.scoring.risk.policy import active_risk_coordinates
 
+    active, other = ALPHA_RISK_WHITELISTED_NETUIDS[:2]
+    retired = next(
+        netuid
+        for netuid in range(1, len(ALPHA_RISK_WHITELISTED_NETUIDS) + 2)
+        if netuid not in ALPHA_RISK_WHITELISTED_NETUIDS
+    )
+    netuids = (active,) if mode == "subset" else ()
     for hotkey, netuid, value in (
-        ("mixed", 8, "0.2"),
-        ("mixed", 1, "1"),
-        ("retired", 1, "1"),
-        ("production", 3, "0.6"),
+        ("mixed", active, "0.2"),
+        ("mixed", retired, "1"),
+        ("retired", retired, "1"),
+        ("production", other, "0.6"),
     ):
         storage.upsert_assessment_ema(
             RISK_SCHEMA_ID,
@@ -1019,16 +1027,22 @@ def test_risk_leaderboard_filters_active_memory_but_raw_scores_preserve_it(
         schema_id=RISK_SCHEMA_ID,
         publisher="risk",
         active_coordinates=None
-        if netuids is None
+        if mode == "default"
         else active_risk_coordinates(netuids),
     )
     client = TestClient(app)
     rows = {row["miner_hotkey"]: row for row in client.get("/miners").json()}
     assert set(rows) == (
-        {"mixed", "production"} if netuids is None else {"mixed"} if netuids else set()
+        {"mixed", "production"}
+        if mode == "default"
+        else {"mixed"}
+        if mode == "subset"
+        else set()
     )
     if rows:
         assert Decimal(rows["mixed"]["blended_score"]) == Decimal("0.2")
-        assert all(row["target_id"] == "8" for row in rows["mixed"]["coordinate_emas"])
+        assert all(
+            row["target_id"] == str(active) for row in rows["mixed"]["coordinate_emas"]
+        )
     assert len(client.get("/miners/mixed/scores").json()["emas"]) == 2
     assert client.get("/miners/retired/scores").status_code == 200

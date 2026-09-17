@@ -205,14 +205,21 @@ def test_restart_recovers_committed_scores_after_uncheckpointed_crash(
 def test_restart_preserves_retired_memory_without_cached_payout(
     mock_validator_config: bt.Config,
 ) -> None:
+    from endure.assessment.subnet_alpha_universe import ALPHA_RISK_WHITELISTED_NETUIDS
     from neurons.validator import Validator
+
+    retired_netuid = next(
+        netuid
+        for netuid in range(1, len(ALPHA_RISK_WHITELISTED_NETUIDS) + 2)
+        if netuid not in ALPHA_RISK_WHITELISTED_NETUIDS
+    )
 
     _configure_risk_boot(mock_validator_config)
     storage = _migrated_storage(mock_validator_config)
     retired = AssessmentEmaState(
         "miner-hotkey-1",
         AssessmentCoordinate.subnet_asset(
-            netuid=1,
+            netuid=retired_netuid,
             horizon_seconds=HORIZON_5D_SECONDS,
             output=RiskOutput.MAX_DRAWDOWN.value,
         ),
