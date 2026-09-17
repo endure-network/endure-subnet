@@ -10,6 +10,7 @@ are stable wire strings.
 from __future__ import annotations
 
 from enum import StrEnum
+from typing import ClassVar
 
 import bittensor as bt
 
@@ -32,6 +33,13 @@ class RejectionCode(StrEnum):
 class SubmitCommit(bt.Synapse):
     """Commit-window message: hash now, contents later."""
 
+    required_hash_fields: ClassVar[tuple[str, ...]] = (
+        "round_id",
+        "schema_id",
+        "spec_version",
+        "bundle_hash",
+    )
+
     round_id: str
     schema_id: str
     spec_version: int
@@ -43,6 +51,14 @@ class SubmitCommit(bt.Synapse):
 
 class SubmitReveal(bt.Synapse):
     """Reveal-window message: canonical bundle JSON + commit nonce."""
+
+    required_hash_fields: ClassVar[tuple[str, ...]] = (
+        "round_id",
+        "schema_id",
+        "spec_version",
+        "bundle_json",
+        "nonce_hex",
+    )
 
     round_id: str
     schema_id: str
