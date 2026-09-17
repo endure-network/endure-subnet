@@ -1231,7 +1231,7 @@ class TestRiskScoringInputGuards:
 
 
 class TestRetiredCoordinates:
-    def test_preserved_state_and_late_settlement_do_not_restore_retired_emas(
+    def test_retirement_preserves_state_and_late_settlement_updates_memory(
         self, storage: Storage
     ) -> None:
         provider = _provider((1, 44))
@@ -1251,11 +1251,18 @@ class TestRetiredCoordinates:
             for state in storage.assessment_ema_states(RISK_SCHEMA_ID)
         } == {"1", "44"}
 
+        before = storage.assessment_ema_states(RISK_SCHEMA_ID)
+        retired_coordinate = _coordinate(1, RiskOutput.MAX_DRAWDOWN, RISK_HORIZONS[1])
+        storage.upsert_assessment_ema(
+            RISK_SCHEMA_ID,
+            AssessmentEmaState("hk-a", retired_coordinate, Decimal("0.6"), 4),
+            now_iso=NOW,
+        )
         current = _orchestrator(storage, provider)
         assert {
             state.coordinate.target_id
             for state in storage.assessment_ema_states(RISK_SCHEMA_ID)
-        } == {"44"}
+        } == {"1", "44"}
         assert (
             storage.assessment_score_history_for_round(ROUND, RISK_SCHEMA_ID)
             == old_history
@@ -1267,8 +1274,24 @@ class TestRetiredCoordinates:
         assert {
             state.coordinate.target_id
             for state in storage.assessment_ema_states(RISK_SCHEMA_ID)
-        } == {"44"}
+        } == {"1", "44"}
+        states = storage.assessment_ema_states(RISK_SCHEMA_ID)
+        settled = next(
+            state for state in states if state.coordinate == retired_coordinate
+        )
+        assert settled.resolved_rounds == 5
+        assert all(state in states for state in before)
         history = storage.assessment_score_history_for_round(ROUND, RISK_SCHEMA_ID)
+        from endure.scoring.weights import ema_update
+
+        observation = next(
+            row.round_score for row in history if row.coordinate == retired_coordinate
+        )
+        assert settled.ema == ema_update(
+            Decimal("0.6"), observation, half_life_rounds=2
+        )
+        current.resolve_and_score(ROUND, RISK_HORIZONS[1], now_iso=NOW)
+        assert storage.assessment_ema_states(RISK_SCHEMA_ID) == states
         assert {row.coordinate.target_id for row in history} == {"1", "44"}
         restarted = _orchestrator(storage, provider)
         assert restarted.blended_scores() == current.blended_scores()
@@ -1333,42 +1356,86 @@ class TestRetiredCoordinates:
         later, now = _round_for(7)
         _open_round_for(storage, later, (44,))
         orchestrator.resolve_and_score(later, RISK_HORIZONS[0], now_iso=now)
-        assert storage.assessment_ema_states(RISK_SCHEMA_ID) == []
+        remaining = storage.assessment_ema_states(RISK_SCHEMA_ID)
+        assert len(remaining) == 1
+        assert remaining[0].coordinate.target_id == "1"
+        assert remaining[0].ema == Decimal("1")
         assert orchestrator.weights() == {}
 
 
-def test_retired_launch_targets_require_an_explicit_reintroduction_policy() -> None:
-    from endure.assessment.subnet_alpha_universe import ALPHA_RISK_WHITELISTED_NETUIDS
-
-    # Re-adding one requires a reviewed epoch/cutoff policy for skipped releases
-    # and still-unresolved pre-retirement rounds; membership alone is insufficient.
-    assert not {1, 5, 11, 13, 19}.intersection(ALPHA_RISK_WHITELISTED_NETUIDS)
-
-
-def test_processed_retirement_cold_starts_mutable_coordinate_memory(
+def test_retired_memory_resumes_on_reintroduction_and_obeys_deregistration(
     storage: Storage,
 ) -> None:
     coordinate = _coordinate(1, RiskOutput.MAX_DRAWDOWN, RISK_HORIZONS[0])
-    storage.upsert_assessment_ema(
-        RISK_SCHEMA_ID,
-        AssessmentEmaState(
-            miner_hotkey="hk-a",
-            coordinate=coordinate,
-            ema=Decimal("1"),
-            resolved_rounds=100,
-        ),
-        now_iso=NOW,
-    )
-    _orchestrator(storage, _provider((44,)))
+    preserved = AssessmentEmaState("hk-a", coordinate, Decimal("0.8"), 100)
+    storage.upsert_assessment_ema(RISK_SCHEMA_ID, preserved, now_iso=NOW)
+    retired = _orchestrator(storage, _provider((44,)))
+    assert retired.blended_scores() == {}
+    assert retired.weights() == {}
+    restarted = _orchestrator(storage, _provider((44,)))
+    assert restarted.blended_scores() == {}
+    assert storage.assessment_ema_states(RISK_SCHEMA_ID) == [preserved]
     reintroduced = RiskScoringOrchestrator(
         storage=storage,
         price_provider=_provider((1,)),
         half_life_rounds=2,
         reveal_close_block=lambda _: WINDOW_START_BLOCK,
         active_netuids=(1,),
+        registered_hotkeys=lambda: ["hk-a"],
+    )
+    assert reintroduced.blended_scores() == {"hk-a": Decimal("0.8")}
+    assert reintroduced.weights() == {"hk-a": Decimal("1")}
+    assert storage.assessment_ema_states(RISK_SCHEMA_ID) == [preserved]
+    assert storage.archive_assessment_ema_horizon(
+        RISK_SCHEMA_ID, RISK_HORIZONS[0], ["hk-a"]
     )
     assert reintroduced.blended_scores() == {}
-    assert storage.assessment_ema_states(RISK_SCHEMA_ID) == []
+
+
+@pytest.mark.parametrize("low_active_memory", [False, True])
+def test_retired_only_miner_keeps_old_absence_obligations_but_not_new_ones(
+    storage: Storage,
+    low_active_memory: bool,
+) -> None:
+    provider = _provider((1, 44))
+    _open_round(storage, (1,))
+    _accept_risk_bundle(storage, hotkey="hk-a", netuids=(1,), provider=provider)
+    old = RiskScoringOrchestrator(
+        storage=storage,
+        price_provider=provider,
+        half_life_rounds=2,
+        reveal_close_block=lambda _: WINDOW_START_BLOCK,
+        active_netuids=(1,),
+    )
+    old.resolve_and_score(ROUND, RISK_HORIZONS[0], now_iso=NOW)
+    preserved = storage.assessment_ema_states(RISK_SCHEMA_ID)
+    current = _orchestrator(storage, provider)
+    new_round, new_now = _round_for(8)
+    _open_round_for(storage, new_round, (44,))
+    assert current.resolve_and_score(new_round, RISK_HORIZONS[0], now_iso=new_now) == {}
+    assert storage.assessment_ema_states(RISK_SCHEMA_ID) == preserved
+    if low_active_memory:
+        active_state = AssessmentEmaState(
+            "hk-a",
+            _coordinate(44, RiskOutput.MAX_DRAWDOWN, RISK_HORIZONS[0]),
+            Decimal("0.001"),
+            10,
+        )
+        storage.upsert_assessment_ema(RISK_SCHEMA_ID, active_state, now_iso=NOW)
+        preserved.append(active_state)
+    old_round, old_now = _round_for(7)
+    _open_round_for(storage, old_round, (1,))
+    assert current.resolve_and_score(old_round, RISK_HORIZONS[1], now_iso=old_now) == {
+        "hk-a": Decimal(0)
+    }
+    history = storage.assessment_score_history_for_round(old_round, RISK_SCHEMA_ID)
+    assert history and all(row.round_score == 0 for row in history)
+    assert current.blended_scores() == (
+        {"hk-a": Decimal("0.001")} if low_active_memory else {}
+    )
+    assert all(
+        state in storage.assessment_ema_states(RISK_SCHEMA_ID) for state in preserved
+    )
 
 
 def test_consensus_publication_uses_only_active_coordinate_memory(

@@ -136,6 +136,21 @@ def test_validator_wires_served_risk_schema_with_devnet_compression(
     assert validator._service._universe_provider.fetch_universe(
         "2026-08-25"
     ).tickers == ("8", "44")
+    from endure.scoring.risk.policy import active_risk_coordinates
+
+    assert validator._vertical_runtime.active_coordinates == active_risk_coordinates(
+        (8, 44)
+    )
+    validator.config.endure.api_port = 12345
+    with (
+        patch("endure.api.app.build_app") as build,
+        patch("uvicorn.Server"),
+        patch("threading.Thread"),
+    ):
+        validator._start_api()
+    assert build.call_args.kwargs["active_coordinates"] == active_risk_coordinates(
+        (8, 44)
+    )
 
 
 def test_validator_rejects_concurrent_risk_forwards(

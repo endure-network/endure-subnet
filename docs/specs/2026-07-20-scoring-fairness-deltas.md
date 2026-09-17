@@ -48,14 +48,16 @@ not retroactively change its consensus weight.
 
 ### Universe changes
 
-Retired coordinates no longer contribute to payout or consensus weights, or
-prevent inactivity pruning. Their mutable EMA state is removed; historical
-rounds still settle without restoring that active scoring memory.
+Only active coordinates contribute to payout, consensus weights and leaderboard
+shares. Retired EMA state is preserved and does not prevent active inactivity
+pruning; that pruning removes only active coordinates. Historical rounds still
+settle against their frozen universe, updating preserved EMAs and recording
+absence observations under the existing historical eligibility rule.
 
-Reintroducing a retired target requires a rule defining which rounds contribute
-to its new score. This must cover validators that skipped retirement and old
-rounds that remain unresolved. The current release does not support reintroducing
-targets 1, 5, 11, 13 or 19 by simply adding them back to the whitelist.
+Reintroducing a target resumes its preserved scores for still-registered miners,
+including forecasts settled during retirement. Restarting or skipping an
+intermediate release does not reset that memory. Existing confirmed
+deregistration archival still applies to all coordinates after settlement.
 
 ## 2 — Weight-emission audit trail
 

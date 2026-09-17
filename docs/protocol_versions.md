@@ -139,12 +139,12 @@ the top pools by TAO reserve plus operator picks, including this subnet's own
 netuid 30 rated under the same rules. The key was unserved on every network
 when the refresh folded in, so the lease re-folded at `2041` with a new
 digest instead of burning a key. Its watched-tree digest is
-`a86816bdf570948f6a54d64b9959787222af12f4cd050e2d6c0dd92b157d768d`. The public lease authority receipt uses
-`PREVIOUS_RECEIPT=77afcb26d890245818340f23cb191c3192d682664006fd9bf2d9251a7537a304`,
+`cff34d3f1747a8c9fb9397904ce61f64b65d4712631d78a61da87815def81319`. The public lease authority receipt uses
+`PREVIOUS_RECEIPT=dfd62d551c098305883e1b26e5070a4fc5893c38bce99788d21dc598f3772212`,
 `CURRENT_VERSION_KEY=2041`, and
-`CURRENT_VERSION_DIGEST=a86816bdf570948f6a54d64b9959787222af12f4cd050e2d6c0dd92b157d768d`
+`CURRENT_VERSION_DIGEST=cff34d3f1747a8c9fb9397904ce61f64b65d4712631d78a61da87815def81319`
 under the `LEASE_AUTHORITY` format above, producing
-`dfd62d551c098305883e1b26e5070a4fc5893c38bce99788d21dc598f3772212`.
+`925ce9126b35e8bc8a46125d87958f0b2e6a9e3afe4c87a58d705edcc3c8e878`.
 
 The jump from `30` to `2041` deliberately clears the observed SN30 on-chain
 minimum of `2040`; intermediate application keys need not be deployed. Stage
@@ -156,7 +156,7 @@ serving on any deployment, or qualify a release by itself. Wallet hotkeys remain
 per environment; a protocol version key is not a wallet key.
 
 Key `2041` also excludes retired Alpha Risk coordinates from active scoring and
-consensus weights while preserving historical round settlement. Validators
-remove obsolete EMA state on startup and clear cached scores when no eligible
-scores remain. See the [universe-change policy](specs/2026-07-20-scoring-fairness-deltas.md#universe-changes)
+consensus weights while preserving retired EMA memory and historical round
+settlement. Reintroduction resumes preserved scores under the existing
+registration rules; validators clear cached scores when no eligible scores remain. See the [universe-change policy](specs/2026-07-20-scoring-fairness-deltas.md#universe-changes)
 and [upgrade and rollback guidance](deploy/operator-node.md#rollback).

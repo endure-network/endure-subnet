@@ -200,3 +200,32 @@ def test_restart_recovers_committed_scores_after_uncheckpointed_crash(
         weights.get(hotkey, Decimal(0)) for hotkey in restarted.hotkeys
     ]
     assert any(score > Decimal(0) for score in restarted.scores)
+
+
+def test_restart_preserves_retired_memory_without_cached_payout(
+    mock_validator_config: bt.Config,
+) -> None:
+    from neurons.validator import Validator
+
+    _configure_risk_boot(mock_validator_config)
+    storage = _migrated_storage(mock_validator_config)
+    retired = AssessmentEmaState(
+        "miner-hotkey-1",
+        AssessmentCoordinate.subnet_asset(
+            netuid=1,
+            horizon_seconds=HORIZON_5D_SECONDS,
+            output=RiskOutput.MAX_DRAWDOWN.value,
+        ),
+        Decimal("0.9"),
+        10,
+    )
+    storage.upsert_assessment_ema(RISK_SCHEMA_ID, retired, now_iso=NOW)
+    storage._engine.dispose()
+    path = _state_path(mock_validator_config)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez(path, step=5, scores=np.array(["1"]), hotkeys=np.array(["miner-hotkey-1"]))
+    restarted = Validator(config=mock_validator_config)
+    assert restarted.scores == [Decimal(0)] * len(restarted.hotkeys)
+    assert restarted._blended_snapshot == {}
+    assert restarted._service.blended_snapshot() == {}
+    assert restarted._storage.assessment_ema_states(RISK_SCHEMA_ID) == [retired]

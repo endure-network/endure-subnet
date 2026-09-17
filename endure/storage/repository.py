@@ -1964,27 +1964,6 @@ class Storage:
         with self._engine.begin() as connection:
             self._upsert_assessment_ema(connection, schema_id, row, now_iso=now_iso)
 
-    def retire_assessment_ema_coordinates(
-        self, schema_id: str, *, active_coordinates: frozenset[AssessmentCoordinate]
-    ) -> None:
-        """Discard retired mutable scoring memory; preserve all historical audit rows."""
-        retired = {
-            state.coordinate
-            for state in self.assessment_ema_states(schema_id)
-            if state.coordinate not in active_coordinates
-        }
-        with self._engine.begin() as connection:
-            for coordinate in sorted(retired):
-                connection.execute(
-                    delete(assessment_miner_score_state).where(
-                        assessment_miner_score_state.c.schema_id == schema_id,
-                        *(
-                            assessment_miner_score_state.c[key] == value
-                            for key, value in _coordinate_values(coordinate).items()
-                        ),
-                    )
-                )
-
     def assessment_ema_states(self, schema_id: str) -> list[AssessmentEmaState]:
         with self._engine.connect() as connection:
             result = connection.execute(
@@ -2120,6 +2099,7 @@ class Storage:
         now_iso: str,
         archive_hotkeys: Sequence[str] = (),
         pruned_hotkeys: Sequence[str] = (),
+        pruned_coordinates: frozenset[AssessmentCoordinate] | None = None,
     ) -> None:
         """Persist one generic scoring pass atomically and idempotently.
 
@@ -2133,8 +2113,8 @@ class Storage:
 
         Confirmed deregistrations are removed only at the pass's horizon
         coordinates, after their zero-fill. Fully decayed hotkeys are removed
-        across all coordinates. Score history and output-score rows are never
-        deleted.
+        only across the supplied active coordinates (all coordinates when
+        unspecified). Retired memory, score history and output scores are preserved.
         """
         with self._engine.begin() as connection:
             marker = connection.execute(
@@ -2166,14 +2146,26 @@ class Storage:
                     connection, schema_id, horizon_value, archive_hotkeys
                 )
             if pruned_hotkeys:
-                connection.execute(
-                    delete(assessment_miner_score_state).where(
-                        assessment_miner_score_state.c.schema_id == schema_id,
-                        assessment_miner_score_state.c.miner_hotkey.in_(
-                            list(pruned_hotkeys)
-                        ),
-                    )
+                pruning = delete(assessment_miner_score_state).where(
+                    assessment_miner_score_state.c.schema_id == schema_id,
+                    assessment_miner_score_state.c.miner_hotkey.in_(
+                        list(pruned_hotkeys)
+                    ),
                 )
+                if pruned_coordinates is None:
+                    connection.execute(pruning)
+                else:
+                    for coordinate in sorted(pruned_coordinates):
+                        connection.execute(
+                            pruning.where(
+                                *(
+                                    assessment_miner_score_state.c[key] == value
+                                    for key, value in _coordinate_values(
+                                        coordinate
+                                    ).items()
+                                )
+                            )
+                        )
             if complete:
                 connection.execute(
                     sqlite_insert(assessment_horizon_resolutions)

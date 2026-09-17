@@ -105,8 +105,7 @@ validator, restore a copy without stale `-wal` or `-shm` files, run
 `PRAGMA integrity_check`, restart, and verify `/health` plus recent round data.
 
 Do not use `alembic downgrade` for rollback. Apply migrations forward and keep
-a restorable pre-deploy database snapshot. Protocol `2041` also removes retired
-EMA state on startup; see the [rollback guidance](operator-node.md#rollback).
+a restorable pre-deploy database snapshot.
 
 ## Runtime behavior
 

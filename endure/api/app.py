@@ -32,6 +32,7 @@ from endure import __version__
 from endure.api import assessment_round_resolution_health
 from endure.assessment.coordinates import (
     AssessmentConsensusRow,
+    AssessmentCoordinate,
     AssessmentEmaState,
     AssessmentRealizedTarget,
     AssessmentScoreHistoryRow,
@@ -42,6 +43,7 @@ from endure.protocol.version_contract import CURRENT_VERSION_KEY
 from endure.publication.risk_feed import Signer, build_signed_risk_feed
 from endure.runtime.identity import runtime_identity
 from endure.scoring.context import TR_CONTEXT
+from endure.scoring.risk.policy import active_risk_coordinates
 from endure.scoring.weights import normalize_weights
 from endure.storage.repository import (
     POST_EMBARGO_ROUND_STATES,
@@ -174,9 +176,15 @@ def _mean(values: list[Decimal]) -> Decimal:
 
 
 def _assessment_leaderboard(
-    storage: Storage, schema_id: str
+    storage: Storage,
+    schema_id: str,
+    active_coordinates: frozenset[AssessmentCoordinate] | None,
 ) -> list[dict[str, object]]:
-    states = storage.assessment_ema_states(schema_id)
+    states = (
+        state
+        for state in storage.assessment_ema_states(schema_id)
+        if active_coordinates is None or state.coordinate in active_coordinates
+    )
     by_hotkey: dict[str, list[AssessmentEmaState]] = {}
     for state in states:
         by_hotkey.setdefault(state.miner_hotkey, []).append(state)
@@ -315,7 +323,7 @@ def _ensure_embargo_lifted(meta: dict[str, object]) -> None:
     )
 
 
-def _register_core_routes(
+def _register_core_routes(  # noqa: PLR0913 — explicit read API dependencies
     app: FastAPI,
     storage: Storage,
     schema_id: str,
@@ -323,6 +331,7 @@ def _register_core_routes(
     /,
     *,
     runtime_health: Callable[[], RuntimeHealth] | None,
+    active_coordinates: frozenset[AssessmentCoordinate] | None,
 ) -> None:
     @app.get("/live")
     def live() -> dict[str, str]:
@@ -409,7 +418,7 @@ def _register_core_routes(
 
     @app.get("/miners")
     def miners_leaderboard() -> list[dict[str, object]]:
-        return _assessment_leaderboard(storage, schema_id)
+        return _assessment_leaderboard(storage, schema_id, active_coordinates)
 
     @app.get("/rounds/{round_id}")
     def round_meta(round_id: str) -> dict[str, object]:
@@ -516,12 +525,13 @@ def _register_risk_routes(
         )
 
 
-def build_app(
+def build_app(  # noqa: PLR0913 — explicit read API dependencies
     *,
     storage: Storage,
     schema_id: str,
     publisher: PublisherProjection,
     runtime_health: Callable[[], RuntimeHealth] | None = None,
+    active_coordinates: frozenset[AssessmentCoordinate] | None = None,
     publication_identity: PublicationIdentity = _UNSIGNED_PUBLICATION_IDENTITY,
 ) -> FastAPI:
     app = FastAPI(title="Endure Alpha Risk validator read API", version=__version__)
@@ -539,6 +549,11 @@ def build_app(
         schema_id,
         publisher,
         runtime_health=runtime_health,
+        active_coordinates=(
+            active_risk_coordinates()
+            if active_coordinates is None and publisher == "risk"
+            else active_coordinates
+        ),
     )
     _register_round_data_routes(app, storage, schema_id)
     _register_risk_routes(app, storage, publication_identity)

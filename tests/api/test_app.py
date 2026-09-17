@@ -985,3 +985,50 @@ class TestPublicApiHardening:
 
         assert response.status_code in (200, 204)
         assert response.headers.get("access-control-allow-origin") == "*"
+
+
+@pytest.mark.parametrize("netuids", [None, (8, 44), ()])
+def test_risk_leaderboard_filters_active_memory_but_raw_scores_preserve_it(
+    storage: Storage,
+    netuids: tuple[int, ...] | None,
+) -> None:
+    from endure.scoring.risk.policy import active_risk_coordinates
+
+    for hotkey, netuid, value in (
+        ("mixed", 8, "0.2"),
+        ("mixed", 1, "1"),
+        ("retired", 1, "1"),
+        ("production", 3, "0.6"),
+    ):
+        storage.upsert_assessment_ema(
+            RISK_SCHEMA_ID,
+            AssessmentEmaState(
+                hotkey,
+                AssessmentCoordinate.subnet_asset(
+                    netuid=netuid,
+                    horizon_seconds=HORIZON_30D_SECONDS,
+                    output=RiskOutput.MAX_DRAWDOWN.value,
+                ),
+                Decimal(value),
+                3,
+            ),
+            now_iso=NOW,
+        )
+    app = build_app(
+        storage=storage,
+        schema_id=RISK_SCHEMA_ID,
+        publisher="risk",
+        active_coordinates=None
+        if netuids is None
+        else active_risk_coordinates(netuids),
+    )
+    client = TestClient(app)
+    rows = {row["miner_hotkey"]: row for row in client.get("/miners").json()}
+    assert set(rows) == (
+        {"mixed", "production"} if netuids is None else {"mixed"} if netuids else set()
+    )
+    if rows:
+        assert Decimal(rows["mixed"]["blended_score"]) == Decimal("0.2")
+        assert all(row["target_id"] == "8" for row in rows["mixed"]["coordinate_emas"])
+    assert len(client.get("/miners/mixed/scores").json()["emas"]) == 2
+    assert client.get("/miners/retired/scores").status_code == 200

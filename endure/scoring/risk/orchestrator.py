@@ -48,6 +48,7 @@ from endure.scoring.risk.observables import (
     should_void_realized_window,
     twap_price_rao,
 )
+from endure.scoring.risk.policy import active_risk_coordinates
 from endure.storage.repository import Storage
 
 RevealCloseBlock = Callable[[datetime], int]
@@ -183,12 +184,7 @@ def build_risk_scoring_config(
     return AssessmentScoringConfig(
         schema_id=RISK_SCHEMA_ID,
         horizons=RISK_HORIZONS,
-        active_coordinates=frozenset(
-            risk_coordinate(netuid, horizon, output)
-            for netuid in active_netuids
-            for horizon in RISK_HORIZONS
-            for output in RiskOutput
-        ),
+        active_coordinates=active_risk_coordinates(active_netuids),
         universe_members=parse_alpha_risk_universe_members,
         accepted_values=lambda round_id: accepted_risk_values(storage, round_id),
         outputs=tuple(

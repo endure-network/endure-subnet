@@ -5,6 +5,8 @@ from __future__ import annotations
 from datetime import UTC, date, datetime
 from decimal import Decimal
 
+import pytest
+
 from endure.assessment.coordinates import (
     AssessmentConsensusRow,
     AssessmentCoordinate,
@@ -544,3 +546,31 @@ class TestRecordAssessmentScoringPass:
         assert not storage.assessment_realized_targets_for(
             ROUND, FORGE_LENDING_SCHEMA_ID
         )
+
+
+@pytest.mark.parametrize("bounded", [False, True])
+def test_inactivity_pruning_distinguishes_unrestricted_and_empty_coordinates(
+    storage: Storage,
+    bounded: bool,
+) -> None:
+    _open_lending_round(storage)
+    realized, scores, emas, history = _scoring_pass_rows()
+    storage.record_assessment_scoring_pass(
+        ROUND,
+        FORGE_LENDING_SCHEMA_ID,
+        horizon_value=LENDING_HORIZON_SECONDS,
+        realized_targets=realized,
+        output_scores=scores,
+        ema_updates=emas,
+        score_history=history,
+        now_iso=NOW,
+        pruned_hotkeys=["hk-a"],
+        pruned_coordinates=frozenset() if bounded else None,
+    )
+    assert storage.assessment_ema_states(FORGE_LENDING_SCHEMA_ID) == (
+        emas if bounded else []
+    )
+    assert (
+        storage.assessment_score_history_for_round(ROUND, FORGE_LENDING_SCHEMA_ID)
+        == history
+    )

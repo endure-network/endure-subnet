@@ -279,10 +279,6 @@ class AssessmentScoringOrchestrator:
         self._config = config
         self._half_life = half_life_rounds
         self._registered_hotkeys = registered_hotkeys
-        if config.active_coordinates is not None:
-            storage.retire_assessment_ema_coordinates(
-                config.schema_id, active_coordinates=config.active_coordinates
-            )
 
     def _eligible_coordinate(self, coordinate: AssessmentCoordinate) -> bool:
         return coordinate.output in {
@@ -291,6 +287,11 @@ class AssessmentScoringOrchestrator:
             self._config.active_coordinates is None
             or coordinate in self._config.active_coordinates
         )
+
+    @property
+    def active_coordinates(self) -> frozenset[AssessmentCoordinate] | None:
+        """Coordinates contributing to current payout and consensus blends."""
+        return self._config.active_coordinates
 
     @property
     def horizons(self) -> tuple[int, ...]:
@@ -349,9 +350,20 @@ class AssessmentScoringOrchestrator:
         previous_emas = {
             (state.miner_hotkey, state.coordinate): state
             for state in self._storage.assessment_ema_states(self._config.schema_id)
-            if self._eligible_coordinate(state.coordinate)
         }
-        previously_active = {hotkey for hotkey, _coordinate in previous_emas}
+        # Old rounds retain their absence obligations while their coordinates
+        # are retired. New rounds cannot reactivate retired-only miners.
+        round_coordinates = frozenset(
+            self._config.coordinate_for(netuid, prior_horizon, output.output)
+            for netuid in netuids
+            for prior_horizon in self._config.horizons
+            for output in self._config.outputs
+        )
+        previously_active = {
+            hotkey
+            for hotkey, coordinate in previous_emas
+            if self._eligible_coordinate(coordinate) or coordinate in round_coordinates
+        }
         historically_eligible = self._storage.assessment_hotkeys_eligible_for_round(
             self._config.schema_id, round_id
         )
@@ -412,9 +424,11 @@ class AssessmentScoringOrchestrator:
                         len(coordinate_scores)
                     )
 
-        zero_filled_hotkeys = {update.miner_hotkey for update in ema_updates} - set(
-            accepted_values
-        )
+        zero_filled_hotkeys = {
+            update.miner_hotkey
+            for update in ema_updates
+            if self._eligible_coordinate(update.coordinate)
+        } - set(accepted_values)
         pruned = _fully_decayed_hotkeys(
             zero_filled_hotkeys,
             previous=previous_emas,
@@ -427,16 +441,13 @@ class AssessmentScoringOrchestrator:
             horizon_value=scoring_horizon,
             realized_targets=targets,
             output_scores=output_scores,
-            ema_updates=[
-                state
-                for state in ema_updates
-                if self._eligible_coordinate(state.coordinate)
-            ],
+            ema_updates=ema_updates,
             score_history=history,
             complete=complete,
             now_iso=now_iso,
             archive_hotkeys=archive_hotkeys,
             pruned_hotkeys=sorted(pruned),
+            pruned_coordinates=self._config.active_coordinates,
         )
         return round_scores
 

@@ -436,6 +436,7 @@ class Validator(BaseValidatorNeuron):
             storage=self._storage,
             schema_id=self._schema_id,
             publisher=self._vertical_runtime.publisher,
+            active_coordinates=self._vertical_runtime.active_coordinates,
             runtime_health=self.runtime_health,
             publication_identity=PublicationIdentity(
                 signer=lambda payload: self.wallet.hotkey.sign(data=payload),
@@ -1067,6 +1068,7 @@ def _build_risk_vertical_runtime(validator: Validator) -> VerticalRuntime:
         ),
         publisher="risk",
         scheduler=scheduler,
+        active_coordinates=orchestrator.active_coordinates,
     )
 
 

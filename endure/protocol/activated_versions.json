@@ -261,8 +261,8 @@
     }
   ],
   "current_lease": {
-    "authority_sha256": "dfd62d551c098305883e1b26e5070a4fc5893c38bce99788d21dc598f3772212",
-    "digest": "a86816bdf570948f6a54d64b9959787222af12f4cd050e2d6c0dd92b157d768d",
+    "authority_sha256": "925ce9126b35e8bc8a46125d87958f0b2e6a9e3afe4c87a58d705edcc3c8e878",
+    "digest": "cff34d3f1747a8c9fb9397904ce61f64b65d4712631d78a61da87815def81319",
     "holder": "feat/universe-refresh-and-release-pipeline",
     "key": 2041
   },
