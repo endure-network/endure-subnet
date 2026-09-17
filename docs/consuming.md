@@ -67,6 +67,8 @@ consumer's use.
   `n_submitters`.
 - `tier` is derived from 30-day consensus medians and may be `unrated` until
   the required resolved history exists.
+- The rated universe includes Endure's own subnet (netuid 30), assessed under
+  the same rules and objective chain data as every other member.
 - `round_id` identifies the newest publication-eligible consensus round. During
   the next-round commit embargo the feed intentionally continues serving the
   prior eligible round.

@@ -132,13 +132,19 @@ first-parent staging lineage in commit
 Key `2041` is leased to the SN30 qualification candidate. Signed commit and
 reveal requests bind all request fields, and rejected reveal persistence is
 bounded by admission while accepted retries remain idempotent. Miners and
-validators must upgrade together. Its watched-tree digest is
-`257258a4bb7a3bc6073e5bbe223886a265caaf781e07b6a40721a80ac95e2737`. The public lease authority receipt uses
+validators must upgrade together. The candidate line also carries the
+mainnet-launch universe refresh: the Alpha Risk whitelist becomes the
+15-netuid tuple in `endure/assessment/subnet_alpha_universe.py`, selected as
+the top pools by TAO reserve plus operator picks, including this subnet's own
+netuid 30 rated under the same rules. The key was unserved on every network
+when the refresh folded in, so the lease re-folded at `2041` with a new
+digest instead of burning a key. Its watched-tree digest is
+`f51e52e15a67e404d584accef21de7e3b6965ad64d496bf28ce8c06094248151`. The public lease authority receipt uses
 `PREVIOUS_RECEIPT=77afcb26d890245818340f23cb191c3192d682664006fd9bf2d9251a7537a304`,
 `CURRENT_VERSION_KEY=2041`, and
-`CURRENT_VERSION_DIGEST=257258a4bb7a3bc6073e5bbe223886a265caaf781e07b6a40721a80ac95e2737`
+`CURRENT_VERSION_DIGEST=f51e52e15a67e404d584accef21de7e3b6965ad64d496bf28ce8c06094248151`
 under the `LEASE_AUTHORITY` format above, producing
-`7775b646e52efd097c94076d7dc85c38bebb10f03e53525e853b75b7e9d8c9b2`.
+`e0c18d0a76a9f3451876307b5634a39225abd511d0811a32fa22bb049dc3b458`.
 
 The jump from `30` to `2041` deliberately clears the observed SN30 on-chain
 minimum of `2040`; intermediate application keys need not be deployed. Stage
