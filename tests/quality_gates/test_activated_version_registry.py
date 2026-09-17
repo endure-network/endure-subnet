@@ -123,7 +123,7 @@ def test_registry_contains_exact_activation_history() -> None:
 
     assert payload["schema_version"] == 1
     assert actual == ACTIVATED_ASSIGNMENTS
-    assert payload["previous_activation_id"] == "activation-0042"
+    assert payload["previous_activation_id"] == "activation-0043"
 
 
 def test_source_bound_receipt_format_and_fields_are_cryptographically_sensitive() -> (
