@@ -165,7 +165,7 @@ def test_validator_refuses_served_risk_schema_on_finney(
     production_validator_config.neuron.axon_off = True
     production_validator_config.neuron.disable_set_weights = True
 
-    with _patched_chain(), pytest.raises(RuntimeError, match="R7 soak gate"):
+    with _patched_chain(), pytest.raises(RuntimeError, match="serving_stage mainnet"):
         Validator(config=production_validator_config)
 
 
@@ -219,7 +219,7 @@ def test_validator_serving_gate_prevents_axon_creation_on_finney(
     with (
         _patched_chain() as subtensor,
         patch("bittensor.Axon") as create_axon,
-        pytest.raises(RuntimeError, match="R7 soak gate"),
+        pytest.raises(RuntimeError, match="serving_stage mainnet"),
     ):
         Validator(config=production_validator_config)
 

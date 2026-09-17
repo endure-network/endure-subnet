@@ -149,7 +149,8 @@ under the `LEASE_AUTHORITY` format above, producing
 The jump from `30` to `2041` deliberately clears the observed SN30 on-chain
 minimum of `2040`; intermediate application keys need not be deployed. Stage
 the complete release on testnet first, then promote the same source and protocol
-key to mainnet after qualification and the separately authorized serving-gate
-change. This lease does not change either chain's configuration, activate
-mainnet serving, or qualify a release by itself. Wallet hotkeys remain distinct
+key to mainnet after qualification. The candidate opens the mainnet serving
+gate behind the explicit `--endure.serving_stage mainnet` acknowledgement.
+This lease does not change either chain's configuration, start mainnet
+serving on any deployment, or qualify a release by itself. Wallet hotkeys remain distinct
 per environment; a protocol version key is not a wallet key.

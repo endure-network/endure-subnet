@@ -119,9 +119,9 @@ PREVIOUS_VERSION_DIGEST = (
 # resolved values become identical across independent validators.
 # 2041: signed submissions bind all request fields; reveal persistence follows
 # bounded admission and accepted retries remain idempotent. Miners and validators
-# must deploy together. This shared release key clears the SN30 chain floor;
-# the mainnet serving gate remains unchanged. Includes the 15-netuid mainnet
-# universe refresh.
+# must deploy together. This shared release key clears the SN30 chain floor.
+# Includes the 15-netuid mainnet universe refresh; mainnet serving opens
+# behind the explicit --endure.serving_stage mainnet acknowledgement.
 CURRENT_VERSION_KEY = 2041
 CURRENT_VERSION_DIGEST = (
     "f51e52e15a67e404d584accef21de7e3b6965ad64d496bf28ce8c06094248151"
