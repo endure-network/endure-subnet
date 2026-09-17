@@ -39,9 +39,10 @@ hotkeys, then check the prompted fee and chain state before confirming:
 
 Register and stake the miner hotkey the same way. Validators may enforce a
 minimum miner stake (`MIN_MINER_STAKE`) and reject commits from under-staked
-hotkeys with `Insufficient stake`; the public testnet soak validator currently
-requires a metagraph stake weight of at least `0.3`, so stake the miner hotkey
-above that floor or its submissions will never be accepted.
+hotkeys with `Insufficient stake`; the public testnet soak validator's floor is
+deployment-configured (`0.3` at the time of writing) and can change without a
+release, so stake the miner hotkey above the current floor or its submissions
+will never be accepted — the rejection reason appears in the miner log.
 
 ## Validator first
 
