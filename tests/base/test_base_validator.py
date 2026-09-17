@@ -398,6 +398,42 @@ class TestUpdateScores:
 
 
 class TestResyncMetagraph:
+    def test_score_identity_survives_reconciliation_failure_and_retry(
+        self, validator: _ConcreteValidator, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        replaced_uid = next(
+            uid
+            for uid, hotkey in enumerate(validator.metagraph.hotkeys)
+            if hotkey != validator.wallet.hotkey.ss58_address
+        )
+        validator.scores = [Decimal("0.5")] * int(validator.metagraph.n)
+        axons = list(validator.metagraph.axons)
+        axons[replaced_uid] = dataclasses.replace(
+            axons[replaced_uid], hotkey="replacement-miner"
+        )
+
+        def sync(*, subtensor: object = None, **kwargs: object) -> None:
+            del subtensor, kwargs
+            validator.metagraph.axons = axons
+
+        reconcile = MagicMock(side_effect=[ConnectionError("unavailable"), None])
+        monkeypatch.setattr(validator.metagraph, "sync", sync)
+        monkeypatch.setattr(validator, "_on_metagraph_synced", reconcile)
+
+        with pytest.raises(ConnectionError):
+            validator.resync_metagraph()
+        assert validator.scores[replaced_uid] == Decimal(0)
+        assert validator.hotkeys[replaced_uid] == "replacement-miner"
+
+        validator.resync_metagraph()
+        assert reconcile.call_count == 2
+        assert validator._normalized_weights()[replaced_uid] == Decimal(0)
+        assert all(
+            score == Decimal("0.5")
+            for uid, score in enumerate(validator.scores)
+            if uid != replaced_uid
+        )
+
     def test_resizes_scores_to_metagraph_n(self, validator: _ConcreteValidator) -> None:
         # Shrink the scores array so resync_metagraph's grow-path
         # (len(self.scores) != metagraph.n) must expand it.
