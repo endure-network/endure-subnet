@@ -10,7 +10,7 @@ so constants cannot drift outside the contract again.
 from pathlib import Path
 
 ACTIVATED_VERSION_REGISTRY_DIGEST = (
-    "6b39c0a53e3467e06406355680af517b2f362d7e225abd15688be9ec83fa48c4"
+    "7b78d031b8dc8b4cf2eec60e3dea73fec7e1cbdcca343b61a7eeec509d6dae26"
 )
 ACTIVATED_VERSION_HISTORY_DIGEST = (
     "d9d7c8b59cf36386d2087e87db158b81f82d03977fcead6ec9c54207f714a8aa"
@@ -124,5 +124,5 @@ PREVIOUS_VERSION_DIGEST = (
 # behind the explicit --endure.serving_stage mainnet acknowledgement.
 CURRENT_VERSION_KEY = 2041
 CURRENT_VERSION_DIGEST = (
-    "f51e52e15a67e404d584accef21de7e3b6965ad64d496bf28ce8c06094248151"
+    "a86816bdf570948f6a54d64b9959787222af12f4cd050e2d6c0dd92b157d768d"
 )

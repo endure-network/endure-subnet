@@ -85,3 +85,32 @@ class TestForwardWiring:
         asyncio.run(validator.forward())
 
         assert validator._confirmed_deregistered() == ["hk-gone"]
+
+
+def test_empty_fresh_weights_clear_cached_scores_and_snapshot() -> None:
+    service = MagicMock()
+    service.tick.return_value = {}
+    service.blended_snapshot.return_value = {}
+    validator = _wired_validator(service)
+    validator.scores = [Decimal("1")]
+    validator._blended_snapshot = {"hk-a": Decimal("0.9")}
+
+    asyncio.run(validator.forward())
+
+    assert validator.scores == [Decimal("0")]
+    assert validator._blended_snapshot == {}
+
+
+def test_reconstruction_clears_obsolete_scores_when_no_eligible_emas_remain() -> None:
+    validator = _wired_validator(MagicMock())
+    validator.scores = [Decimal("1")]
+    validator._blended_snapshot = {"hk-a": Decimal("0.9")}
+    runtime = MagicMock()
+    runtime.round_program.weights.return_value = {}
+    runtime.round_program.blended_scores.return_value = {}
+    validator._vertical_runtime = runtime
+
+    validator._reconstruct_scores()
+
+    assert validator.scores == [Decimal("0")]
+    assert validator._blended_snapshot == {}

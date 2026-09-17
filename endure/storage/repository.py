@@ -1964,6 +1964,27 @@ class Storage:
         with self._engine.begin() as connection:
             self._upsert_assessment_ema(connection, schema_id, row, now_iso=now_iso)
 
+    def retire_assessment_ema_coordinates(
+        self, schema_id: str, *, active_coordinates: frozenset[AssessmentCoordinate]
+    ) -> None:
+        """Discard retired mutable scoring memory; preserve all historical audit rows."""
+        retired = {
+            state.coordinate
+            for state in self.assessment_ema_states(schema_id)
+            if state.coordinate not in active_coordinates
+        }
+        with self._engine.begin() as connection:
+            for coordinate in sorted(retired):
+                connection.execute(
+                    delete(assessment_miner_score_state).where(
+                        assessment_miner_score_state.c.schema_id == schema_id,
+                        *(
+                            assessment_miner_score_state.c[key] == value
+                            for key, value in _coordinate_values(coordinate).items()
+                        ),
+                    )
+                )
+
     def assessment_ema_states(self, schema_id: str) -> list[AssessmentEmaState]:
         with self._engine.connect() as connection:
             result = connection.execute(

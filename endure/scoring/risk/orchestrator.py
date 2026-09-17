@@ -18,7 +18,10 @@ from endure.assessment.schemas.subnet_alpha_risk import (
     RiskOutput,
     RiskSubmissionBundle,
 )
-from endure.assessment.subnet_alpha_universe import parse_alpha_risk_universe_members
+from endure.assessment.subnet_alpha_universe import (
+    ALPHA_RISK_WHITELISTED_NETUIDS,
+    parse_alpha_risk_universe_members,
+)
 from endure.scoring.assessment_orchestrator import (
     REALIZED_TARGET_RESOLVED,
     REALIZED_TARGET_VOIDED,
@@ -92,6 +95,7 @@ class RiskScoringOrchestrator(AssessmentScoringOrchestrator):
         reveal_close_block: RevealCloseBlock,
         window_end_block: WindowEndBlock | None = None,
         registered_hotkeys: Callable[[], Sequence[str]] | None = None,
+        active_netuids: tuple[int, ...] = ALPHA_RISK_WHITELISTED_NETUIDS,
     ) -> None:
         self._storage_for_window = storage
         self._reveal_close_block = reveal_close_block
@@ -101,6 +105,7 @@ class RiskScoringOrchestrator(AssessmentScoringOrchestrator):
             config=build_risk_scoring_config(
                 storage=storage,
                 price_provider=price_provider,
+                active_netuids=active_netuids,
             ),
             half_life_rounds=half_life_rounds,
             registered_hotkeys=registered_hotkeys,
@@ -171,12 +176,19 @@ def build_risk_scoring_config(
     *,
     storage: Storage,
     price_provider: AlphaPriceProvider,
+    active_netuids: tuple[int, ...] = ALPHA_RISK_WHITELISTED_NETUIDS,
 ) -> AssessmentScoringConfig:
     """Build resolver-table config for risk.v1.subnet_alpha (risk scope §Scoring)."""
     resolvers = _risk_resolvers(price_provider)
     return AssessmentScoringConfig(
         schema_id=RISK_SCHEMA_ID,
         horizons=RISK_HORIZONS,
+        active_coordinates=frozenset(
+            risk_coordinate(netuid, horizon, output)
+            for netuid in active_netuids
+            for horizon in RISK_HORIZONS
+            for output in RiskOutput
+        ),
         universe_members=parse_alpha_risk_universe_members,
         accepted_values=lambda round_id: accepted_risk_values(storage, round_id),
         outputs=tuple(

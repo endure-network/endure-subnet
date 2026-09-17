@@ -376,3 +376,54 @@ def test_operator_deploy_rejects_mutable_images_and_records_rollback() -> None:
     assert "docker compose" in deploy_script
     assert "http://127.0.0.1:8714/live" in deploy_script
     assert "http://127.0.0.1:8714/health" in deploy_script
+
+
+def test_prod_retag_uses_digest_preserving_copy_for_both_images(tmp_path: Path) -> None:
+    workflow = yaml.safe_load(
+        (ROOT / ".github/workflows/publish-prod-images.yml").read_text()
+    )
+    steps = {step.get("name"): step for step in workflow["jobs"]["publish"]["steps"]}
+    command = steps["Retag as prod and semver"]["run"]
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    docker = fake_bin / "docker"
+    docker.write_text(
+        """#!/usr/bin/env python3
+import json, os, sys
+args = sys.argv[1:]
+if args[:3] == ['buildx', 'imagetools', 'inspect']:
+    print(json.dumps({'digest': 'sha256:' + 'a' * 64}))
+elif args[:3] == ['buildx', 'imagetools', 'create']:
+    # Buildx otherwise wraps a single manifest in an index (changing its digest).
+    assert '--prefer-index=false' in args, args
+    assert args[-1].endswith('@sha256:' + 'a' * 64), args
+    tags = [args[i + 1] for i, arg in enumerate(args) if arg == '--tag']
+    assert len(tags) == 2 and tags[0].endswith(':prod') and tags[1].endswith(':v0.1.0')
+    with open(os.environ['RETAG_LOG'], 'a') as log:
+        log.write(args[-1].split('@')[0] + '\\n')
+else:
+    raise AssertionError(args)
+"""
+    )
+    docker.chmod(0o755)
+    log = tmp_path / "retag.log"
+    result = subprocess.run(
+        ["bash", "-euo", "pipefail", "-c", command],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin}:{Path(sys.executable).parent}:" + os.environ["PATH"],
+            "TAG_SHA": "b" * 40,
+            "RELEASE_TAG": "v0.1.0",
+            "VALIDATOR_REPO": "ghcr.io/example/validator",
+            "MINER_REPO": "ghcr.io/example/miner",
+            "RETAG_LOG": str(log),
+        },
+    )
+    assert result.returncode == 0, result.stderr
+    assert log.read_text().splitlines() == [
+        "ghcr.io/example/validator",
+        "ghcr.io/example/miner",
+    ]

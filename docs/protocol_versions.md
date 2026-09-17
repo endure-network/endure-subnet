@@ -139,12 +139,12 @@ the top pools by TAO reserve plus operator picks, including this subnet's own
 netuid 30 rated under the same rules. The key was unserved on every network
 when the refresh folded in, so the lease re-folded at `2041` with a new
 digest instead of burning a key. Its watched-tree digest is
-`f51e52e15a67e404d584accef21de7e3b6965ad64d496bf28ce8c06094248151`. The public lease authority receipt uses
+`a86816bdf570948f6a54d64b9959787222af12f4cd050e2d6c0dd92b157d768d`. The public lease authority receipt uses
 `PREVIOUS_RECEIPT=77afcb26d890245818340f23cb191c3192d682664006fd9bf2d9251a7537a304`,
 `CURRENT_VERSION_KEY=2041`, and
-`CURRENT_VERSION_DIGEST=f51e52e15a67e404d584accef21de7e3b6965ad64d496bf28ce8c06094248151`
+`CURRENT_VERSION_DIGEST=a86816bdf570948f6a54d64b9959787222af12f4cd050e2d6c0dd92b157d768d`
 under the `LEASE_AUTHORITY` format above, producing
-`e0c18d0a76a9f3451876307b5634a39225abd511d0811a32fa22bb049dc3b458`.
+`dfd62d551c098305883e1b26e5070a4fc5893c38bce99788d21dc598f3772212`.
 
 The jump from `30` to `2041` deliberately clears the observed SN30 on-chain
 minimum of `2040`; intermediate application keys need not be deployed. Stage
@@ -154,3 +154,28 @@ gate behind the explicit `--endure.serving_stage mainnet` acknowledgement.
 This lease does not change either chain's configuration, start mainnet
 serving on any deployment, or qualify a release by itself. Wallet hotkeys remain distinct
 per environment; a protocol version key is not a wallet key.
+
+
+The same unserved `2041` lease also retires scoring memory outside the active
+Alpha Risk target/output/horizon coordinates. Startup removes only those mutable
+EMA rows. Frozen old rounds still settle against their original universe and
+retain realized targets, output scores, score history, and resolution markers;
+settlement cannot recreate retired EMA state. Active payout and consensus weights,
+and absence pruning, use only eligible coordinates. An empty fresh score result
+clears the validator's cached weights and blend snapshot.
+
+The removed launch targets (1, 5, 11, 13, 19) must not simply be added back to the
+whitelist. Running the retirement release clears their mutable memory, but a node
+that skipped it or still has old unresolved rounds needs an explicit scoring
+epoch/cutoff policy before reintroduction. That future policy is not implemented
+by this release; the launch-list regression test guards against accidental reuse.
+
+Before deploying this candidate, preserve a pre-upgrade database backup. Startup
+retirement deletes mutable EMA rows for removed coordinates, so reverting the
+software alone cannot restore their former scoring memory. Historical tables
+remain intact, and no schema migration is required; restoring the earlier mutable
+state requires that backup.
+
+Clearing an empty local score map prevents reuse of cached local scores. It does
+not clear previously submitted on-chain weights: existing all-zero abstention
+behavior and the mainnet bootstrap weight policy are unchanged.

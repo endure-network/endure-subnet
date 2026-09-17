@@ -1228,3 +1228,185 @@ class TestRiskScoringInputGuards:
 
         with pytest.raises(AlphaMarketDataError, match="positive block span"):
             orchestrator.resolve_and_score(ROUND, HORIZON_5D_SECONDS, now_iso=NOW)
+
+
+class TestRetiredCoordinates:
+    def test_preserved_state_and_late_settlement_do_not_restore_retired_emas(
+        self, storage: Storage
+    ) -> None:
+        provider = _provider((1, 44))
+        _open_round(storage, (1, 44))
+        _accept_risk_bundle(storage, hotkey="hk-a", netuids=(1, 44), provider=provider)
+        old = RiskScoringOrchestrator(
+            storage=storage,
+            price_provider=provider,
+            half_life_rounds=2,
+            reveal_close_block=lambda _: WINDOW_START_BLOCK,
+            active_netuids=(1, 44),
+        )
+        old.resolve_and_score(ROUND, RISK_HORIZONS[0], now_iso=NOW)
+        old_history = storage.assessment_score_history_for_round(ROUND, RISK_SCHEMA_ID)
+        assert {
+            state.coordinate.target_id
+            for state in storage.assessment_ema_states(RISK_SCHEMA_ID)
+        } == {"1", "44"}
+
+        current = _orchestrator(storage, provider)
+        assert {
+            state.coordinate.target_id
+            for state in storage.assessment_ema_states(RISK_SCHEMA_ID)
+        } == {"44"}
+        assert (
+            storage.assessment_score_history_for_round(ROUND, RISK_SCHEMA_ID)
+            == old_history
+        )
+        current.resolve_and_score(ROUND, RISK_HORIZONS[1], now_iso=NOW)
+        assert storage.has_assessment_resolution_marker(
+            ROUND, RISK_SCHEMA_ID, RISK_HORIZONS[1]
+        )
+        assert {
+            state.coordinate.target_id
+            for state in storage.assessment_ema_states(RISK_SCHEMA_ID)
+        } == {"44"}
+        history = storage.assessment_score_history_for_round(ROUND, RISK_SCHEMA_ID)
+        assert {row.coordinate.target_id for row in history} == {"1", "44"}
+        restarted = _orchestrator(storage, provider)
+        assert restarted.blended_scores() == current.blended_scores()
+        assert restarted.weights() == current.weights()
+
+    def test_active_coordinate_filter_applies_to_all_blends_and_weights(
+        self, storage: Storage
+    ) -> None:
+        orchestrator = _orchestrator(storage, _provider((44,)))
+        for netuid, horizon, output, value in (
+            (44, RISK_HORIZONS[0], RiskOutput.MAX_DRAWDOWN.value, "0.2"),
+            (1, RISK_HORIZONS[0], RiskOutput.MAX_DRAWDOWN.value, "1"),
+            (44, 123, RiskOutput.MAX_DRAWDOWN.value, "1"),
+            (44, RISK_HORIZONS[0], "retired-output", "1"),
+        ):
+            storage.upsert_assessment_ema(
+                RISK_SCHEMA_ID,
+                AssessmentEmaState(
+                    miner_hotkey="hk-a" if netuid == 44 else "retired-only",
+                    coordinate=AssessmentCoordinate.subnet_asset(
+                        netuid=netuid,
+                        horizon_seconds=horizon,
+                        output=output,
+                    ),
+                    ema=Decimal(value),
+                    resolved_rounds=5,
+                ),
+                now_iso=NOW,
+            )
+        assert orchestrator.blended_scores() == {"hk-a": Decimal("0.2")}
+        assert orchestrator.weights() == {"hk-a": Decimal("1")}
+
+    def test_retired_high_ema_does_not_prevent_absent_miner_pruning(
+        self, storage: Storage
+    ) -> None:
+        provider = _provider((44,))
+        _open_round(storage, (44,))
+        _accept_risk_bundle(storage, hotkey="hk-a", netuids=(44,), provider=provider)
+        orchestrator = _fast_decay_orchestrator(storage, provider)
+        orchestrator.resolve_and_score(ROUND, RISK_HORIZONS[0], now_iso=NOW)
+        for state in storage.assessment_ema_states(RISK_SCHEMA_ID):
+            storage.upsert_assessment_ema(
+                RISK_SCHEMA_ID,
+                AssessmentEmaState(
+                    miner_hotkey="hk-a",
+                    coordinate=state.coordinate,
+                    ema=Decimal("0.001"),
+                    resolved_rounds=5,
+                ),
+                now_iso=NOW,
+            )
+        storage.upsert_assessment_ema(
+            RISK_SCHEMA_ID,
+            AssessmentEmaState(
+                miner_hotkey="hk-a",
+                coordinate=_coordinate(1, RiskOutput.MAX_DRAWDOWN, RISK_HORIZONS[0]),
+                ema=Decimal("1"),
+                resolved_rounds=5,
+            ),
+            now_iso=NOW,
+        )
+        later, now = _round_for(7)
+        _open_round_for(storage, later, (44,))
+        orchestrator.resolve_and_score(later, RISK_HORIZONS[0], now_iso=now)
+        assert storage.assessment_ema_states(RISK_SCHEMA_ID) == []
+        assert orchestrator.weights() == {}
+
+
+def test_retired_launch_targets_require_an_explicit_reintroduction_policy() -> None:
+    from endure.assessment.subnet_alpha_universe import ALPHA_RISK_WHITELISTED_NETUIDS
+
+    # Re-adding one requires a reviewed epoch/cutoff policy for skipped releases
+    # and still-unresolved pre-retirement rounds; membership alone is insufficient.
+    assert not {1, 5, 11, 13, 19}.intersection(ALPHA_RISK_WHITELISTED_NETUIDS)
+
+
+def test_processed_retirement_cold_starts_mutable_coordinate_memory(
+    storage: Storage,
+) -> None:
+    coordinate = _coordinate(1, RiskOutput.MAX_DRAWDOWN, RISK_HORIZONS[0])
+    storage.upsert_assessment_ema(
+        RISK_SCHEMA_ID,
+        AssessmentEmaState(
+            miner_hotkey="hk-a",
+            coordinate=coordinate,
+            ema=Decimal("1"),
+            resolved_rounds=100,
+        ),
+        now_iso=NOW,
+    )
+    _orchestrator(storage, _provider((44,)))
+    reintroduced = RiskScoringOrchestrator(
+        storage=storage,
+        price_provider=_provider((1,)),
+        half_life_rounds=2,
+        reveal_close_block=lambda _: WINDOW_START_BLOCK,
+        active_netuids=(1,),
+    )
+    assert reintroduced.blended_scores() == {}
+    assert storage.assessment_ema_states(RISK_SCHEMA_ID) == []
+
+
+def test_consensus_publication_uses_only_active_coordinate_memory(
+    storage: Storage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from endure.assessment.schemas.subnet_alpha_risk import RiskSubmissionBundle
+    from endure.protocol import vertical
+
+    provider = _provider((44,))
+    _open_round(storage, (44,))
+    for hotkey in ("active", "retired-only"):
+        _accept_risk_bundle(storage, hotkey=hotkey, netuids=(44,), provider=provider)
+    orchestrator = _orchestrator(storage, provider)
+    for hotkey, netuid in (("active", 44), ("retired-only", 1)):
+        storage.upsert_assessment_ema(
+            RISK_SCHEMA_ID,
+            AssessmentEmaState(
+                miner_hotkey=hotkey,
+                coordinate=_coordinate(
+                    netuid, RiskOutput.MAX_DRAWDOWN, RISK_HORIZONS[0]
+                ),
+                ema=Decimal("0.9"),
+                resolved_rounds=5,
+            ),
+            now_iso=NOW,
+        )
+    compute = MagicMock(wraps=vertical.compute_assessment_consensus)
+    monkeypatch.setattr(vertical, "compute_assessment_consensus", compute)
+    program = vertical.AssessmentRoundProgram(
+        storage=storage,
+        schema_id=RISK_SCHEMA_ID,
+        bundle_model=RiskSubmissionBundle,
+        orchestrator=orchestrator,
+        horizons=RISK_HORIZONS,
+        due_seconds_by_horizon={},
+    )
+
+    assert program.publish_consensus(ROUND, datetime.fromisoformat(NOW))
+
+    assert compute.call_args.args[1] == {"active": Decimal("0.9")}
+    assert storage.assessment_consensus_for(ROUND, RISK_SCHEMA_ID)

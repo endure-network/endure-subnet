@@ -77,7 +77,7 @@ jobs:
           for repo in "$VALIDATOR_REPO" "$MINER_REPO"; do
             digest="$(docker buildx imagetools inspect \
               --format '{{json .Manifest}}' "$repo:sha-$TAG_SHA" | jq -r .digest)"
-            docker buildx imagetools create \
+            docker buildx imagetools create --prefer-index=false \
               --tag "$repo:prod" \
               --tag "$repo:$RELEASE_TAG" \
               "$repo@$digest"
