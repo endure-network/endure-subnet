@@ -10,10 +10,10 @@ so constants cannot drift outside the contract again.
 from pathlib import Path
 
 ACTIVATED_VERSION_REGISTRY_DIGEST = (
-    "1cbd7fa973d7bb34bc8a112e3d289974dcc109c445c284c9ca50782bef08f9f8"
+    "7aabb8a860e7878fc4408f865d91a6aac40ba76814c2b6339d7d32baa190b9f3"
 )
 ACTIVATED_VERSION_HISTORY_DIGEST = (
-    "0573cb986294ad81c79bc1f070476c7d194fdd211109631f60a346d442285a8d"
+    "d9d7c8b59cf36386d2087e87db158b81f82d03977fcead6ec9c54207f714a8aa"
 )
 
 WATCHED_PATHS = (
@@ -27,9 +27,9 @@ WATCHED_PATHS = (
 # Previous accepted protocol snapshot. When watched paths change, promote the
 # current values into the previous fields, then write the new digest and bump
 # the current version key.
-PREVIOUS_VERSION_KEY = 29
+PREVIOUS_VERSION_KEY = 30
 PREVIOUS_VERSION_DIGEST = (
-    "d3b9126c2bad0045e497e6f5f7362309c004d340f927cc91638d4df84344379b"
+    "3904a799a6560082a05b0ff62274cf4c71547cf1f5dfd0311418d2f4e574ef14"
 )
 
 # Production serving status and CURRENT_VERSION_KEY stay unchanged until R6.
@@ -117,7 +117,11 @@ PREVIOUS_VERSION_DIGEST = (
 # defers horizon resolution (24h grace before voiding) instead of permanently
 # voiding it. Wire formats, scoring math, and tier thresholds are unchanged;
 # resolved values become identical across independent validators.
-CURRENT_VERSION_KEY = 30
+# 2041: signed submissions bind all request fields; reveal persistence follows
+# bounded admission and accepted retries remain idempotent. Miners and validators
+# must deploy together. This shared release key clears the SN30 chain floor;
+# the mainnet serving gate remains unchanged.
+CURRENT_VERSION_KEY = 2041
 CURRENT_VERSION_DIGEST = (
-    "3904a799a6560082a05b0ff62274cf4c71547cf1f5dfd0311418d2f4e574ef14"
+    "257258a4bb7a3bc6073e5bbe223886a265caaf781e07b6a40721a80ac95e2737"
 )

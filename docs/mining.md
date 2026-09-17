@@ -154,7 +154,7 @@ else:
   a `0.5` record roughly six to one, and near-zero records earn effectively
   nothing.
 
-The constants above are protocol-key-`30` testnet values
+The constants above are protocol-key-`2041` testnet values
 ([policy.py](../endure/scoring/policy.py),
 [subnet_alpha_risk.py](../endure/assessment/schemas/subnet_alpha_risk.py)) and
 remain tunable before the serving freeze; see

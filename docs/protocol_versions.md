@@ -105,7 +105,7 @@ first-parent staging lineage in commit
 format above produces
 `d8bd3956158777b7f4355e9298abe2a7d411ef42914b3d5520fdd4bc0edc5f71`.
 
-Key `30` is leased exclusively to the `v0.1.0-rc.2`/`v0.1.0-rc.3` candidate
+Key `30` was leased exclusively to the `v0.1.0-rc.2`/`v0.1.0-rc.3` candidate
 line — `v0.1.0-rc.3` changes no watched protocol path, so the digest and
 lease receipt carry over unchanged. It budgets
 target resolution per validator tick: work exceeding the wall-clock resolution
@@ -123,3 +123,27 @@ Its public lease authority receipt is SHA-256 over the UTF-8 lines
 each terminated by one LF byte. The resulting receipt is
 `77afcb26d890245818340f23cb191c3192d682664006fd9bf2d9251a7537a304`.
 No private ledger value is involved in any lease authority receipt.
+
+Key `30` is recorded as `activation-0043`. It first appeared on the public
+first-parent staging lineage in commit
+`90c973f7a369746a4b19a8b4eb04fed2d37e4caa`; its source-bound receipt is
+`86150d44b3134f1a10fe4a98d4bafda63eb6aa55c9d348ec0284bb83c2d384fc`.
+
+Key `2041` is leased to the SN30 qualification candidate. Signed commit and
+reveal requests bind all request fields, and rejected reveal persistence is
+bounded by admission while accepted retries remain idempotent. Miners and
+validators must upgrade together. Its watched-tree digest is
+`257258a4bb7a3bc6073e5bbe223886a265caaf781e07b6a40721a80ac95e2737`. The public lease authority receipt uses
+`PREVIOUS_RECEIPT=77afcb26d890245818340f23cb191c3192d682664006fd9bf2d9251a7537a304`,
+`CURRENT_VERSION_KEY=2041`, and
+`CURRENT_VERSION_DIGEST=257258a4bb7a3bc6073e5bbe223886a265caaf781e07b6a40721a80ac95e2737`
+under the `LEASE_AUTHORITY` format above, producing
+`7775b646e52efd097c94076d7dc85c38bebb10f03e53525e853b75b7e9d8c9b2`.
+
+The jump from `30` to `2041` deliberately clears the observed SN30 on-chain
+minimum of `2040`; intermediate application keys need not be deployed. Stage
+the complete release on testnet first, then promote the same source and protocol
+key to mainnet after qualification and the separately authorized serving-gate
+change. This lease does not change either chain's configuration, activate
+mainnet serving, or qualify a release by itself. Wallet hotkeys remain distinct
+per environment; a protocol version key is not a wallet key.

@@ -222,10 +222,11 @@ class SubmissionHandlers:
         committed = self._storage.committed_hash(
             synapse.round_id, self._schema_id, miner_hotkey
         )
-        if is_open_window and accepted_reveal == (
+        is_accepted_retry = is_open_window and accepted_reveal == (
             synapse.bundle_json,
             synapse.nonce_hex,
-        ):
+        )
+        if is_accepted_retry:
             verdict = Verdict(accepted=True)
         else:
             verdict = self._admit_reveal(
@@ -237,7 +238,12 @@ class SubmissionHandlers:
                 windows=windows,
                 universe_tickers=universe.tickers,
             )
-        if committed is not None:
+        if (
+            committed is not None
+            and is_open_window
+            and not is_accepted_retry
+            and verdict.rejection_code is not RejectionCode.RATE_LIMITED
+        ):
             self._storage.record_reveal(
                 synapse.round_id,
                 self._schema_id,
