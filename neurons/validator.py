@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     import uvicorn
 from alembic import command as alembic_command
 from alembic.config import Config as AlembicConfig
+from fastapi import Request
 
 from endure.api.app import PublicationIdentity, RuntimeHealth
 from endure.assessment.registry import default_registry
@@ -34,6 +35,7 @@ from endure.assessment.schemas.subnet_alpha_risk import (
     RISK_SCHEMA_ID,
 )
 from endure.assessment.subnet_alpha_universe import StaticAlphaRiskUniverseProvider
+from endure.base.axon import authenticated_hotkey
 from endure.base.shutdown import install_shutdown_handlers, join_thread_or_raise
 from endure.base.validator import (
     WEIGHT_EMISSION_FINALITY_MARGIN_BLOCKS,
@@ -842,11 +844,10 @@ class Validator(BaseValidatorNeuron):
             bt.logging.warning("axon off — submission handlers not attached")
             return
 
-        async def submit_commit(synapse: SubmitCommit) -> SubmitCommit:
-            hotkey = synapse.dendrite.hotkey if synapse.dendrite else None
-            if not hotkey:
-                synapse.accepted = False
-                return synapse
+        async def submit_commit(
+            synapse: SubmitCommit, request: Request
+        ) -> SubmitCommit:
+            hotkey = authenticated_hotkey(request, synapse)
             return await self._handlers.handle_commit(synapse, miner_hotkey=hotkey)
 
         async def submit_commit_blacklist(
@@ -854,11 +855,10 @@ class Validator(BaseValidatorNeuron):
         ) -> Tuple[bool, str]:
             return self._blacklist(synapse)
 
-        async def submit_reveal(synapse: SubmitReveal) -> SubmitReveal:
-            hotkey = synapse.dendrite.hotkey if synapse.dendrite else None
-            if not hotkey:
-                synapse.accepted = False
-                return synapse
+        async def submit_reveal(
+            synapse: SubmitReveal, request: Request
+        ) -> SubmitReveal:
+            hotkey = authenticated_hotkey(request, synapse)
             return await self._handlers.handle_reveal(synapse, miner_hotkey=hotkey)
 
         async def submit_reveal_blacklist(
