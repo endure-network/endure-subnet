@@ -19,6 +19,7 @@ from endure.assessment.subnet_alpha_universe import StaticAlphaRiskUniverseProvi
 from endure.protocol.canonical import canonical_bundle_bytes
 from endure.protocol.risk_miner import LatestPoolObservation, baseline_risk_bundle
 from endure.protocol.round_engine import DEFAULT_OFFSETS, compute_windows
+from endure.scoring.assessment_orchestrator import ResolutionDeadlineExceeded
 from endure.scoring.market_data import (
     AlphaMarketDataError,
     AlphaMarketDataUnavailable,
@@ -228,6 +229,68 @@ class TestForceVoidOrder:
         window_start_block.assert_not_called()
         window_end_block.assert_not_called()
         provider.price_series.assert_not_called()
+
+
+class _DeadlineThenHealthyProvider:
+    def __init__(self, delegate: FixtureAlphaPriceProvider) -> None:
+        self._delegate = delegate
+        self.deadline_active = True
+
+    def price_series(
+        self, netuid: int, *, window: ResolutionWindow
+    ) -> AlphaPriceSeries | None:
+        if self.deadline_active:
+            raise ResolutionDeadlineExceeded(f"deadline mid-series netuid={netuid}")
+        return self._delegate.price_series(netuid, window=window)
+
+
+class TestDeadlineNeverVoids:
+    def test_post_grace_deadline_exhaustion_defers_instead_of_voiding(
+        self, storage: Storage
+    ) -> None:
+        """The key-30 invariant: budget exhaustion is pacing, so even past the
+        24h unavailability grace it must defer a resolvable coordinate, never
+        convert it into a voided target."""
+        fixture_provider = _provider((44,))
+        provider = _DeadlineThenHealthyProvider(fixture_provider)
+        _open_round(storage, (44,))
+        _accept_risk_bundle(
+            storage, hotkey="hk-a", netuids=(44,), provider=fixture_provider
+        )
+        windows = storage.round_windows(ROUND, RISK_SCHEMA_ID)
+        assert windows is not None
+        resolution_due_at = windows.reveal_close + timedelta(seconds=1)
+        after_grace = resolution_due_at + timedelta(seconds=VOID_GRACE_SECONDS + 1)
+        orchestrator = _orchestrator(storage, provider)
+
+        orchestrator.resolve_and_score(
+            ROUND,
+            HORIZON_5D_SECONDS,
+            now_iso=after_grace.isoformat(),
+            resolution_due_at=resolution_due_at,
+        )
+
+        # Then: nothing voided, no marker — the coordinate stays resolvable.
+        targets = storage.assessment_realized_targets_for(ROUND, RISK_SCHEMA_ID)
+        assert targets == []
+        assert not storage.has_assessment_resolution_marker(
+            ROUND, RISK_SCHEMA_ID, HORIZON_5D_SECONDS
+        )
+
+        # When: the next tick's fresh budget lets the provider finish.
+        provider.deadline_active = False
+        orchestrator.resolve_and_score(
+            ROUND,
+            HORIZON_5D_SECONDS,
+            now_iso=after_grace.isoformat(),
+            resolution_due_at=resolution_due_at,
+        )
+
+        targets = storage.assessment_realized_targets_for(ROUND, RISK_SCHEMA_ID)
+        assert targets and {target.status for target in targets} == {"resolved"}
+        assert storage.has_assessment_resolution_marker(
+            ROUND, RISK_SCHEMA_ID, HORIZON_5D_SECONDS
+        )
 
 
 class TestRiskScoringOrchestrator:

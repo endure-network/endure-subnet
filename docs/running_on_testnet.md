@@ -1,6 +1,6 @@
 # Running Endure on Testnet
 
-> **Experimental testnet alpha, `v0.1.0-rc.1` candidate, protocol key `29`.** This is
+> **Experimental testnet alpha, `v0.1.0-rc.3` candidate, protocol key `30`.** This is
 > not a mainnet guide. The authoritative compatibility value is
 > [version_contract.py](../endure/protocol/version_contract.py).
 
@@ -37,7 +37,12 @@ hotkeys, then check the prompted fee and chain state before confirming:
   --hotkey <validator-hotkey> --network test
 ```
 
-Register and stake the miner hotkey the same way.
+Register and stake the miner hotkey the same way. Validators may enforce a
+minimum miner stake (`MIN_MINER_STAKE`) and reject commits from under-staked
+hotkeys with `Insufficient stake`; the public testnet soak validator's floor is
+deployment-configured (`0.3` at the time of writing) and can change without a
+release, so stake the miner hotkey above the current floor or its submissions
+will never be accepted — the rejection reason appears in the miner log.
 
 ## Validator first
 
@@ -74,6 +79,13 @@ operator checks, not commit/reveal delivery.
   --endure.serving_stage testnet --endure.market_data_endpoint <archive-endpoint> \
   --axon.port <axon-port> --axon.external_ip <reachable-ip>
 ```
+
+The optional `--endure.min_validator_stake_weight <weight>` gate defaults to
+`0` (disabled). It compares Bittensor's metagraph total stake weight (`S`) —
+alpha stake plus discounted root TAO stake, not a TAO balance. Set it only when
+your routing policy intentionally excludes lower-weight validators; the
+Endure-operated soak currently passes `1000` explicitly. A live miner warns at
+startup whenever the gate is active.
 
 Wait for metagraph/permit discovery, then verify a commit and a reveal in the
 validator API/logs. Preserve miner state across restarts so its nonce survives.

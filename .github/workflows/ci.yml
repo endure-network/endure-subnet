@@ -103,6 +103,10 @@ jobs:
     env:
       NETUID: "1"
       EXTERNAL_IP: 127.0.0.1
+      # Mirror Coolify's deploy contract: SOURCE_COMMIT is the sole identity
+      # source for the soak compose files, so the assembly job must exercise
+      # the same release-identity path production builds take.
+      SOURCE_COMMIT: ${{ github.sha }}
       VALIDATOR_WALLET_ROOT: /tmp/endure-validator-wallet
       MINER1_WALLET_ROOT: /tmp/endure-miner-1-wallet
       MINER2_WALLET_ROOT: /tmp/endure-miner-2-wallet

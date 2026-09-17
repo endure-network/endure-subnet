@@ -1,9 +1,9 @@
 # Endure Subnet
 
-> **Experimental testnet alpha — `v0.1.0-rc.1` candidate.** Endure is not
+> **Experimental testnet alpha — `v0.1.0-rc.3` candidate.** Endure is not
 > production software, is not economically ready, and must not be used for
 > mainnet operation. Alpha Risk serving is code-gated to testnet pending the soak gate.
-> The current protocol key is `29` ([contract](endure/protocol/version_contract.py));
+> The current protocol key is `30` ([contract](endure/protocol/version_contract.py));
 > activated and retired leases are tracked in the [version registry](docs/protocol_versions.md).
 
 Endure is a Bittensor risk-intelligence subnet: miners submit falsifiable
@@ -32,6 +32,10 @@ resolve observable outcomes, score revealed coordinates, maintain score history,
 and emit Bittensor weights. The signed read API publishes the resulting A–E
 risk tier. See [mining](docs/mining.md) for the protocol and [the current
 scope](docs/specs/2026-07-06-alpha-risk-v1-scope.md) for the product contract.
+There is no minimum runtime: a miner enters scoring with its first accepted
+round, sees its first weights once that round's 5-day horizon resolves, and is
+paid from a decaying accuracy record rather than single rounds — see
+[eligibility and the earnings timeline](docs/mining.md#eligibility-and-the-earnings-timeline).
 
 Known limitations: this is a testnet soak with one public validator endpoint;
 outcomes and feeds can diverge between validators; interfaces and
@@ -103,7 +107,10 @@ prefix and stop each process manually.
 ## Run a miner
 
 Follow the complete public path: [mining guide](docs/mining.md), then the
-[testnet runbook](docs/running_on_testnet.md). Never share a mnemonic, coldkey,
+[testnet runbook](docs/running_on_testnet.md). Acceptance is gated by hotkey
+registration and each validator's configured stake floor, and covering the
+[full round universe](docs/mining.md#cover-the-full-universe) is the dominant
+earnings lever — skipped coordinates score zero. Never share a mnemonic, coldkey,
 hotkey file, seed, wallet archive, or endpoint credential in a public report.
 
 ## Run a validator

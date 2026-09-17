@@ -213,16 +213,13 @@ def _unit_interval_decimal(value: str) -> Decimal:
 
 
 def _non_negative_decimal(value: str) -> Decimal:
-    # An economic threshold (TAO stake): parse as Decimal per the Decimal
-    # policy and reject NaN/negatives at boot, so a bad --endure.min_miner_stake
-    # fails at startup rather than on the first inbound synapse.
     try:
         parsed = Decimal(value)
     except (InvalidOperation, ValueError) as exc:
         raise argparse.ArgumentTypeError(f"invalid Decimal value: {value!r}") from exc
-    if parsed.is_nan() or parsed < Decimal("0"):
+    if not parsed.is_finite() or parsed < Decimal("0"):
         raise argparse.ArgumentTypeError(
-            f"must be a non-negative Decimal, got {parsed}"
+            f"must be a finite non-negative Decimal, got {parsed}"
         )
     return parsed
 
@@ -479,6 +476,32 @@ def add_args(cls, parser):
         ),
     )
     parser.add_argument(
+        "--endure.resolution_budget_seconds",
+        type=_positive_int,
+        default=600,
+        help=(
+            "Wall-clock budget for target resolution within a single tick. "
+            "Work exceeding it is deferred to the next tick via the "
+            "partially_scored resumption path, keeping every tick well under "
+            "health_tick_max_duration_seconds (a 30d horizon needs thousands "
+            "of paced archive RPCs — hours of work no single tick may carry)."
+        ),
+    )
+    parser.add_argument(
+        "--endure.health_tick_max_duration_seconds",
+        type=_positive_int,
+        default=1800,
+        help=(
+            "Maximum wall-clock duration of a single in-flight tick or sync "
+            "operation before the watchdog marks the process stale. Long "
+            "catch-up ticks (multi-round resolution backlogs) legitimately "
+            "exceed health_tick_max_age_seconds, so while an operation is in "
+            "flight the watchdog applies this longer window anchored at the "
+            "operation start; a wedged operation that exceeds it still trips "
+            "the watchdog."
+        ),
+    )
+    parser.add_argument(
         "--endure.min_miner_stake",
         type=_non_negative_decimal,
         default=Decimal("0"),
@@ -561,6 +584,17 @@ def add_miner_args(cls, parser):
             "Comma-separated hotkey=host:port overrides for validator axons "
             "when a colocated miner must bypass the on-chain public address. "
             "Endpoints are trusted internal plaintext peers; bracket IPv6 hosts."
+        ),
+    )
+
+    parser.add_argument(
+        "--endure.min_validator_stake_weight",
+        type=_non_negative_decimal,
+        default=Decimal("0"),
+        help=(
+            "Minimum metagraph total stake weight (S) for a permit-holding peer "
+            "to receive pushes; 0 disables the gate. S combines alpha stake "
+            "with discounted root TAO stake and is not a TAO balance."
         ),
     )
 

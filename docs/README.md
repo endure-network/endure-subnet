@@ -17,7 +17,9 @@
 - [Mainnet status](running_on_mainnet.md) — explicit prohibition.
 - [Protocol activation history](protocol_versions.md) — retired assignments and
   the exclusive current candidate lease.
-- [v0.1.0-rc.1 notes](releases/v0.1.0-rc.1.md) — prerelease scope and rollback.
+- [v0.1.0-rc.3 notes](releases/v0.1.0-rc.3.md) — current prerelease scope and rollback.
+- [v0.1.0-rc.2 notes](releases/v0.1.0-rc.2.md) — superseded candidate.
+- [v0.1.0-rc.1 notes](releases/v0.1.0-rc.1.md) — superseded candidate.
 
 ## Endure team deployment
 

@@ -8,7 +8,10 @@ from decimal import Decimal
 from itertools import count
 
 import pytest
-from async_substrate_interface.errors import MaxRetriesExceeded
+from async_substrate_interface.errors import (
+    MaxRetriesExceeded,
+    SubstrateRequestException,
+)
 from websockets.datastructures import Headers
 from websockets.exceptions import InvalidStatus
 from websockets.http11 import Response
@@ -23,6 +26,7 @@ from endure.live.alpha_market_data import (
     LiveAlphaPriceProviderConfig,
 )
 from endure.protocol.risk_miner import LatestPoolObservation, baseline_risk_bundle
+from endure.scoring.assessment_orchestrator import ResolutionDeadlineExceeded
 from endure.scoring.market_data import (
     AlphaMarketDataError,
     AlphaMarketDataUnavailable,
@@ -210,7 +214,9 @@ def test_live_provider_uses_first_block_at_or_after_reveal_close() -> None:
             6: _timestamp(53),
         },
     )
-    fetcher = BittensorSubnetInfoFetcher(endpoint="mock://archive")
+    fetcher = BittensorSubnetInfoFetcher(
+        endpoint="mock://archive", min_request_interval_seconds=0.0
+    )
     fetcher._make_substrate = lambda: substrate
     provider = LiveAlphaPriceProvider(
         config=LiveAlphaPriceProviderConfig(request_pause_seconds=Decimal("0")),
@@ -438,6 +444,73 @@ def test_live_provider_assembles_series_at_canonical_cadence() -> None:
     )
     assert fetcher.calls == [(44, 1_600), (44, 2_200), (44, 2_800)]
     assert series.source.endswith("netuid_44_live_1600_2800")
+
+
+def test_live_provider_defers_boundary_lookup_when_the_deadline_expires() -> None:
+    # Given: a boundary bisection whose deadline expires after two archive
+    # operations (finalized head + head timestamp), before the search ends.
+    fetcher = FakeSubnetFetcher(
+        responses={},
+        finalized=10_000,
+        timestamps_by_block={block: block * 12_000 for block in range(0, 10_001)},
+    )
+    operations = {"n": 0}
+
+    def count_operation() -> bool:
+        operations["n"] += 1
+        return operations["n"] > 2
+
+    provider = LiveAlphaPriceProvider(
+        config=LiveAlphaPriceProviderConfig(request_pause_seconds=Decimal("0")),
+        fetcher=fetcher,
+        deadline_exceeded_fn=count_operation,
+    )
+
+    with pytest.raises(ResolutionDeadlineExceeded):
+        provider.first_finalized_block_at_or_after(
+            datetime.fromtimestamp(5_000 * 12, tz=UTC),
+            now=datetime.now(tz=UTC),
+        )
+
+
+def test_live_provider_defers_mid_series_when_the_tick_deadline_expires() -> None:
+    # Given: a three-snapshot series whose deadline expires after the first
+    # fetch; the deadline callback flips permanently like a real exhausted
+    # tick budget.
+    fetcher = FakeSubnetFetcher(
+        responses={
+            (44, 1_600): FakeDynamicInfo(tao_in=2_000_000_000, alpha_in=1_000_000_000),
+            (44, 2_200): FakeDynamicInfo(tao_in=3_000_000_000, alpha_in=1_000_000_000),
+            (44, 2_800): FakeDynamicInfo(tao_in=4_000_000_000, alpha_in=1_000_000_000),
+        }
+    )
+    fetches_before_deadline = 1
+    provider = LiveAlphaPriceProvider(
+        config=LiveAlphaPriceProviderConfig(request_pause_seconds=Decimal("0")),
+        fetcher=fetcher,
+        deadline_exceeded_fn=lambda: len(fetcher.calls) >= fetches_before_deadline,
+    )
+
+    # When: the series fetch crosses the deadline mid-window.
+    with pytest.raises(ResolutionDeadlineExceeded):
+        provider.price_series(
+            44, window=ResolutionWindow(start_block=1_000, horizon_blocks=1_800)
+        )
+
+    # Then: exactly one snapshot was fetched, it stays cached, and a resume
+    # with the deadline cleared completes without refetching it.
+    assert fetcher.calls == [(44, 1_600)]
+    fetches_before_deadline = 10
+    series = provider.price_series(
+        44, window=ResolutionWindow(start_block=1_000, horizon_blocks=1_800)
+    )
+    assert series is not None
+    assert tuple(snapshot.block for snapshot in series.snapshots) == (
+        1_600,
+        2_200,
+        2_800,
+    )
+    assert fetcher.calls == [(44, 1_600), (44, 2_200), (44, 2_800)]
 
 
 def test_live_provider_never_fetches_past_a_misaligned_window_end() -> None:
@@ -825,6 +898,7 @@ def test_baseline_risk_bundle_skips_timed_out_netuids_without_wedging() -> None:
         endpoint="mock://archive",
         request_timeout_seconds=request_timeout,
         subtensor_factory=make_subtensor,
+        min_request_interval_seconds=0.0,
     )
     provider = LiveAlphaPriceProvider(
         config=LiveAlphaPriceProviderConfig(
@@ -853,6 +927,7 @@ def test_latest_pool_observation_returns_none_when_current_block_times_out() -> 
         endpoint="mock://archive",
         request_timeout_seconds=request_timeout,
         subtensor=BlockingSubtensor(slow_current_block=True, sleep_seconds=0.6),
+        min_request_interval_seconds=0.0,
     )
     provider = LiveAlphaPriceProvider(
         config=LiveAlphaPriceProviderConfig(
@@ -882,6 +957,7 @@ def test_fetcher_rebuilds_connection_after_subnet_timeout() -> None:
         endpoint="mock://archive",
         request_timeout_seconds=request_timeout,
         subtensor_factory=make_subtensor,
+        min_request_interval_seconds=0.0,
     )
 
     with pytest.raises(TimeoutError, match="archive request timed out"):
@@ -910,6 +986,7 @@ def test_fetcher_bounds_indefinitely_timed_out_archive_workers() -> None:
         endpoint="mock://archive",
         request_timeout_seconds=request_timeout,
         subtensor_factory=make_subtensor,
+        min_request_interval_seconds=0.0,
     )
 
     try:
@@ -950,6 +1027,7 @@ def test_fetcher_connects_lazily_and_never_blocks_init_on_a_hanging_factory() ->
         endpoint="mock://archive",
         request_timeout_seconds=request_timeout,
         subtensor_factory=make_subtensor,
+        min_request_interval_seconds=0.0,
     )
     init_elapsed = time.monotonic() - started
 
@@ -986,6 +1064,7 @@ def test_fetcher_recovers_when_reconnect_raises_after_timeout() -> None:
         endpoint="mock://archive",
         request_timeout_seconds=request_timeout,
         subtensor_factory=make_subtensor,
+        min_request_interval_seconds=0.0,
     )
 
     # When: an operation times out, then the reconnect raises.
@@ -1020,6 +1099,7 @@ def test_fetcher_recovers_when_reconnect_hangs_after_timeout() -> None:
         endpoint="mock://archive",
         request_timeout_seconds=request_timeout,
         subtensor_factory=make_subtensor,
+        min_request_interval_seconds=0.0,
     )
 
     # When: an operation times out, then the reconnect hangs.
@@ -1049,6 +1129,7 @@ def test_fetcher_constructs_and_uses_one_connection_on_a_single_worker_thread() 
         endpoint="mock://archive",
         request_timeout_seconds=5.0,
         subtensor_factory=make_subtensor,
+        min_request_interval_seconds=0.0,
     )
 
     # When: several archive calls run without any timeout.
@@ -1079,6 +1160,7 @@ def test_fetcher_backs_off_after_archive_rate_limit_429() -> None:
         request_timeout_seconds=5.0,
         subtensor_factory=make_subtensor,
         now_fn=lambda: clock[0],
+        min_request_interval_seconds=0.0,
     )
 
     # When: the first fetch hits the 429, it arms a cooldown.
@@ -1114,6 +1196,7 @@ def test_fetcher_backs_off_after_operation_rate_limit_429() -> None:
         request_timeout_seconds=5.0,
         subtensor_factory=make_subtensor,
         now_fn=lambda: clock[0],
+        min_request_interval_seconds=0.0,
     )
 
     # When: the cached connection receives a 429 after it has connected.
@@ -1133,6 +1216,121 @@ def test_fetcher_backs_off_after_operation_rate_limit_429() -> None:
         fetcher.subnet(netuid=9)
     assert len(connections) == 2
     assert connections[1].calls == 1
+
+
+def test_fetcher_paces_consecutive_archive_operations() -> None:
+    # Given: a fetcher with a fake clock where operations complete instantly.
+    clock = [0.0]
+    sleeps: list[float] = []
+
+    def pace_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+        clock[0] += seconds
+
+    fetcher = BittensorSubnetInfoFetcher(
+        endpoint="mock://archive",
+        request_timeout_seconds=5.0,
+        subtensor=BlockingSubtensor(),
+        now_fn=lambda: clock[0],
+        min_request_interval_seconds=0.5,
+        pace_sleep=pace_sleep,
+    )
+
+    # When: two operations run back-to-back and a third after a long idle gap.
+    fetcher.subnet(netuid=7)
+    fetcher.subnet(netuid=8)
+    clock[0] += 10.0
+    fetcher.subnet(netuid=9)
+
+    # Then: only the back-to-back operation waits, for the remaining interval.
+    assert sleeps == [0.5]
+
+
+@dataclass(slots=True)
+class InBandThrottledSubtensor:
+    error: Exception
+    failures: int = 1
+    calls: int = 0
+
+    def subnet(self, netuid: int, block: int | None = None) -> FakeDynamicInfo:
+        self.calls += 1
+        if self.calls <= self.failures:
+            raise self.error
+        return FakeDynamicInfo(tao_in=5_000_000_000 + netuid, alpha_in=1_000_000_000)
+
+    def get_current_block(self) -> int:
+        return 9_999
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        SubstrateRequestException(
+            {
+                "jsonrpc": "2.0",
+                "error": {"code": -32029, "message": "Rate limit exceeded"},
+            }
+        ),
+        SubstrateRequestException("Historical work rate limit exceeded"),
+    ],
+)
+def test_fetcher_keeps_connection_after_in_band_rate_limit(error: Exception) -> None:
+    # Given: a cached connection whose operation answers an in-band rate limit.
+    connections: list[InBandThrottledSubtensor] = []
+
+    def make_subtensor() -> InBandThrottledSubtensor:
+        connection = InBandThrottledSubtensor(error=error)
+        connections.append(connection)
+        return connection
+
+    clock = [0.0]
+    fetcher = BittensorSubnetInfoFetcher(
+        endpoint="mock://archive",
+        request_timeout_seconds=5.0,
+        subtensor_factory=make_subtensor,
+        now_fn=lambda: clock[0],
+        min_request_interval_seconds=0.0,
+    )
+    with pytest.raises((type(error), ConnectionError)):
+        fetcher.subnet(netuid=9)
+
+    # When: the next operation runs immediately, with no cooldown armed.
+    result = fetcher.subnet(netuid=9)
+
+    # Then: the healthy connection is reused instead of being voided.
+    assert result.tao_in == 5_000_000_009
+    assert len(connections) == 1
+    assert connections[0].calls == 2
+
+
+def test_fetcher_voids_connection_for_transport_errors_mentioning_rate_limits() -> None:
+    # Given: a transport-level error whose text happens to mention rate limits.
+    connections: list[InBandThrottledSubtensor] = []
+
+    def make_subtensor() -> InBandThrottledSubtensor:
+        connection = InBandThrottledSubtensor(
+            error=ConnectionError("socket closed by proxy rate limiter: rate limit"),
+            failures=1 if not connections else 0,
+        )
+        connections.append(connection)
+        return connection
+
+    fetcher = BittensorSubnetInfoFetcher(
+        endpoint="mock://archive",
+        request_timeout_seconds=5.0,
+        subtensor_factory=make_subtensor,
+        now_fn=lambda: 0.0,
+        min_request_interval_seconds=0.0,
+    )
+    with pytest.raises(ConnectionError):
+        fetcher.subnet(netuid=9)
+
+    # When: the next operation runs.
+    result = fetcher.subnet(netuid=9)
+
+    # Then: the possibly-poisoned connection was voided and rebuilt.
+    assert result.tao_in == 5_000_000_009
+    assert len(connections) == 2
 
 
 def test_market_data_endpoint_default_is_mainnet_archive() -> None:
@@ -1170,6 +1368,31 @@ def test_live_provider_redacts_endpoint_credentials_after_retry_exhaustion() -> 
 
     with pytest.raises(LookupError, match="block missing"):
         provider._with_retry(missing)
+
+
+def test_live_provider_marks_progress_per_retry_attempt() -> None:
+    # Given: a progress recorder and an operation that fails twice, then succeeds.
+    marks: list[int] = []
+    provider = LiveAlphaPriceProvider(
+        config=LiveAlphaPriceProviderConfig(
+            max_attempts=3, request_pause_seconds=Decimal("0")
+        ),
+        fetcher=FakeSubnetFetcher(responses={}),
+        progress_fn=lambda: marks.append(1),
+    )
+    attempts = iter((ConnectionError("drop"), ConnectionError("drop"), 7))
+
+    def flaky() -> int:
+        outcome = next(attempts)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    # When: the retry loop runs to success.
+    assert provider._with_retry(flaky) == 7
+
+    # Then: liveness is marked once per attempt.
+    assert marks == [1, 1, 1]
 
 
 def test_live_provider_is_window_explicit_and_reentrant() -> None:

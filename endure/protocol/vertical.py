@@ -19,6 +19,11 @@ from endure.aggregation.assessment_consensus import (
 from endure.assessment.coordinates import AssessmentConsensusRow
 from endure.protocol.round_engine import RoundWindows
 from endure.protocol.schedulers import RoundScheduler
+from endure.scoring.assessment_orchestrator import (
+    UNLIMITED_RESOLUTION_BUDGET,
+    ResolutionBudget,
+    ResolutionDeadlineExceeded,
+)
 from endure.storage.repository import Storage
 
 if TYPE_CHECKING:
@@ -41,6 +46,7 @@ class RoundProgram(Protocol):
         windows: RoundWindows,
         now: datetime,
         expected_miners: Sequence[str],
+        budget: ResolutionBudget = UNLIMITED_RESOLUTION_BUDGET,
     ) -> tuple[bool, str | None]: ...  # D6
 
 
@@ -113,6 +119,7 @@ class AssessmentRoundProgram:
         windows: RoundWindows,
         now: datetime,
         expected_miners: Sequence[str],
+        budget: ResolutionBudget = UNLIMITED_RESOLUTION_BUDGET,
     ) -> tuple[bool, str | None]:
         del expected_miners
         all_resolved = True
@@ -128,6 +135,13 @@ class AssessmentRoundProgram:
             if now <= due_at:
                 all_resolved = False
                 continue
+            if budget.exhausted():
+                all_resolved = False
+                bt.logging.info(
+                    f"resolution budget exhausted; deferring round {round_id} "
+                    f"horizon {horizon} to the next tick"
+                )
+                break
             try:
                 self.orchestrator.resolve_and_score(
                     round_id,
@@ -135,7 +149,19 @@ class AssessmentRoundProgram:
                     now_iso=now.isoformat(),
                     resolution_due_at=due_at,
                     archive_hotkeys=(),
+                    budget=budget,
                 )
+            except ResolutionDeadlineExceeded:
+                # Deadline exhaustion escaping the orchestrator (boundary
+                # lookups run before its truncation handling) is deferral,
+                # not failure: no error counter, no void path, resume next
+                # tick with a fresh budget.
+                all_resolved = False
+                bt.logging.info(
+                    f"resolution deadline reached in round {round_id} "
+                    f"horizon {horizon}; deferring to the next tick"
+                )
+                break
             except Exception as error:  # noqa: BLE001 — copied D6 per-horizon containment
                 last_error = type(error).__name__
                 all_resolved = False

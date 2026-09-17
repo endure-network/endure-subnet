@@ -9,6 +9,10 @@ from endure.protocol.round_engine import RoundWindows
 from endure.protocol.schedulers import SyntheticScheduler
 from endure.protocol.validator_service import ValidatorRoundService
 from endure.protocol.vertical import RoundProgram
+from endure.scoring.assessment_orchestrator import (
+    UNLIMITED_RESOLUTION_BUDGET,
+    ResolutionBudget,
+)
 from endure.storage.repository import Storage
 
 EPOCH = datetime(2026, 8, 12, tzinfo=UTC)
@@ -40,8 +44,9 @@ class _StubRoundProgram:
         windows: RoundWindows,
         now: datetime,
         expected_miners: Sequence[str],
+        budget: ResolutionBudget = UNLIMITED_RESOLUTION_BUDGET,
     ) -> tuple[bool, str | None]:
-        del round_id, windows, now, expected_miners
+        del round_id, windows, now, expected_miners, budget
         return False, None
 
 
@@ -77,7 +82,7 @@ def test_tick_routes_final_weights_to_round_program(
     monkeypatch.setattr(
         service,
         "_advance_rounds",
-        lambda _now, _expected, _archive: True,
+        lambda _now, _expected, _archive, _budget: True,
     )
 
     assert service.tick(expected_miners=()) == {"hk-a": Decimal("0.9")}

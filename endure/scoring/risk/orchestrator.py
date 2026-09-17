@@ -22,9 +22,11 @@ from endure.assessment.subnet_alpha_universe import parse_alpha_risk_universe_me
 from endure.scoring.assessment_orchestrator import (
     REALIZED_TARGET_RESOLVED,
     REALIZED_TARGET_VOIDED,
+    UNLIMITED_RESOLUTION_BUDGET,
     AssessmentResolutionContext,
     AssessmentScoringConfig,
     AssessmentScoringOrchestrator,
+    ResolutionBudget,
     ScoredOutputConfig,
     submitted_assessment_values,
 )
@@ -112,6 +114,7 @@ class RiskScoringOrchestrator(AssessmentScoringOrchestrator):
         now_iso: str,
         resolution_due_at: datetime | None = None,
         archive_hotkeys: Sequence[str] = (),
+        budget: ResolutionBudget = UNLIMITED_RESOLUTION_BUDGET,
     ) -> dict[str, Decimal]:
         windows = self._storage_for_window.round_windows(round_id, RISK_SCHEMA_ID)
         if windows is None:
@@ -160,6 +163,7 @@ class RiskScoringOrchestrator(AssessmentScoringOrchestrator):
             resolution_due_at=resolution_due,
             archive_hotkeys=archive_hotkeys,
             context=context,
+            budget=budget,
         )
 
 

@@ -87,6 +87,7 @@ ACTIVATED_ASSIGNMENTS = (
     (26, "0d0153828eebe5f449b365b7b3a3c43e87f3118770a2f76dfb98637a6eed6d9e"),
     (27, "d0884ffa6bf8d98807d20ab9ee8a7a0c2821bb08d0cc6376fb87a6db605cf0fb"),
     (28, "05da1df37dc67de435d0954d9b102be45922c6956822643ff1dcc7a892176e26"),
+    (29, "d3b9126c2bad0045e497e6f5f7362309c004d340f927cc91638d4df84344379b"),
 )
 
 
@@ -121,7 +122,7 @@ def test_registry_contains_exact_activation_history() -> None:
 
     assert payload["schema_version"] == 1
     assert actual == ACTIVATED_ASSIGNMENTS
-    assert payload["previous_activation_id"] == "activation-0041"
+    assert payload["previous_activation_id"] == "activation-0042"
 
 
 def test_source_bound_receipt_format_and_fields_are_cryptographically_sensitive() -> (
