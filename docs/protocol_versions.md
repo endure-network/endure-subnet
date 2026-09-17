@@ -155,27 +155,8 @@ This lease does not change either chain's configuration, start mainnet
 serving on any deployment, or qualify a release by itself. Wallet hotkeys remain distinct
 per environment; a protocol version key is not a wallet key.
 
-
-The same unserved `2041` lease also retires scoring memory outside the active
-Alpha Risk target/output/horizon coordinates. Startup removes only those mutable
-EMA rows. Frozen old rounds still settle against their original universe and
-retain realized targets, output scores, score history, and resolution markers;
-settlement cannot recreate retired EMA state. Active payout and consensus weights,
-and absence pruning, use only eligible coordinates. An empty fresh score result
-clears the validator's cached weights and blend snapshot.
-
-The removed launch targets (1, 5, 11, 13, 19) must not simply be added back to the
-whitelist. Running the retirement release clears their mutable memory, but a node
-that skipped it or still has old unresolved rounds needs an explicit scoring
-epoch/cutoff policy before reintroduction. That future policy is not implemented
-by this release; the launch-list regression test guards against accidental reuse.
-
-Before deploying this candidate, preserve a pre-upgrade database backup. Startup
-retirement deletes mutable EMA rows for removed coordinates, so reverting the
-software alone cannot restore their former scoring memory. Historical tables
-remain intact, and no schema migration is required; restoring the earlier mutable
-state requires that backup.
-
-Clearing an empty local score map prevents reuse of cached local scores. It does
-not clear previously submitted on-chain weights: existing all-zero abstention
-behavior and the mainnet bootstrap weight policy are unchanged.
+Key `2041` also excludes retired Alpha Risk coordinates from active scoring and
+consensus weights while preserving historical round settlement. Validators
+remove obsolete EMA state on startup and clear cached scores when no eligible
+scores remain. See the [universe-change policy](specs/2026-07-20-scoring-fairness-deltas.md#universe-changes)
+and [upgrade and rollback guidance](deploy/operator-node.md#rollback).

@@ -137,6 +137,9 @@ market-data source is unreachable — resolution fails, no new scores land, and
 stays up and serves commits/reveals but sets no weights. There is no
 burn-to-owner mode; emission resumes automatically once a coordinate scores.
 
+Abstention does not clear previously submitted on-chain weights, even when the
+validator has cleared its local score cache.
+
 Abstention protects the all-zero case only. When at least one positive score
 exists, the ported SDK processing in
 [weight_utils.py](../endure/base/utils/weight_utils.py) must still satisfy the

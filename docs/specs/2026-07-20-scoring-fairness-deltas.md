@@ -46,6 +46,17 @@ not retroactively change its consensus weight.
 - A failed horizon is contained and retried without partially advancing the
   round.
 
+### Universe changes
+
+Retired coordinates no longer contribute to payout or consensus weights, or
+prevent inactivity pruning. Their mutable EMA state is removed; historical
+rounds still settle without restoring that active scoring memory.
+
+Reintroducing a retired target requires a rule defining which rounds contribute
+to its new score. This must cover validators that skipped retirement and old
+rounds that remain unresolved. The current release does not support reintroducing
+targets 1, 5, 11, 13 or 19 by simply adding them back to the whitelist.
+
 ## 2 — Weight-emission audit trail
 
 Every validator weight attempt records a batch and its per-hotkey rows before

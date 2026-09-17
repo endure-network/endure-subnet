@@ -112,12 +112,17 @@ deployment, record all of the following in the private operations board:
 
 ## Rollback
 
+Back up the database before upgrading to protocol `2041`. Startup deletes EMA
+state for retired coordinates while retaining historical records. Reverting the
+image alone cannot recover that scoring memory; restoring it requires the
+pre-upgrade snapshot, even though the database schema is unchanged.
+
 For a normal rollback, replace the three artifact lines in `.env` with the
 previous release's `SOURCE_SHA`, `VALIDATOR_IMAGE`, and `MINER_IMAGE`, then run
 `deploy.sh` again. It takes another pre-change snapshot before switching both
 services together.
 
-There is one database-boundary exception: release `0014_drop_kre_tables` removes
+There is also a schema boundary: release `0014_drop_kre_tables` removes
 five legacy KRE tables, and older images know migrations only through `0013`.
 When rolling back across that boundary, stop both services and restore the
 integrity-checked pre-`0014` snapshot **before** starting the old images. Do not
