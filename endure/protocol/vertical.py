@@ -16,7 +16,7 @@ from endure.aggregation.assessment_consensus import (
     AssessmentConsensusBundleModel,
     compute_assessment_consensus,
 )
-from endure.assessment.coordinates import AssessmentConsensusRow
+from endure.assessment.coordinates import AssessmentConsensusRow, AssessmentCoordinate
 from endure.protocol.round_engine import RoundWindows
 from endure.protocol.schedulers import RoundScheduler
 from endure.scoring.assessment_orchestrator import (
@@ -58,6 +58,7 @@ class VerticalRuntime:
     round_program: RoundProgram  # D1-D6
     publisher: PublisherProjection  # D8-D9
     scheduler: RoundScheduler  # D11
+    active_coordinates: frozenset[AssessmentCoordinate] | None = None
 
 
 @dataclass(frozen=True, slots=True)

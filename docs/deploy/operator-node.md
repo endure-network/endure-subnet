@@ -85,9 +85,12 @@ resolves its env file and compose file relative to itself):
 sudo deploy/operator-node/deploy.sh
 ```
 
-The current script refuses `SERVING_STAGE=mainnet`. Enabling mainnet is a
-separate post-soak repository change after the canonical mainnet gate and
-release approvals are complete.
+`SERVING_STAGE` must be `testnet` or `mainnet` and must match `CHAIN`: the
+neurons refuse to serve Alpha Risk when the acknowledged stage does not match
+the configured chain endpoint, and mainnet additionally requires a recognized
+mainnet endpoint (see [running_on_mainnet.md](../running_on_mainnet.md)).
+Mainnet deployments pin the digests published on the `:prod` channel by the
+release tag workflow, which retags the soaked staging images without rebuilding.
 
 The script refuses mutable image tags, requires both OCI revisions to match
 `SOURCE_SHA`, snapshots the live or stopped validator SQLite database with an

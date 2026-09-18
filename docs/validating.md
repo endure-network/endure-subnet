@@ -1,7 +1,9 @@
 # Validating on Endure — Alpha Risk V1
 
-> **Experimental testnet alpha.** Alpha Risk mainnet serving is code-gated and
-> prohibited until the post-soak decision.
+> **Experimental testnet alpha.** Alpha Risk serves on mainnet only behind
+> the explicit `--endure.serving_stage mainnet` acknowledgement and only from
+> `:prod` releases promoted after the soak decision
+> ([running_on_mainnet.md](running_on_mainnet.md)).
 
 This is the public validator path: [README](../README.md) → this guide →
 [testnet runbook](running_on_testnet.md). Forge lending remains a documented reference
@@ -136,6 +138,9 @@ market-data source is unreachable — resolution fails, no new scores land, and
 `/health` degrades — so a validator started before its archive endpoint is live
 stays up and serves commits/reveals but sets no weights. There is no
 burn-to-owner mode; emission resumes automatically once a coordinate scores.
+
+Abstention does not clear previously submitted on-chain weights, even when the
+validator has cleared its local score cache.
 
 Abstention protects the all-zero case only. When at least one positive score
 exists, the ported SDK processing in

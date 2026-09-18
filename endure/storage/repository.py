@@ -17,17 +17,20 @@ from datetime import UTC, datetime
 from decimal import Decimal
 
 from sqlalchemy import (
+    Table,
     and_,
     create_engine,
     delete,
     event,
     func,
     insert,
+    or_,
     select,
     update,
 )
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.engine import Connection, Engine, RowMapping, make_url
+from sqlalchemy.sql import ColumnElement
 
 from endure.assessment.coordinates import (
     AssessmentConsensusRow,
@@ -631,6 +634,23 @@ def _coordinate_values(coordinate: AssessmentCoordinate) -> dict[str, object]:
         "horizon_value": coordinate.horizon_value,
         "output": coordinate.output,
     }
+
+
+def _coordinate_membership(
+    table: Table, coordinates: frozenset[AssessmentCoordinate]
+) -> ColumnElement[bool]:
+    """Row predicate: the row's coordinate is one of ``coordinates``."""
+    return or_(
+        *(
+            and_(
+                *(
+                    table.c[key] == value
+                    for key, value in _coordinate_values(coordinate).items()
+                )
+            )
+            for coordinate in sorted(coordinates)
+        )
+    )
 
 
 def _text_from_mapping(row: RowMapping, column: str) -> str:
@@ -2099,6 +2119,7 @@ class Storage:
         now_iso: str,
         archive_hotkeys: Sequence[str] = (),
         pruned_hotkeys: Sequence[str] = (),
+        pruned_coordinates: frozenset[AssessmentCoordinate] | None = None,
     ) -> None:
         """Persist one generic scoring pass atomically and idempotently.
 
@@ -2112,9 +2133,15 @@ class Storage:
 
         Confirmed deregistrations are removed only at the pass's horizon
         coordinates, after their zero-fill. Fully decayed hotkeys are removed
-        across all coordinates. Score history and output-score rows are never
-        deleted.
+        only across the supplied active coordinates (all coordinates when
+        unspecified). Retired memory, score history and output scores are preserved.
         """
+        if pruned_coordinates is not None and not pruned_coordinates:
+            raise ValueError(
+                "record_assessment_scoring_pass: an empty active coordinate set "
+                "would silently disable inactivity pruning; pass None to prune "
+                "across all coordinates"
+            )
         with self._engine.begin() as connection:
             marker = connection.execute(
                 select(assessment_horizon_resolutions.c.round_id)
@@ -2145,14 +2172,19 @@ class Storage:
                     connection, schema_id, horizon_value, archive_hotkeys
                 )
             if pruned_hotkeys:
-                connection.execute(
-                    delete(assessment_miner_score_state).where(
-                        assessment_miner_score_state.c.schema_id == schema_id,
-                        assessment_miner_score_state.c.miner_hotkey.in_(
-                            list(pruned_hotkeys)
-                        ),
-                    )
+                pruning = delete(assessment_miner_score_state).where(
+                    assessment_miner_score_state.c.schema_id == schema_id,
+                    assessment_miner_score_state.c.miner_hotkey.in_(
+                        list(pruned_hotkeys)
+                    ),
                 )
+                if pruned_coordinates is not None:
+                    pruning = pruning.where(
+                        _coordinate_membership(
+                            assessment_miner_score_state, pruned_coordinates
+                        )
+                    )
+                connection.execute(pruning)
             if complete:
                 connection.execute(
                     sqlite_insert(assessment_horizon_resolutions)

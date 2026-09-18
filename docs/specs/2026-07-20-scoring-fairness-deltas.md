@@ -46,6 +46,19 @@ not retroactively change its consensus weight.
 - A failed horizon is contained and retried without partially advancing the
   round.
 
+### Universe changes
+
+Only active coordinates contribute to payout, consensus weights and leaderboard
+shares. Retired EMA state is preserved and does not prevent active inactivity
+pruning; that pruning removes only active coordinates. Historical rounds still
+settle against their frozen universe, updating preserved EMAs and recording
+absence observations under the existing historical eligibility rule.
+
+Reintroducing a target resumes its preserved scores for still-registered miners,
+including forecasts settled during retirement. Restarting or skipping an
+intermediate release does not reset that memory. Existing confirmed
+deregistration archival still applies to all coordinates after settlement.
+
 ## 2 — Weight-emission audit trail
 
 Every validator weight attempt records a batch and its per-hotkey rows before

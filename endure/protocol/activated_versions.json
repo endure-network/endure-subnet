@@ -261,9 +261,9 @@
     }
   ],
   "current_lease": {
-    "authority_sha256": "e0c18d0a76a9f3451876307b5634a39225abd511d0811a32fa22bb049dc3b458",
-    "digest": "f51e52e15a67e404d584accef21de7e3b6965ad64d496bf28ce8c06094248151",
-    "holder": "feat/universe-refresh-and-release-pipeline",
+    "authority_sha256": "27e8f797e62ce76333067470e18a32bdccdd80a385235b4d700d21513880c2b1",
+    "digest": "570989ed4a3e73bc1283e99742c3931712ec0e3c4aebc96a5aebcc1375ea87f7",
+    "holder": "codex/pr57-release-mitigations",
     "key": 2041
   },
   "previous_activation_id": "activation-0043",

@@ -347,9 +347,8 @@ def test_operator_deploy_rejects_mutable_images_and_records_rollback() -> None:
     assert "previous-images.txt" in deploy_script
     assert "sqlite3.connect" in deploy_script
     assert "PRAGMA integrity_check" in deploy_script
-    assert (
-        "Refusing mainnet until the repository mainnet gate is lifted." in deploy_script
-    )
+    assert "Refusing mainnet" not in deploy_script
+    assert "SERVING_STAGE must be testnet or mainnet" in deploy_script
     assert "ps -aq validator" in deploy_script
     assert 'state_volume="endure-subnet_validator-data"' in deploy_script
     assert 'docker volume inspect "$state_volume"' in deploy_script
@@ -376,3 +375,80 @@ def test_operator_deploy_rejects_mutable_images_and_records_rollback() -> None:
     assert "docker compose" in deploy_script
     assert "http://127.0.0.1:8714/live" in deploy_script
     assert "http://127.0.0.1:8714/health" in deploy_script
+
+
+def test_prod_retag_uses_digest_preserving_copy_for_both_images(tmp_path: Path) -> None:
+    workflow = yaml.safe_load(
+        (ROOT / ".github/workflows/publish-prod-images.yml").read_text()
+    )
+    steps = {step.get("name"): step for step in workflow["jobs"]["publish"]["steps"]}
+    command = steps["Retag as prod and semver"]["run"]
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    docker = fake_bin / "docker"
+    docker.write_text(
+        """#!/usr/bin/env python3
+import json, os, sys
+args = sys.argv[1:]
+if args[:3] == ['buildx', 'imagetools', 'create']:
+    # Buildx otherwise wraps a single manifest in an index (changing its digest).
+    assert '--prefer-index=false' in args, args
+    assert args[-1].endswith('@sha256:' + 'a' * 64), args
+    tags = [args[i + 1] for i, arg in enumerate(args) if arg == '--tag']
+    assert len(tags) == 2 and tags[0].endswith(':prod') and tags[1].endswith(':v0.1.0')
+    with open(os.environ['RETAG_LOG'], 'a') as log:
+        log.write(args[-1].split('@')[0] + '\\n')
+else:
+    raise AssertionError(args)
+"""
+    )
+    docker.chmod(0o755)
+    log = tmp_path / "retag.log"
+    result = subprocess.run(
+        ["bash", "-euo", "pipefail", "-c", command],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin}:{Path(sys.executable).parent}:" + os.environ["PATH"],
+            "TAG_SHA": "b" * 40,
+            "RELEASE_TAG": "v0.1.0",
+            "VALIDATOR_REPO": "ghcr.io/example/validator",
+            "MINER_REPO": "ghcr.io/example/miner",
+            "VALIDATOR_DIGEST": "sha256:" + "a" * 64,
+            "MINER_DIGEST": "sha256:" + "a" * 64,
+            "RETAG_LOG": str(log),
+        },
+    )
+    assert result.returncode == 0, result.stderr
+    assert log.read_text().splitlines() == [
+        "ghcr.io/example/validator",
+        "ghcr.io/example/miner",
+    ]
+
+
+def _prod_workflow_steps() -> dict[str, dict[str, object]]:
+    workflow = yaml.safe_load(
+        (ROOT / ".github/workflows/publish-prod-images.yml").read_text()
+    )
+    job = workflow["jobs"]["publish"]
+    assert job["defaults"]["run"]["shell"] == "bash", (
+        "prod publish steps must run under bash with pipefail so a failed "
+        "`imagetools inspect | jq` cannot yield an empty digest that verifies"
+    )
+    return {step.get("name"): step for step in job["steps"]}
+
+
+def test_prod_publish_resolves_each_soaked_digest_exactly_once() -> None:
+    steps = _prod_workflow_steps()
+    resolve = str(steps["Resolve the soaked image digests"]["run"])
+    retag = str(steps["Retag as prod and semver"]["run"])
+    verify = str(steps["Verify the prod channel points at the soaked digests"]["run"])
+
+    assert "VALIDATOR_DIGEST=" in resolve
+    assert "MINER_DIGEST=" in resolve
+    for later_step in (retag, verify):
+        assert "sha-$TAG_SHA" not in later_step
+        assert "$VALIDATOR_DIGEST" in later_step
+        assert "$MINER_DIGEST" in later_step

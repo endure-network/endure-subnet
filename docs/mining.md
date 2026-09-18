@@ -1,7 +1,8 @@
 # Mining on Endure — Alpha Risk V1
 
-> **Experimental testnet alpha.** Use only a testnet wallet. Mainnet serving is
-> code-gated and unsupported.
+> **Experimental testnet alpha.** Use a testnet wallet unless you are
+> deploying a `:prod` release behind the explicit mainnet acknowledgement
+> ([running_on_mainnet.md](running_on_mainnet.md)).
 
 This is the public miner path: [README](../README.md) → this guide →
 [testnet runbook](running_on_testnet.md). Alpha Risk is submission-driven: your
@@ -92,6 +93,13 @@ then amplifies the gap — a miner matching another's accuracy on half the
 universe earns roughly one eighth of the weight, not one half. Submitting a
 defensible estimate for every coordinate strictly dominates skipping it: a
 scored attempt can only beat the zero the skip guarantees.
+
+The reference miner assembles bundles from the whitelist compiled into its
+release rather than from the per-round universe endpoint. A round is frozen to
+the universe in force when it opened, so a miner upgraded across a whitelist
+change inside an open commit window submits netuids that round does not
+accept and has its reveal rejected for that one round. Upgrade between rounds,
+or read the round universe before assembling.
 
 ## Commit, reveal, and scoring
 

@@ -985,3 +985,69 @@ class TestPublicApiHardening:
 
         assert response.status_code in (200, 204)
         assert response.headers.get("access-control-allow-origin") == "*"
+
+
+@pytest.mark.parametrize("mode", ["default", "subset", "empty"])
+def test_risk_leaderboard_filters_active_memory_but_raw_scores_preserve_it(
+    storage: Storage,
+    mode: str,
+) -> None:
+    from endure.assessment.subnet_alpha_universe import ALPHA_RISK_WHITELISTED_NETUIDS
+    from endure.scoring.risk.policy import active_risk_coordinates
+
+    active, other = ALPHA_RISK_WHITELISTED_NETUIDS[:2]
+    retired = next(
+        netuid
+        for netuid in range(1, len(ALPHA_RISK_WHITELISTED_NETUIDS) + 2)
+        if netuid not in ALPHA_RISK_WHITELISTED_NETUIDS
+    )
+    netuids = (active,) if mode == "subset" else ()
+    for hotkey, netuid, value in (
+        ("mixed", active, "0.2"),
+        ("mixed", retired, "1"),
+        ("retired", retired, "1"),
+        ("production", other, "0.6"),
+    ):
+        storage.upsert_assessment_ema(
+            RISK_SCHEMA_ID,
+            AssessmentEmaState(
+                hotkey,
+                AssessmentCoordinate.subnet_asset(
+                    netuid=netuid,
+                    horizon_seconds=HORIZON_30D_SECONDS,
+                    output=RiskOutput.MAX_DRAWDOWN.value,
+                ),
+                Decimal(value),
+                3,
+            ),
+            now_iso=NOW,
+        )
+    app = build_app(
+        storage=storage,
+        schema_id=RISK_SCHEMA_ID,
+        publisher="risk",
+        active_coordinates=None
+        if mode == "default"
+        else active_risk_coordinates(netuids),
+    )
+    client = TestClient(app)
+    rows = {row["miner_hotkey"]: row for row in client.get("/miners").json()}
+    assert set(rows) == (
+        {"mixed", "retired", "production"}
+        if mode == "default"
+        else {"mixed"}
+        if mode == "subset"
+        else set()
+    )
+    if mode == "default":
+        # None is "unfiltered" for every publisher: the validator always passes
+        # its runtime's active set, and the read API never substitutes a policy.
+        assert Decimal(rows["mixed"]["blended_score"]) == Decimal("0.6")
+        assert len(rows["mixed"]["coordinate_emas"]) == 2
+    elif rows:
+        assert Decimal(rows["mixed"]["blended_score"]) == Decimal("0.2")
+        assert all(
+            row["target_id"] == str(active) for row in rows["mixed"]["coordinate_emas"]
+        )
+    assert len(client.get("/miners/mixed/scores").json()["emas"]) == 2
+    assert client.get("/miners/retired/scores").status_code == 200

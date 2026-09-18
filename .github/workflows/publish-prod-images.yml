@@ -31,6 +31,12 @@ jobs:
   publish:
     name: Retag soaked release images as prod
     runs-on: ubuntu-latest
+    # bash here means `bash -eo pipefail`; the default shell drops pipefail, so
+    # a failed `imagetools inspect | jq` would yield an empty digest that the
+    # verification step compares against itself.
+    defaults:
+      run:
+        shell: bash
     env:
       GH_TOKEN: ${{ github.token }}
       RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
@@ -56,31 +62,43 @@ jobs:
       - name: Authenticate to the container registry
         run: echo "$GH_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
 
+      # The soaked digests are read from the registry exactly once, validated,
+      # and exported. Later steps retag and verify those exported values rather
+      # than re-reading `sha-<commit>`, which is a mutable tag a re-run of the
+      # staging publish could move underneath this workflow.
       - name: Resolve the soaked image digests
         run: |
-          owner="${GITHUB_REPOSITORY_OWNER,,}"
-          for image in endure-subnet-validator endure-subnet-miner; do
-            repo="ghcr.io/$owner/$image"
+          soaked_digest() {
+            local repo="$1" digest
             if ! digest="$(docker buildx imagetools inspect \
               --format '{{json .Manifest}}' "$repo:sha-$TAG_SHA" | jq -r .digest)"; then
               echo "No published release image $repo:sha-$TAG_SHA." >&2
               echo "Tag the promoted staging source commit, not the merge commit." >&2
-              exit 1
+              return 1
             fi
-            [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
-          done
-          echo "VALIDATOR_REPO=ghcr.io/$owner/endure-subnet-validator" >> "$GITHUB_ENV"
-          echo "MINER_REPO=ghcr.io/$owner/endure-subnet-miner" >> "$GITHUB_ENV"
+            [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || return 1
+            echo "$digest"
+          }
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          validator_repo="ghcr.io/$owner/endure-subnet-validator"
+          miner_repo="ghcr.io/$owner/endure-subnet-miner"
+          validator_digest="$(soaked_digest "$validator_repo")"
+          miner_digest="$(soaked_digest "$miner_repo")"
+          {
+            echo "VALIDATOR_REPO=$validator_repo"
+            echo "VALIDATOR_DIGEST=$validator_digest"
+            echo "MINER_REPO=$miner_repo"
+            echo "MINER_DIGEST=$miner_digest"
+          } >> "$GITHUB_ENV"
 
       - name: Retag as prod and semver
         run: |
-          for repo in "$VALIDATOR_REPO" "$MINER_REPO"; do
-            digest="$(docker buildx imagetools inspect \
-              --format '{{json .Manifest}}' "$repo:sha-$TAG_SHA" | jq -r .digest)"
-            docker buildx imagetools create \
+          for pair in "$VALIDATOR_REPO@$VALIDATOR_DIGEST" "$MINER_REPO@$MINER_DIGEST"; do
+            repo="${pair%%@*}"
+            docker buildx imagetools create --prefer-index=false \
               --tag "$repo:prod" \
               --tag "$repo:$RELEASE_TAG" \
-              "$repo@$digest"
+              "$pair"
           done
 
       - name: Verify the prod channel points at the soaked digests
@@ -91,9 +109,10 @@ jobs:
             echo "Release tag: \`$RELEASE_TAG\` (source commit \`$TAG_SHA\`)"
             echo
           } >> "$GITHUB_STEP_SUMMARY"
-          for repo in "$VALIDATOR_REPO" "$MINER_REPO"; do
-            source_digest="$(docker buildx imagetools inspect \
-              --format '{{json .Manifest}}' "$repo:sha-$TAG_SHA" | jq -r .digest)"
+          for pair in "$VALIDATOR_REPO@$VALIDATOR_DIGEST" "$MINER_REPO@$MINER_DIGEST"; do
+            repo="${pair%%@*}"
+            source_digest="${pair#*@}"
+            [[ "$source_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
             for tag in prod "$RELEASE_TAG"; do
               published_digest="$(docker buildx imagetools inspect \
                 --format '{{json .Manifest}}' "$repo:$tag" | jq -r .digest)"

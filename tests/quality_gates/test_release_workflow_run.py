@@ -1,4 +1,11 @@
-from scripts.quality_gates.release_workflow_run import latest_push_succeeded
+import io
+
+import pytest
+
+from scripts.quality_gates.release_workflow_run import (
+    latest_push_succeeded,
+    main,
+)
 
 SOURCE_SHA = "ab" * 20
 
@@ -36,3 +43,17 @@ def test_different_sha_or_event_cannot_satisfy_release_gate() -> None:
     }
 
     assert latest_push_succeeded(payload, source_sha=SOURCE_SHA) is False
+
+
+def test_missing_staging_run_explains_which_commit_to_tag(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    payload = {"workflow_runs": [_run(12, "success", source_sha="cd" * 20)]}
+    monkeypatch.setattr("sys.stdin", io.StringIO(__import__("json").dumps(payload)))
+
+    assert main(["--sha", SOURCE_SHA]) == 1
+
+    captured = capsys.readouterr()
+    assert SOURCE_SHA in captured.err
+    assert "staging" in captured.err
+    assert "merge commit" in captured.err

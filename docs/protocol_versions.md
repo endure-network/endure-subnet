@@ -139,12 +139,15 @@ the top pools by TAO reserve plus operator picks, including this subnet's own
 netuid 30 rated under the same rules. The key was unserved on every network
 when the refresh folded in, so the lease re-folded at `2041` with a new
 digest instead of burning a key. Its watched-tree digest is
-`f51e52e15a67e404d584accef21de7e3b6965ad64d496bf28ce8c06094248151`. The public lease authority receipt uses
+`570989ed4a3e73bc1283e99742c3931712ec0e3c4aebc96a5aebcc1375ea87f7`. Every
+re-fold of an unserved lease chains from the last activated record, key
+`30`, never from an earlier fold of the same lease. The public lease
+authority receipt uses
 `PREVIOUS_RECEIPT=77afcb26d890245818340f23cb191c3192d682664006fd9bf2d9251a7537a304`,
 `CURRENT_VERSION_KEY=2041`, and
-`CURRENT_VERSION_DIGEST=f51e52e15a67e404d584accef21de7e3b6965ad64d496bf28ce8c06094248151`
+`CURRENT_VERSION_DIGEST=570989ed4a3e73bc1283e99742c3931712ec0e3c4aebc96a5aebcc1375ea87f7`
 under the `LEASE_AUTHORITY` format above, producing
-`e0c18d0a76a9f3451876307b5634a39225abd511d0811a32fa22bb049dc3b458`.
+`27e8f797e62ce76333067470e18a32bdccdd80a385235b4d700d21513880c2b1`.
 
 The jump from `30` to `2041` deliberately clears the observed SN30 on-chain
 minimum of `2040`; intermediate application keys need not be deployed. Stage
@@ -154,3 +157,9 @@ gate behind the explicit `--endure.serving_stage mainnet` acknowledgement.
 This lease does not change either chain's configuration, start mainnet
 serving on any deployment, or qualify a release by itself. Wallet hotkeys remain distinct
 per environment; a protocol version key is not a wallet key.
+
+Key `2041` also excludes retired Alpha Risk coordinates from active scoring and
+consensus weights while preserving retired EMA memory and historical round
+settlement. Reintroduction resumes preserved scores under the existing
+registration rules; validators clear cached scores when no eligible scores remain. See the [universe-change policy](specs/2026-07-20-scoring-fairness-deltas.md#universe-changes)
+and [upgrade and rollback guidance](deploy/operator-node.md#rollback).
