@@ -347,9 +347,8 @@ def test_operator_deploy_rejects_mutable_images_and_records_rollback() -> None:
     assert "previous-images.txt" in deploy_script
     assert "sqlite3.connect" in deploy_script
     assert "PRAGMA integrity_check" in deploy_script
-    assert (
-        "Refusing mainnet until the repository mainnet gate is lifted." in deploy_script
-    )
+    assert "Refusing mainnet" not in deploy_script
+    assert "SERVING_STAGE must be testnet or mainnet" in deploy_script
     assert "ps -aq validator" in deploy_script
     assert 'state_volume="endure-subnet_validator-data"' in deploy_script
     assert 'docker volume inspect "$state_volume"' in deploy_script
