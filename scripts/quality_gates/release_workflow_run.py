@@ -34,7 +34,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         payload = json.load(sys.stdin)
     except (json.JSONDecodeError, OSError):
-        print("release workflow gate: unreadable workflow-runs payload", file=sys.stderr)
+        print(
+            "release workflow gate: unreadable workflow-runs payload", file=sys.stderr
+        )
         return 1
     if latest_push_succeeded(payload, source_sha=str(args.sha)):
         return 0
