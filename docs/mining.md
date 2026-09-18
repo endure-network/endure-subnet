@@ -83,8 +83,8 @@ which the hotkey leaves the scoring set entirely.
 ## Cover the full universe
 
 The round universe is every whitelisted netuid × both horizons × all four
-outputs. Read it per round from `/rounds/{round_id}/universe`; a 12-netuid
-whitelist yields 96 scored coordinates. Once you are in
+outputs. Read it per round from `/rounds/{round_id}/universe`; a 15-netuid
+whitelist yields 120 scored coordinates. Once you are in
 the scoring set, zero-fill applies to the whole universe: submitting only one
 horizon, or a subset of netuids, zero-fills the rest and scales your blended
 score down by the missing fraction before weight sharpening. Cubic sharpening

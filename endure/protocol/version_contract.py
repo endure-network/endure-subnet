@@ -10,7 +10,7 @@ so constants cannot drift outside the contract again.
 from pathlib import Path
 
 ACTIVATED_VERSION_REGISTRY_DIGEST = (
-    "7aabb8a860e7878fc4408f865d91a6aac40ba76814c2b6339d7d32baa190b9f3"
+    "6b39c0a53e3467e06406355680af517b2f362d7e225abd15688be9ec83fa48c4"
 )
 ACTIVATED_VERSION_HISTORY_DIGEST = (
     "d9d7c8b59cf36386d2087e87db158b81f82d03977fcead6ec9c54207f714a8aa"
@@ -119,9 +119,10 @@ PREVIOUS_VERSION_DIGEST = (
 # resolved values become identical across independent validators.
 # 2041: signed submissions bind all request fields; reveal persistence follows
 # bounded admission and accepted retries remain idempotent. Miners and validators
-# must deploy together. This shared release key clears the SN30 chain floor;
-# the mainnet serving gate remains unchanged.
+# must deploy together. This shared release key clears the SN30 chain floor.
+# Includes the 15-netuid mainnet universe refresh; mainnet serving opens
+# behind the explicit --endure.serving_stage mainnet acknowledgement.
 CURRENT_VERSION_KEY = 2041
 CURRENT_VERSION_DIGEST = (
-    "257258a4bb7a3bc6073e5bbe223886a265caaf781e07b6a40721a80ac95e2737"
+    "f51e52e15a67e404d584accef21de7e3b6965ad64d496bf28ce8c06094248151"
 )
