@@ -416,15 +416,19 @@ class TestHandleReveal:
         )
         assert (await handlers.handle_reveal(reveal, miner_hotkey="hk-a")).accepted
 
-        with patch(
-            "endure.protocol.handlers.validate_reveal",
-            side_effect=AssertionError("idempotent retry was revalidated"),
+        with (
+            patch(
+                "endure.protocol.handlers.validate_reveal",
+                side_effect=AssertionError("idempotent retry was revalidated"),
+            ),
+            patch.object(storage, "record_reveal") as persist,
         ):
             retry = await handlers.handle_reveal(
                 reveal.model_copy(), miner_hotkey="hk-a"
             )
 
         assert retry.accepted is True
+        persist.assert_not_called()
 
     async def test_idempotent_retry_still_rejects_stale_protocol_version(
         self, storage: Storage
@@ -504,11 +508,37 @@ class TestHandleReveal:
 
         first = await handlers.handle_reveal(reveal, miner_hotkey="hk-a")
         second = await handlers.handle_reveal(reveal.model_copy(), miner_hotkey="hk-a")
-        third = await handlers.handle_reveal(reveal.model_copy(), miner_hotkey="hk-a")
+        with patch.object(storage, "record_reveal") as persist:
+            third = await handlers.handle_reveal(
+                reveal.model_copy(update={"bundle_json": "{}"}), miner_hotkey="hk-a"
+            )
+        persist.assert_not_called()
 
         assert first.rejection_code == RejectionCode.HASH_MISMATCH.value
         assert second.rejection_code == RejectionCode.HASH_MISMATCH.value
         assert third.rejection_code == RejectionCode.RATE_LIMITED.value
+
+    async def test_outside_window_does_not_persist_reveal(
+        self, storage: Storage
+    ) -> None:
+        _open_round(storage)
+        await _handlers(storage, IN_COMMIT).handle_commit(
+            _commit_synapse("ab" * 32), miner_hotkey="hk-a"
+        )
+        reveal = SubmitReveal(
+            round_id=ROUND,
+            schema_id=FORGE_LENDING_SCHEMA_ID,
+            spec_version=CURRENT_VERSION_KEY,
+            bundle_json=_bundle_json(),
+            nonce_hex=VALID_NONCE_HEX,
+        )
+        with patch.object(storage, "record_reveal") as persist:
+            response = await _handlers(storage, IN_COMMIT).handle_reveal(
+                reveal, miner_hotkey="hk-a"
+            )
+        assert response.rejection_code == RejectionCode.LATE_REVEAL.value
+        persist.assert_not_called()
+        assert storage.reveal_count(ROUND, FORGE_LENDING_SCHEMA_ID, "hk-a") == 0
 
     async def test_rate_limited_oversized_reveal_never_reaches_disk(
         self, storage: Storage

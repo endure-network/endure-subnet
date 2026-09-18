@@ -5,7 +5,8 @@ needed. Primary purpose: catch pre-v10 lowercase-API drift
 (bt.wallet -> bt.Wallet etc.) at typecheck time.
 """
 
-from typing import Any
+from collections.abc import Mapping
+from typing import Any, Self
 
 from . import mock as mock
 from .utils.btlogging import logging as logging
@@ -83,6 +84,8 @@ class Synapse:
     # arbitrary fields (dummy_input, dummy_output, ...). Allow any
     # attribute access so pyright doesn't flag scaffold/test subclasses.
     dendrite: Any
+    @classmethod
+    def from_headers(cls, headers: Mapping[str, str]) -> Self: ...
     def __init__(self, *args: Any, **kwargs: Any) -> None: ...
     def __getattr__(self, name: str) -> Any: ...
     def __setattr__(self, name: str, value: Any) -> None: ...

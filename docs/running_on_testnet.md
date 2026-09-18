@@ -1,6 +1,6 @@
 # Running Endure on Testnet
 
-> **Experimental testnet alpha, `v0.1.0-rc.3` candidate, protocol key `30`.** This is
+> **Experimental testnet alpha, `v0.1.0-rc.3` candidate, protocol key `2041`.** This is
 > not a mainnet guide. The authoritative compatibility value is
 > [version_contract.py](../endure/protocol/version_contract.py).
 
@@ -104,4 +104,6 @@ separately in [the maintainer runbook](deploy/coolify.md).
 The [`staging` contract](running_on_staging.md) describes the release-candidate
 branch and environment independently of any deployment provider.
 
-Mainnet serving remains prohibited until the soak gate and a later code change.
+Mainnet serving requires the explicit `--endure.serving_stage mainnet`
+acknowledgement on a recognized mainnet endpoint; see
+[running_on_mainnet.md](running_on_mainnet.md).

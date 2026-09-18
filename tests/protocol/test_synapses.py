@@ -3,8 +3,42 @@
 from __future__ import annotations
 
 import bittensor as bt
+import pytest
 
 from endure.protocol.synapses import RejectionCode, SubmitCommit, SubmitReveal
+
+
+@pytest.mark.parametrize(
+    "synapse",
+    [
+        SubmitCommit(
+            round_id="2026-06-09",
+            schema_id="risk.v1.subnet_alpha",
+            spec_version=30,
+            bundle_hash="ab" * 32,
+        ),
+        SubmitReveal(
+            round_id="2026-06-09",
+            schema_id="risk.v1.subnet_alpha",
+            spec_version=30,
+            bundle_json='{"a":1}',
+            nonce_hex="01" * 16,
+        ),
+    ],
+)
+def test_request_hash_covers_inputs_and_excludes_response(
+    synapse: SubmitCommit | SubmitReveal,
+) -> None:
+    original_hash = synapse.body_hash
+    inputs = set(type(synapse).model_fields) - set(bt.Synapse.model_fields)
+    assert set(synapse.required_hash_fields) == inputs - {"accepted", "rejection_code"}
+    for field in synapse.required_hash_fields:
+        original = getattr(synapse, field)
+        changed = original + 1 if isinstance(original, int) else original + "x"
+        assert synapse.model_copy(update={field: changed}).body_hash != original_hash
+    synapse.accepted = True
+    synapse.rejection_code = "response-only"
+    assert synapse.body_hash == original_hash
 
 
 class TestRejectionCode:

@@ -320,6 +320,18 @@ class TestConfigFactory:
         with pytest.raises(RuntimeError, match="mainnet compression is always refused"):
             require_compression_runtime_allowed(cfg)
 
+    def test_compression_guard_refuses_mainnet_even_with_mainnet_stage_ack(
+        self,
+    ) -> None:
+        cfg = config(_FakeCls)
+        cfg.runtime = argparse.Namespace(mode="live")
+        cfg.endure.serving_stage = "mainnet"
+        cfg.subtensor.network = "finney"
+        cfg.subtensor.chain_endpoint = ""
+
+        with pytest.raises(RuntimeError, match="mainnet compression is always refused"):
+            require_compression_runtime_allowed(cfg)
+
     def test_other_dev_only_features_remain_refused_on_testnet(self) -> None:
         cfg = config(_FakeCls)
         cfg.runtime = argparse.Namespace(mode="live")
@@ -437,7 +449,7 @@ class TestConfigFactory:
         cfg.subtensor.network = "wss://api-bittensor-mainnet.n.dwellir.com/some-key"
         cfg.subtensor.chain_endpoint = ""
 
-        with pytest.raises(RuntimeError, match="R7 soak gate"):
+        with pytest.raises(RuntimeError, match="serving_stage mainnet"):
             require_serving_stage_allowed(cfg)
 
     @pytest.mark.parametrize(
@@ -457,7 +469,54 @@ class TestConfigFactory:
         cfg.subtensor.network = network
         cfg.subtensor.chain_endpoint = endpoint
 
-        with pytest.raises(RuntimeError, match="R7 soak gate"):
+        with pytest.raises(RuntimeError, match="serving_stage mainnet"):
+            require_serving_stage_allowed(cfg)
+
+    @pytest.mark.parametrize(
+        ("network", "endpoint"),
+        (
+            ("finney", ""),
+            ("archive", ""),
+            ("latent-lite", ""),
+            ("", "wss://entrypoint-finney.opentensor.ai:443"),
+            ("", "wss://archive.chain.opentensor.ai:443"),
+            ("", "wss://lite.sub.latent.to:443"),
+            ("wss://api-bittensor-mainnet.n.dwellir.com/some-key", ""),
+        ),
+    )
+    def test_serving_stage_guard_allows_mainnet_with_mainnet_flag(
+        self, network: str, endpoint: str
+    ) -> None:
+        cfg = config(_FakeCls)
+        cfg.runtime = argparse.Namespace(mode="live")
+        cfg.endure.active_schema = RISK_SCHEMA_ID
+        cfg.endure.serving_stage = "mainnet"
+        cfg.subtensor.network = network
+        cfg.subtensor.chain_endpoint = endpoint
+
+        require_serving_stage_allowed(cfg)
+
+    def test_serving_stage_guard_refuses_mainnet_without_flag(self) -> None:
+        cfg = config(_FakeCls)
+        cfg.runtime = argparse.Namespace(mode="live")
+        cfg.endure.active_schema = RISK_SCHEMA_ID
+        cfg.subtensor.network = "finney"
+        cfg.subtensor.chain_endpoint = ""
+
+        with pytest.raises(RuntimeError, match="serving_stage mainnet"):
+            require_serving_stage_allowed(cfg)
+
+    def test_serving_stage_guard_refuses_testnet_endpoint_with_mainnet_flag(
+        self,
+    ) -> None:
+        cfg = config(_FakeCls)
+        cfg.runtime = argparse.Namespace(mode="live")
+        cfg.endure.active_schema = RISK_SCHEMA_ID
+        cfg.endure.serving_stage = "mainnet"
+        cfg.subtensor.network = "test"
+        cfg.subtensor.chain_endpoint = ""
+
+        with pytest.raises(RuntimeError, match="serving_stage testnet"):
             require_serving_stage_allowed(cfg)
 
     def test_serving_stage_guard_refuses_unknown_remote_endpoint(self) -> None:
@@ -468,7 +527,7 @@ class TestConfigFactory:
         cfg.subtensor.chain_endpoint = "ws://validator.example.net:9944"
 
         with pytest.raises(
-            RuntimeError, match="mainnet serving requires a code change"
+            RuntimeError, match="recognized Bittensor testnet or mainnet endpoint"
         ):
             require_serving_stage_allowed(cfg)
 

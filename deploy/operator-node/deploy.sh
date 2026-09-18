@@ -103,10 +103,13 @@ if [[ ! "$source_sha" =~ ^[0-9a-f]{40}$ ]]; then
   exit 1
 fi
 serving_stage="$(awk -F= '$1 == "SERVING_STAGE" {print $2; exit}' "$env_file")"
-if [[ "$serving_stage" == "mainnet" ]]; then
-  echo "Refusing mainnet until the repository mainnet gate is lifted." >&2
+if [[ "$serving_stage" != "testnet" && "$serving_stage" != "mainnet" ]]; then
+  echo "SERVING_STAGE must be testnet or mainnet (got '$serving_stage')." >&2
   exit 1
 fi
+# The neurons refuse to serve when SERVING_STAGE does not match CHAIN
+# (endure/utils/config.py require_serving_stage_allowed); that runtime gate,
+# not this script, is the mainnet authority.
 
 previous_validator_image=""
 previous_miner_image=""

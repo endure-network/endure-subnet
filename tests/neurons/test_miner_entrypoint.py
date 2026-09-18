@@ -275,7 +275,7 @@ def test_miner_refuses_served_risk_schema_on_finney(
     )
     production_miner_config.subtensor.network = "finney"
 
-    with _patched_chain(), pytest.raises(RuntimeError, match="R7 soak gate"):
+    with _patched_chain(), pytest.raises(RuntimeError, match="serving_stage mainnet"):
         Miner(config=production_miner_config)
 
 

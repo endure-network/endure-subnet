@@ -1,0 +1,122 @@
+name: Publish prod images
+
+# Production release channel. Pushing a final release tag (vX.Y.Z) retags the
+# already-published immutable staging images (sha-<commit>) as :prod and
+# :vX.Y.Z, so third-party validators tracking :prod deploy bytes identical to
+# what soaked on staging. Nothing is rebuilt here. The tag must point to a
+# promoted source commit that has published release images — the staging tip
+# that was merged to main — not the merge commit itself.
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing final release tag (vX.Y.Z) to publish
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+  packages: write
+
+concurrency:
+  group: publish-prod-images
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Retag soaked release images as prod
+    runs-on: ubuntu-latest
+    # bash here means `bash -eo pipefail`; the default shell drops pipefail, so
+    # a failed `imagetools inspect | jq` would yield an empty digest that the
+    # verification step compares against itself.
+    defaults:
+      run:
+        shell: bash
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: refs/tags/${{ inputs.tag || github.ref_name }}
+
+      - name: Require a final release tag on the main lineage
+        run: |
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          TAG_SHA="$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")"
+          [[ "$TAG_SHA" =~ ^[0-9a-f]{40}$ ]]
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor "$TAG_SHA" FETCH_HEAD
+          echo "TAG_SHA=$TAG_SHA" >> "$GITHUB_ENV"
+
+      - name: Require successful release workflows for the tagged commit
+        run: scripts/quality_gates/require_release_workflows.sh "$TAG_SHA"
+
+      - name: Authenticate to the container registry
+        run: echo "$GH_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+
+      # The soaked digests are read from the registry exactly once, validated,
+      # and exported. Later steps retag and verify those exported values rather
+      # than re-reading `sha-<commit>`, which is a mutable tag a re-run of the
+      # staging publish could move underneath this workflow.
+      - name: Resolve the soaked image digests
+        run: |
+          soaked_digest() {
+            local repo="$1" digest
+            if ! digest="$(docker buildx imagetools inspect \
+              --format '{{json .Manifest}}' "$repo:sha-$TAG_SHA" | jq -r .digest)"; then
+              echo "No published release image $repo:sha-$TAG_SHA." >&2
+              echo "Tag the promoted staging source commit, not the merge commit." >&2
+              return 1
+            fi
+            [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || return 1
+            echo "$digest"
+          }
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          validator_repo="ghcr.io/$owner/endure-subnet-validator"
+          miner_repo="ghcr.io/$owner/endure-subnet-miner"
+          validator_digest="$(soaked_digest "$validator_repo")"
+          miner_digest="$(soaked_digest "$miner_repo")"
+          {
+            echo "VALIDATOR_REPO=$validator_repo"
+            echo "VALIDATOR_DIGEST=$validator_digest"
+            echo "MINER_REPO=$miner_repo"
+            echo "MINER_DIGEST=$miner_digest"
+          } >> "$GITHUB_ENV"
+
+      - name: Retag as prod and semver
+        run: |
+          for pair in "$VALIDATOR_REPO@$VALIDATOR_DIGEST" "$MINER_REPO@$MINER_DIGEST"; do
+            repo="${pair%%@*}"
+            docker buildx imagetools create --prefer-index=false \
+              --tag "$repo:prod" \
+              --tag "$repo:$RELEASE_TAG" \
+              "$pair"
+          done
+
+      - name: Verify the prod channel points at the soaked digests
+        run: |
+          {
+            echo '### Production release images'
+            echo
+            echo "Release tag: \`$RELEASE_TAG\` (source commit \`$TAG_SHA\`)"
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+          for pair in "$VALIDATOR_REPO@$VALIDATOR_DIGEST" "$MINER_REPO@$MINER_DIGEST"; do
+            repo="${pair%%@*}"
+            source_digest="${pair#*@}"
+            [[ "$source_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+            for tag in prod "$RELEASE_TAG"; do
+              published_digest="$(docker buildx imagetools inspect \
+                --format '{{json .Manifest}}' "$repo:$tag" | jq -r .digest)"
+              test "$published_digest" = "$source_digest"
+            done
+            echo "- \`$repo:prod\` = \`$repo@$source_digest\`" >> "$GITHUB_STEP_SUMMARY"
+          done

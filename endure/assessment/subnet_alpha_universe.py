@@ -13,9 +13,26 @@ from dataclasses import dataclass
 from endure.assessment.schemas.subnet_alpha_risk import SubnetAlphaTarget
 from endure.assessment.universe import UniverseSnapshot
 
-# risk scope §Universe: curated launch list for reliable pool depth/data. Netuids
-# 8 and 44 stay included because current recorded fixtures cover them.
-ALPHA_RISK_WHITELISTED_NETUIDS = (1, 3, 4, 5, 8, 9, 11, 13, 19, 44, 51, 64)
+# risk scope §Universe: curated launch list for reliable pool depth/data —
+# top TAO-reserve pools plus operator picks; netuid 30 (this subnet) is rated
+# under the same rules as every other member.
+ALPHA_RISK_WHITELISTED_NETUIDS = (
+    3,
+    4,
+    8,
+    9,
+    30,
+    34,
+    44,
+    50,
+    51,
+    53,
+    56,
+    64,
+    68,
+    107,
+    120,
+)
 MAX_ALPHA_RISK_TARGETS_PER_ROUND = len(ALPHA_RISK_WHITELISTED_NETUIDS)
 
 

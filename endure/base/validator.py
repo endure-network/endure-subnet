@@ -857,36 +857,23 @@ class BaseValidatorNeuron(BaseNeuron):
         """Resyncs the metagraph and updates the hotkeys and moving averages based on the new metagraph."""
         bt.logging.info("resync_metagraph()")
 
-        # Copies state of metagraph before syncing.
-        previous_metagraph = copy.deepcopy(self.metagraph)
-
         # Sync the metagraph.
         self.metagraph.sync(subtensor=self.subtensor)
         self.refresh_uid()
-        self._on_metagraph_synced()
 
-        # Check if the metagraph axon info has changed.
-        if previous_metagraph.axons == self.metagraph.axons:
-            return
-
-        bt.logging.info(
-            "Metagraph updated, re-syncing hotkeys, dendrite pool and moving averages"
-        )
-        # Zero out all hotkeys that have been replaced within overlapping range.
-        overlap = min(len(self.hotkeys), len(self.metagraph.hotkeys))
+        # Align against the identity owning each score, not a snapshot of the
+        # mutable metagraph. A previous sync may have updated the metagraph
+        # before a fallible reconciliation hook failed. Repair the score vector
+        # on every successful sync, before invoking that hook again.
+        hotkeys = list(self.metagraph.hotkeys)
+        scores = [ZERO] * int(self.metagraph.n)
+        overlap = min(len(scores), len(hotkeys), len(self.scores), len(self.hotkeys))
         for uid in range(overlap):
-            if self.hotkeys[uid] != self.metagraph.hotkeys[uid]:
-                self.scores[uid] = ZERO
-
-        # Resize scores to match current metagraph size (handle growth and shrink).
-        if len(self.scores) != int(self.metagraph.n):
-            new_scores = [ZERO] * int(self.metagraph.n)
-            copy_len = min(len(self.scores), int(self.metagraph.n))
-            new_scores[:copy_len] = self.scores[:copy_len]
-            self.scores = new_scores
-
-        # Update the hotkeys.
-        self.hotkeys = copy.deepcopy(self.metagraph.hotkeys)
+            if self.hotkeys[uid] == hotkeys[uid]:
+                scores[uid] = self.scores[uid]
+        self.scores = scores
+        self.hotkeys = hotkeys
+        self._on_metagraph_synced()
 
     def update_scores(
         self,

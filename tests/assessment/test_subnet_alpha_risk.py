@@ -247,7 +247,7 @@ class TestAlphaRiskUniverse:
             str(netuid) for netuid in sorted(ALPHA_RISK_WHITELISTED_NETUIDS)
         )
         assert {8, 44}.issubset(ALPHA_RISK_WHITELISTED_NETUIDS)
-        assert len(ALPHA_RISK_WHITELISTED_NETUIDS) == 12
+        assert len(ALPHA_RISK_WHITELISTED_NETUIDS) == 15
         assert len(snapshot.source_hash) == 64
 
     def test_provider_rejects_duplicates_and_cap_excess(self) -> None:

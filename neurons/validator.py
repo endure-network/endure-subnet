@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     import uvicorn
 from alembic import command as alembic_command
 from alembic.config import Config as AlembicConfig
+from fastapi import Request
 
 from endure.api.app import PublicationIdentity, RuntimeHealth
 from endure.assessment.registry import default_registry
@@ -34,6 +35,7 @@ from endure.assessment.schemas.subnet_alpha_risk import (
     RISK_SCHEMA_ID,
 )
 from endure.assessment.subnet_alpha_universe import StaticAlphaRiskUniverseProvider
+from endure.base.axon import authenticated_hotkey
 from endure.base.shutdown import install_shutdown_handlers, join_thread_or_raise
 from endure.base.validator import (
     WEIGHT_EMISSION_FINALITY_MARGIN_BLOCKS,
@@ -434,6 +436,7 @@ class Validator(BaseValidatorNeuron):
             storage=self._storage,
             schema_id=self._schema_id,
             publisher=self._vertical_runtime.publisher,
+            active_coordinates=self._vertical_runtime.active_coordinates,
             runtime_health=self.runtime_health,
             publication_identity=PublicationIdentity(
                 signer=lambda payload: self.wallet.hotkey.sign(data=payload),
@@ -842,11 +845,10 @@ class Validator(BaseValidatorNeuron):
             bt.logging.warning("axon off — submission handlers not attached")
             return
 
-        async def submit_commit(synapse: SubmitCommit) -> SubmitCommit:
-            hotkey = synapse.dendrite.hotkey if synapse.dendrite else None
-            if not hotkey:
-                synapse.accepted = False
-                return synapse
+        async def submit_commit(
+            synapse: SubmitCommit, request: Request
+        ) -> SubmitCommit:
+            hotkey = authenticated_hotkey(request, synapse)
             return await self._handlers.handle_commit(synapse, miner_hotkey=hotkey)
 
         async def submit_commit_blacklist(
@@ -854,11 +856,10 @@ class Validator(BaseValidatorNeuron):
         ) -> Tuple[bool, str]:
             return self._blacklist(synapse)
 
-        async def submit_reveal(synapse: SubmitReveal) -> SubmitReveal:
-            hotkey = synapse.dendrite.hotkey if synapse.dendrite else None
-            if not hotkey:
-                synapse.accepted = False
-                return synapse
+        async def submit_reveal(
+            synapse: SubmitReveal, request: Request
+        ) -> SubmitReveal:
+            hotkey = authenticated_hotkey(request, synapse)
             return await self._handlers.handle_reveal(synapse, miner_hotkey=hotkey)
 
         async def submit_reveal_blacklist(
@@ -885,8 +886,8 @@ class Validator(BaseValidatorNeuron):
 
     def _reconstruct_scores(self) -> None:
         weights = self._vertical_runtime.round_program.weights()
-        if weights:
-            self._apply_weights(weights)
+        self._blended_snapshot = self._vertical_runtime.round_program.blended_scores()
+        self._apply_weights(weights)
 
     def resync_metagraph(self):
         """Advance the deregistration tracker once per metagraph refresh.
@@ -966,7 +967,7 @@ class Validator(BaseValidatorNeuron):
                 expected_miners=list(self.metagraph.hotkeys),
                 archive_hotkeys=self._confirmed_deregistered(),
             )
-            if weights:
+            if weights is not None:
                 self._blended_snapshot = self._service.blended_snapshot()
                 self._apply_weights(weights)
             self._prune_archived_deregistrations()
@@ -1050,6 +1051,11 @@ def _build_risk_vertical_runtime(validator: Validator) -> VerticalRuntime:
         reveal_close_block=reveal_close_block,
         window_end_block=window_end_block,
         registered_hotkeys=lambda: list(validator.metagraph.hotkeys),
+        **(
+            {"active_netuids": _RECORDED_FIXTURE_NETUIDS}
+            if compression_enabled(validator.config)
+            else {}
+        ),
     )
     return VerticalRuntime(
         round_program=AssessmentRoundProgram(
@@ -1062,6 +1068,7 @@ def _build_risk_vertical_runtime(validator: Validator) -> VerticalRuntime:
         ),
         publisher="risk",
         scheduler=scheduler,
+        active_coordinates=orchestrator.active_coordinates,
     )
 
 
