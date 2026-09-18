@@ -139,12 +139,15 @@ the top pools by TAO reserve plus operator picks, including this subnet's own
 netuid 30 rated under the same rules. The key was unserved on every network
 when the refresh folded in, so the lease re-folded at `2041` with a new
 digest instead of burning a key. Its watched-tree digest is
-`cff34d3f1747a8c9fb9397904ce61f64b65d4712631d78a61da87815def81319`. The public lease authority receipt uses
-`PREVIOUS_RECEIPT=dfd62d551c098305883e1b26e5070a4fc5893c38bce99788d21dc598f3772212`,
+`570989ed4a3e73bc1283e99742c3931712ec0e3c4aebc96a5aebcc1375ea87f7`. Every
+re-fold of an unserved lease chains from the last activated record, key
+`30`, never from an earlier fold of the same lease. The public lease
+authority receipt uses
+`PREVIOUS_RECEIPT=77afcb26d890245818340f23cb191c3192d682664006fd9bf2d9251a7537a304`,
 `CURRENT_VERSION_KEY=2041`, and
-`CURRENT_VERSION_DIGEST=cff34d3f1747a8c9fb9397904ce61f64b65d4712631d78a61da87815def81319`
+`CURRENT_VERSION_DIGEST=570989ed4a3e73bc1283e99742c3931712ec0e3c4aebc96a5aebcc1375ea87f7`
 under the `LEASE_AUTHORITY` format above, producing
-`925ce9126b35e8bc8a46125d87958f0b2e6a9e3afe4c87a58d705edcc3c8e878`.
+`27e8f797e62ce76333067470e18a32bdccdd80a385235b4d700d21513880c2b1`.
 
 The jump from `30` to `2041` deliberately clears the observed SN30 on-chain
 minimum of `2040`; intermediate application keys need not be deployed. Stage
