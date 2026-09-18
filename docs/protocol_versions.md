@@ -162,4 +162,4 @@ Key `2041` also excludes retired Alpha Risk coordinates from active scoring and
 consensus weights while preserving retired EMA memory and historical round
 settlement. Reintroduction resumes preserved scores under the existing
 registration rules; validators clear cached scores when no eligible scores remain. See the [universe-change policy](specs/2026-07-20-scoring-fairness-deltas.md#universe-changes)
-and [upgrade and rollback guidance](deploy/operator-node.md#rollback).
+and [upgrade and rollback guidance](deploy/operator-node.md#rollback-and-holding-a-release).

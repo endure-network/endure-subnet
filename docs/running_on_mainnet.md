@@ -53,21 +53,15 @@ from testnet hotkeys; a protocol version key is not a wallet key.
 
 Third-party validators deploy through the
 [operator node path](deploy/operator-node.md) with `CHAIN=finney` and
-`SERVING_STAGE=mainnet`. Pin `VALIDATOR_IMAGE` and `MINER_IMAGE` to the
-digests behind `ghcr.io/endure-network/endure-subnet-validator:prod` and
-`ghcr.io/endure-network/endure-subnet-miner:prod`, and set `SOURCE_SHA` to the
-release tag's source commit. The `:prod` channel is written only by the
+`SERVING_STAGE=mainnet`. There is no image to choose: the host follows
+`ghcr.io/endure-network/endure-subnet-validator:prod` and
+`ghcr.io/endure-network/endure-subnet-miner:prod` by default and upgrades itself
+when a release moves the channel. The `:prod` channel is written only by the
 release-tag workflow, which retags the images that soaked on staging without
 rebuilding, so the published digests equal the soaked ones.
 
-```bash
-docker buildx imagetools inspect ghcr.io/endure-network/endure-subnet-validator:prod
-docker buildx imagetools inspect ghcr.io/endure-network/endure-subnet-miner:prod
-```
-
-The deploy script refuses mutable tags, so copy the `sha256:` digests rather
-than the `:prod` tag into the env file. Upgrade and rollback guidance is in
-[operator-node.md](deploy/operator-node.md#rollback).
+Rollback, and pinning a host to one release, are covered in
+[operator-node.md](deploy/operator-node.md#rollback-and-holding-a-release).
 
 ## Weights and abstention
 

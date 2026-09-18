@@ -94,7 +94,7 @@ See [mining](mining.md) for the commit/reveal contract and troubleshooting.
 ## Deployment topology
 
 Use the direct commands above or the
-[digest-pinned single-host deployment](deploy/operator-node.md). Neither public
+[channel-following single-host deployment](deploy/operator-node.md). Neither public
 path requires Coolify. The root `docker-compose.yml` remains a local reference
 topology; it cannot enforce separation between host wallet paths and is not a
 supported public deployment boundary. The Endure team operates its own

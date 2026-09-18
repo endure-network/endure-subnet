@@ -9,6 +9,7 @@ readonly release_dir="/var/lib/endure-node/releases"
 timestamp="$(date -u +%Y%m%dT%H%M%SZ)-$$"
 readonly timestamp
 readonly record_dir="$release_dir/$timestamp"
+readonly rejected_file="$release_dir/rejected-releases.txt"
 readonly compose_file="$deploy_dir/docker-compose.yaml"
 readonly -a compose=(docker compose --env-file "$env_file" -f "$compose_file")
 readonly state_volume="endure-subnet_validator-data"
@@ -25,6 +26,10 @@ matches = [
 if len(matches) != 1:
     raise SystemExit(f"expected one wallet mount for {sys.argv[1]}")
 print(matches[0])'
+readonly service_image_program='import json
+import sys
+
+print(json.load(sys.stdin)["services"][sys.argv[1]]["image"])'
 readonly backup_program='import os
 import sqlite3
 
@@ -78,7 +83,7 @@ if ((EUID != 0)); then
   echo "Run this deployment as root." >&2
   exit 1
 fi
-install -d -o root -g root -m 0700 "$backup_dir" "$release_dir" "$record_dir"
+install -d -o root -g root -m 0700 "$backup_dir" "$release_dir"
 umask 077
 exec 9>"$release_dir/deploy.lock"
 if ! flock -n 9; then
@@ -90,18 +95,6 @@ if ((${#images[@]} != 2)); then
   echo "Expected exactly two runtime images, found ${#images[@]}." >&2
   exit 1
 fi
-for image in "${images[@]}"; do
-  if [[ ! "$image" =~ @sha256:[0-9a-f]{64}$ ]]; then
-    echo "Refusing mutable image reference: $image" >&2
-    exit 1
-  fi
-done
-
-source_sha="$(awk -F= '$1 == "SOURCE_SHA" {print $2; exit}' "$env_file")"
-if [[ ! "$source_sha" =~ ^[0-9a-f]{40}$ ]]; then
-  echo "SOURCE_SHA must be a full lowercase commit SHA." >&2
-  exit 1
-fi
 serving_stage="$(awk -F= '$1 == "SERVING_STAGE" {print $2; exit}' "$env_file")"
 if [[ "$serving_stage" != "testnet" && "$serving_stage" != "mainnet" ]]; then
   echo "SERVING_STAGE must be testnet or mainnet (got '$serving_stage')." >&2
@@ -111,8 +104,56 @@ fi
 # (endure/utils/config.py require_serving_stage_allowed); that runtime gate,
 # not this script, is the mainnet authority.
 
-previous_validator_image=""
-previous_miner_image=""
+# This is the only pull. Everything below works from the image IDs it resolved
+# and starts containers with --pull never, so a channel tag that moves during
+# the run cannot change what gets started or recorded.
+for image in "${images[@]}"; do
+  docker pull "$image"
+done
+validator_image="$(
+  "${compose[@]}" config --format json \
+    | python3 -c "$service_image_program" validator
+)"
+miner_image="$(
+  "${compose[@]}" config --format json \
+    | python3 -c "$service_image_program" miner-1
+)"
+validator_image_id="$(docker image inspect --format '{{.Id}}' "$validator_image")"
+miner_image_id="$(docker image inspect --format '{{.Id}}' "$miner_image")"
+revision="$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$validator_image_id")"
+readonly release_identity="$validator_image_id $miner_image_id"
+
+# After a failed release the channel tag still resolves to it. Without this the
+# next timer run would deploy it, fail, and roll back again, every interval.
+if [[ -f "$rejected_file" ]] && grep -Fxq -- "$release_identity" "$rejected_file"; then
+  echo "Release $revision failed its health gate on this host and was rolled back." >&2
+  echo "Waiting for the next release; remove $rejected_file to retry this one." >&2
+  exit 1
+fi
+
+service_is_current() {
+  local service="$1" wanted_image_id="$2"
+  local container_id wanted_hash
+  container_id="$("${compose[@]}" ps -aq "$service")"
+  [[ -n "$container_id" ]] || return 1
+  [[ "$(docker inspect --format '{{.State.Running}}' "$container_id")" == "true" ]] \
+    || return 1
+  [[ "$(docker inspect --format '{{.Image}}' "$container_id")" == "$wanted_image_id" ]] \
+    || return 1
+  # An edited env file changes this hash, so set-once values still apply.
+  wanted_hash="$("${compose[@]}" config --hash '*' | awk -v s="$service" '$1 == s {print $2}')"
+  [[ "$(docker inspect --format '{{index .Config.Labels "com.docker.compose.config-hash"}}' "$container_id")" == "$wanted_hash" ]]
+}
+
+if service_is_current validator "$validator_image_id" \
+  && service_is_current miner-1 "$miner_image_id"; then
+  echo "Already running revision $revision; nothing to deploy."
+  exit 0
+fi
+
+install -d -o root -g root -m 0700 "$record_dir"
+previous_validator_image_id=""
+previous_miner_image_id=""
 for service in validator miner-1; do
   container_id="$("${compose[@]}" ps -aq "$service")"
   if [[ -n "$container_id" ]]; then
@@ -121,9 +162,9 @@ for service in validator miner-1; do
     printf '%s|%s|%s\n' "$service" "$image_ref" "$image_id" \
       >>"$record_dir/previous-images.txt"
     if [[ "$service" == "validator" ]]; then
-      previous_validator_image="$image_ref"
+      previous_validator_image_id="$image_id"
     else
-      previous_miner_image="$image_ref"
+      previous_miner_image_id="$image_id"
     fi
   fi
 done
@@ -142,15 +183,15 @@ if [[ -n "$validator_id" ]]; then
     docker exec -e BACKUP_PATH="$backup_inside" "$validator_id" python -c \
       'import os; os.unlink(os.environ["BACKUP_PATH"])'
   else
-    validator_image_id="$(docker inspect --format '{{.Image}}' "$validator_id")"
+    stopped_validator_image_id="$(docker inspect --format '{{.Image}}' "$validator_id")"
     docker run --rm --entrypoint python --volumes-from "$validator_id" \
       -e SOURCE_PATH=/data/validator-live.db \
       -e BACKUP_PATH="$backup_inside" \
-      "$validator_image_id" -c "$backup_program"
+      "$stopped_validator_image_id" -c "$backup_program"
     docker cp "$validator_id:$backup_inside" "$backup_file"
     docker run --rm --entrypoint python --volumes-from "$validator_id" \
       -e BACKUP_PATH="$backup_inside" \
-      "$validator_image_id" -c \
+      "$stopped_validator_image_id" -c \
       'import os; os.unlink(os.environ["BACKUP_PATH"])'
   fi
   chmod 0600 "$backup_file"
@@ -160,21 +201,6 @@ elif docker volume inspect "$state_volume" >/dev/null 2>&1; then
   echo "Existing validator state cannot be backed up without its container." >&2
   exit 1
 fi
-
-resolved_revision=""
-for image in "${images[@]}"; do
-  docker pull "$image"
-  revision="$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$image")"
-  if [[ "$revision" != "$source_sha" ]]; then
-    echo "Image revision does not match SOURCE_SHA: $image" >&2
-    exit 1
-  fi
-  if [[ -n "$resolved_revision" ]] && [[ "$revision" != "$resolved_revision" ]]; then
-    echo "Validator and miner images come from different commits." >&2
-    exit 1
-  fi
-  resolved_revision="$revision"
-done
 
 wait_for_healthy() {
   local service="$1"
@@ -197,8 +223,9 @@ wait_for_healthy() {
 
 rollback_failed_release() {
   echo "New release failed health checks; attempting automatic rollback." >&2
+  printf '%s\n' "$release_identity" >>"$rejected_file"
   "${compose[@]}" stop validator miner-1 || return 1
-  if [[ -z "$previous_validator_image" || -z "$previous_miner_image" || -z "$backup_file" ]]; then
+  if [[ -z "$previous_validator_image_id" || -z "$previous_miner_image_id" || -z "$backup_file" ]]; then
     echo "Automatic rollback is unavailable; the new services remain stopped." >&2
     return 1
   fi
@@ -215,8 +242,10 @@ rollback_failed_release() {
   docker run --rm --entrypoint python --volumes-from "$current_validator_id" \
     -e RESTORE_SOURCE="$restore_inside" \
     "$current_validator_image" -c "$restore_program" || return 1
-  VALIDATOR_IMAGE="$previous_validator_image" \
-    MINER_IMAGE="$previous_miner_image" \
+  # The channel tag now resolves to the failed release; only the recorded
+  # local image IDs still identify the previous one.
+  VALIDATOR_IMAGE="$previous_validator_image_id" \
+    MINER_IMAGE="$previous_miner_image_id" \
     "${compose[@]}" up -d --no-build --pull never validator miner-1 || {
     "${compose[@]}" stop validator miner-1 || true
     return 1
@@ -228,7 +257,7 @@ rollback_failed_release() {
   echo "Previous validator and miner images restored after failed deployment." >&2
 }
 
-if ! "${compose[@]}" up -d --no-build validator miner-1; then
+if ! "${compose[@]}" up -d --no-build --pull never validator miner-1; then
   rollback_failed_release || true
   exit 1
 fi
@@ -247,9 +276,11 @@ curl --silent --show-error --output "$record_dir/health.json" \
   >"$record_dir/health-status.txt"
 
 {
-  printf 'SOURCE_SHA=%s\n' "$source_sha"
-  for image in "${images[@]}"; do
-    printf 'IMAGE=%s\n' "$image"
+  printf 'REVISION=%s\n' "$revision"
+  for image in "$validator_image" "$miner_image"; do
+    printf 'IMAGE=%s|%s|%s\n' "$image" \
+      "$(docker image inspect --format '{{.Id}}' "$image")" \
+      "$(docker image inspect --format '{{join .RepoDigests ","}}' "$image")"
   done
   for service in validator miner-1; do
     container_id="$("${compose[@]}" ps -q "$service")"
@@ -257,5 +288,5 @@ curl --silent --show-error --output "$record_dir/health.json" \
   done
 } >"$record_dir/deployment.txt"
 
-echo "Deployment started from $source_sha and passed process health checks."
+echo "Deployed revision $revision and passed process health checks."
 echo "Complete the lifecycle and chain-side verification in docs/deploy/operator-node.md."

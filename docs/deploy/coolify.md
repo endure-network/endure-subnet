@@ -6,7 +6,7 @@
 This is the Endure team's current staging implementation, not the default
 deployment guide for public miners or validators. Public operators should start
 with the [testnet runbook](../running_on_testnet.md) or the
-[digest-pinned single-host guide](operator-node.md).
+[channel-following single-host guide](operator-node.md).
 
 The supported soak topology runs the validator and miners as separate Coolify
 applications. The validator needs durable database storage and independent

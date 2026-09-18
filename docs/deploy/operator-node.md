@@ -1,28 +1,23 @@
-# Single-host testnet deployment with immutable images
+# Single-host deployment that follows the release channel
 
-This is the supported image-based testnet path for one validator and one miner
-on a Linux/amd64 host. It does not require a deployment control plane and does
-not auto-deploy. The operator selects a qualified staging commit, takes a
-backup, and starts both services from registry digests that identify exact
-image bytes. Until `v0.1.0` is tagged, these are release-candidate images rather
-than stable semantic-version releases.
+This is the supported image-based path for one validator and one miner on a
+Linux/amd64 host. The operator fills in one environment file, enables one
+timer, and does not touch the host again for ordinary releases: the host
+follows the `:prod` image channel and upgrades itself, with a database snapshot
+before every change and an automatic rollback when the new release is unhealthy.
+It does not require a deployment control plane, and Endure never contacts an
+operator host.
 
-Do not run this procedure while a release blocker is open. Mainnet deployment
-also requires the documented soak and release approvals; publishing an image
-does not authorize deploying it.
+## How a release reaches the host
 
-## Artifact publication
+Promoting a reviewed commit to `staging` publishes validator and miner images
+for that exact commit, and those images soak on the Endure staging deployment.
+Pushing a `v*` release tag then runs the **Publish prod images** workflow, which
+retags the soaked images as `:prod` and `:vX.Y.Z` without rebuilding, so the
+channel serves the same bytes that soaked. Within a few minutes each following
+host pulls the channel, sees a new image, and deploys it.
 
-Promoting a reviewed commit to `staging` automatically runs the **Publish
-release images** workflow for that staging tip. The workflow waits for the
-required CI jobs for that exact commit, refuses any commit that is no longer
-the staging tip, then publishes separate validator and miner images to GHCR
-with OCI source labels. It produces a `release-images-<sha>` artifact
-containing both digest-pinned references. A manual rerun, once the workflow is
-available on the default branch, must provide that same full staging SHA.
-
-This workflow publishes artifacts only. It never contacts an operator host or
-changes another deployment environment.
+Whoever can push a `v*` tag therefore decides what every following host runs.
 
 Both GHCR packages must allow unauthenticated pulls before a candidate is
 announced publicly. If either package requires a registry credential, treat
@@ -46,9 +41,9 @@ cp deploy/operator-node/env.example deploy/operator-node/.env
 chmod 0600 deploy/operator-node/.env
 ```
 
-Replace every example value. Copy `SOURCE_SHA`, `VALIDATOR_IMAGE`, and
-`MINER_IMAGE` exactly from the workflow artifact. Both image references must
-end in `@sha256:<64 lowercase hexadecimal characters>`.
+Replace every example value. These are the values only the operator knows:
+wallets, hotkeys, netuid, chain, serving stage, and external IP. Nothing in the
+file changes from one release to the next.
 
 Set `VALIDATOR_WALLET_ROOT` and `MINER_WALLET_ROOT` to those separate
 directories. The Compose project keeps the existing `endure-subnet` project
@@ -61,13 +56,10 @@ project volumes.
 
 Before a deploy, confirm:
 
-- the selected SHA is the approved staging candidate;
-- the current release blocker list is clear;
 - the wallet directory contains no coldkey secret;
 - enough disk space exists for a database snapshot and both images;
 - ports 8091 and 8092 are intentionally reachable, while 8714 remains bound to
-  localhost unless a separately reviewed TLS proxy is installed;
-- the previous image references and a rollback owner are recorded.
+  localhost unless a separately reviewed TLS proxy is installed.
 
 Render the configuration without starting anything:
 
@@ -76,49 +68,77 @@ docker compose --env-file deploy/operator-node/.env \
   -f deploy/operator-node/docker-compose.yaml config --quiet
 ```
 
-## Deploy
+## Deploy and follow the channel
 
-Run from the directory holding the copied `deploy/operator-node/` (the script
+Run the first deployment by hand so its output is in front of you (the script
 resolves its env file and compose file relative to itself):
 
 ```bash
 sudo deploy/operator-node/deploy.sh
 ```
 
+Then enable the update timer. This is the last command the host needs:
+
+```bash
+sudo deploy/operator-node/install-timer.sh
+```
+
+The installer writes `endure-node-update.service` and
+`endure-node-update.timer` pointing at this copy of `deploy.sh`, wherever it
+lives, and starts the timer. Every five minutes, and once after a boot that
+missed a run, the timer runs the same `deploy.sh`. When the channel has not
+moved and `.env` has not changed, that run pulls, compares image IDs, and exits
+without a snapshot or a restart. Follow it with
+`journalctl -u endure-node-update.service`.
+
+Editing `.env` later needs no extra step: the next run sees the changed
+configuration and recreates the services. The timer also restarts a stopped
+node, so disable the timer before stopping the services on purpose
+(`sudo systemctl disable --now endure-node-update.timer`).
+
 `SERVING_STAGE` must be `testnet` or `mainnet` and must match `CHAIN`: the
 neurons refuse to serve Alpha Risk when the acknowledged stage does not match
 the configured chain endpoint, and mainnet additionally requires a recognized
 mainnet endpoint (see [running_on_mainnet.md](../running_on_mainnet.md)).
-Mainnet deployments pin the digests published on the `:prod` channel by the
-release tag workflow, which retags the soaked staging images without rebuilding.
 
-The script refuses mutable image tags, requires both OCI revisions to match
-`SOURCE_SHA`, snapshots the live or stopped validator SQLite database with an
-integrity check and host-side checksum, records the previous image identity,
-pulls the two digests, and recreates the validator and miner together. If
-process health fails, it stops the replacement, restores the snapshot, and
-starts the prior validator and miner images without pulling mutable tags. A
-deployment is refused if existing state cannot be backed up. Successful runs
-capture `/live` and `/health` results under
-`/var/lib/endure-node/releases/<timestamp>/`.
+When there is something to deploy, the script pulls both images once, snapshots
+the live or stopped validator SQLite database with an integrity check and
+host-side checksum, records the previous image IDs, and recreates the validator
+and miner together from exactly the images it pulled. A deployment is refused
+if existing state cannot be backed up. Successful runs capture `/live` and
+`/health` results under `/var/lib/endure-node/releases/<timestamp>/`, and
+`deployment.txt` there records what was observed: the source revision from the
+image label, each image ID, and its registry digest.
 
-A successful script exit proves process health only. Before accepting the
-deployment, record all of the following in the private operations board:
+If process health fails, the script stops the replacement, restores the
+snapshot, and starts the previous validator and miner by their recorded local
+image IDs, because the channel tag now resolves to the failed release. It then
+lists the failed release in `/var/lib/endure-node/releases/rejected-releases.txt`
+so the timer does not deploy it again every five minutes. Until the next
+release, each run exits non-zero and says so, which leaves the unit visibly
+failed. A later release deploys normally. To retry the same release, for
+example after a health failure caused by the host rather than the release,
+remove that file.
 
-1. exact source SHA and both image digests;
-2. backup path and SQLite integrity result;
-3. validator and miner protocol keys;
-4. one complete commit/reveal lifecycle;
-5. scoring evidence and chain-visible weight confirmation;
-6. current `/health` status and any degraded fields;
-7. the rollback release selected below.
+A successful script exit proves process health only. The chain-side outcome,
+a complete commit/reveal lifecycle and chain-visible weights, shows in
+`/health` and on chain, not in the script's exit code.
 
-## Rollback
+## Known limit: protocol key changes
 
-For a normal rollback, replace the three artifact lines in `.env` with the
-previous release's `SOURCE_SHA`, `VALIDATOR_IMAGE`, and `MINER_IMAGE`, then run
-`deploy.sh` again. It takes another pre-change snapshot before switching both
-services together.
+Hosts upgrade within one timer interval of each other, not at the same
+instant. During a release that changes the protocol key, nodes on different
+keys reject each other for up to that interval.
+
+## Rollback and holding a release
+
+A failed release rolls itself back as described above. To go back to an earlier
+release by choice, or to hold this host on one release, set `VALIDATOR_IMAGE`
+and `MINER_IMAGE` in `.env` to that release's registry digests (the previous
+`deployment.txt` records them) and run `deploy.sh`, or wait for the timer. It
+takes another pre-change snapshot before switching both services together.
+While the pin is set the host does not follow the channel; remove both lines to
+resume.
 
 There is one database-boundary exception: release `0014_drop_kre_tables` removes
 five legacy KRE tables, and older images know migrations only through `0013`.
@@ -132,9 +152,8 @@ A separate image-identity exception applies to the first migration from legacy
 local `:dev` images: those images have no registry digests or source identity.
 Preserve the pre-deploy `previous-images.txt`, old local images, and source
 directory until the new release completes a full lifecycle. If emergency
-rollback to that legacy build is required, stop and use the recorded local
-image IDs with the previous Compose configuration; do not weaken the immutable
-image check in `deploy.sh`.
+rollback to that legacy build is required, disable the update timer, stop, and
+use the recorded local image IDs with the previous Compose configuration.
 
 When a rollback requires database restoration, stop the validator before
 restoring the pre-deploy snapshot, remove stale SQLite `-wal` and `-shm` files,

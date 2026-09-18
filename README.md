@@ -119,8 +119,8 @@ hotkey file, seed, wallet archive, or endpoint credential in a public report.
 
 Follow [validating](docs/validating.md), then the [testnet runbook](docs/running_on_testnet.md).
 Validators need durable database storage, backed-up state, a registered testnet
-hotkey, and an archive market-data endpoint. Operators who prefer qualified,
-digest-pinned images can use the [single-host deployment](docs/deploy/operator-node.md).
+hotkey, and an archive market-data endpoint. Operators who prefer qualified
+release images can use the [single-host deployment](docs/deploy/operator-node.md).
 Mainnet operation is prohibited.
 
 ## Register on testnet
