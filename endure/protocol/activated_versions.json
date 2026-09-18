@@ -263,7 +263,7 @@
   "current_lease": {
     "authority_sha256": "925ce9126b35e8bc8a46125d87958f0b2e6a9e3afe4c87a58d705edcc3c8e878",
     "digest": "cff34d3f1747a8c9fb9397904ce61f64b65d4712631d78a61da87815def81319",
-    "holder": "feat/universe-refresh-and-release-pipeline",
+    "holder": "codex/pr57-release-mitigations",
     "key": 2041
   },
   "previous_activation_id": "activation-0043",

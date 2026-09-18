@@ -1,7 +1,8 @@
 # Mining on Endure — Alpha Risk V1
 
-> **Experimental testnet alpha.** Use only a testnet wallet. Mainnet serving is
-> code-gated and unsupported.
+> **Experimental testnet alpha.** Use a testnet wallet unless you are
+> deploying a `:prod` release behind the explicit mainnet acknowledgement
+> ([running_on_mainnet.md](running_on_mainnet.md)).
 
 This is the public miner path: [README](../README.md) → this guide →
 [testnet runbook](running_on_testnet.md). Alpha Risk is submission-driven: your

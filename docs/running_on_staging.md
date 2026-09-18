@@ -47,5 +47,7 @@ Any redeploy, revision change, or unexplained restart resets the seven-day
 clock. The gate is evaluated against probe history and persisted `/health`
 evidence, not operator recollection.
 
-Mainnet remains code-gated and requires a separate promotion decision after the
-testnet soak gate passes.
+Mainnet requires a separate promotion decision after the testnet soak gate
+passes: a final release tag publishes the soaked images to the `:prod` channel,
+and serving there needs the explicit acknowledgement described in
+[running_on_mainnet.md](running_on_mainnet.md).

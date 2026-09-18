@@ -1,6 +1,7 @@
 # Endure team Coolify deployment — Alpha Risk testnet
 
-> **Experimental testnet topology only.** Mainnet serving remains code-gated.
+> **Experimental testnet topology only.** Mainnet deployments use the
+> digest-pinned operator path with `:prod` images, not this topology.
 
 This is the Endure team's current staging implementation, not the default
 deployment guide for public miners or validators. Public operators should start

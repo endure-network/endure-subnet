@@ -1,8 +1,10 @@
 # Endure Subnet
 
 > **Experimental testnet alpha — `v0.1.0-rc.3` candidate.** Endure is not
-> production software, is not economically ready, and must not be used for
-> mainnet operation. Alpha Risk serving is code-gated to testnet pending the soak gate.
+> production software and is not economically ready. Alpha Risk serves on
+> mainnet only behind the explicit `--endure.serving_stage mainnet`
+> acknowledgement, on releases promoted to the `:prod` image channel after the
+> testnet soak gate ([running_on_mainnet.md](docs/running_on_mainnet.md)).
 > The current protocol key is `2041` ([contract](endure/protocol/version_contract.py));
 > activated and retired leases are tracked in the [version registry](docs/protocol_versions.md).
 
