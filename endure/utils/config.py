@@ -58,8 +58,12 @@ _TESTNET_HOSTS = {
 # unrecognized remote endpoints are refused outright.
 _MAINNET_HOSTS = {
     "entrypoint-finney.opentensor.ai",
+    "archive.chain.opentensor.ai",
+    "lite.sub.latent.to",
     "api-bittensor-mainnet.n.dwellir.com",
 }
+# bittensor's built-in --subtensor.network aliases that resolve to mainnet.
+_MAINNET_NETWORKS = {"finney", "archive", "latent-lite"}
 
 
 class DevOnlyConfigError(RuntimeError):
@@ -111,7 +115,7 @@ def _is_bittensor_testnet(config: "bt.Config") -> bool:
 
 def _is_bittensor_mainnet(config: "bt.Config") -> bool:
     endpoint, network = _effective_chain(config)
-    if network == "finney":
+    if network in _MAINNET_NETWORKS:
         return True
     return bool({_host_of(endpoint), _host_of(network)} & _MAINNET_HOSTS)
 

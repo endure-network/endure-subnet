@@ -279,14 +279,14 @@ class AssessmentScoringOrchestrator:
         self._config = config
         self._half_life = half_life_rounds
         self._registered_hotkeys = registered_hotkeys
+        self._scored_outputs = frozenset(output.output for output in config.outputs)
 
     def _eligible_coordinate(self, coordinate: AssessmentCoordinate) -> bool:
-        return coordinate.output in {
-            output.output for output in self._config.outputs
-        } and (
-            self._config.active_coordinates is None
-            or coordinate in self._config.active_coordinates
-        )
+        """True when the coordinate contributes to payout and consensus blends."""
+        active = self._config.active_coordinates
+        if active is not None:
+            return coordinate in active
+        return coordinate.output in self._scored_outputs
 
     @property
     def active_coordinates(self) -> frozenset[AssessmentCoordinate] | None:

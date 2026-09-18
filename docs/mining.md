@@ -93,6 +93,13 @@ universe earns roughly one eighth of the weight, not one half. Submitting a
 defensible estimate for every coordinate strictly dominates skipping it: a
 scored attempt can only beat the zero the skip guarantees.
 
+The reference miner assembles bundles from the whitelist compiled into its
+release rather than from the per-round universe endpoint. A round is frozen to
+the universe in force when it opened, so a miner upgraded across a whitelist
+change inside an open commit window submits netuids that round does not
+accept and has its reveal rejected for that one round. Upgrade between rounds,
+or read the round universe before assembling.
+
 ## Commit, reveal, and scoring
 
 For each frozen round universe, construct the Alpha Risk bundle, commit its

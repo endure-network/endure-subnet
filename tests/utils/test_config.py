@@ -476,7 +476,11 @@ class TestConfigFactory:
         ("network", "endpoint"),
         (
             ("finney", ""),
+            ("archive", ""),
+            ("latent-lite", ""),
             ("", "wss://entrypoint-finney.opentensor.ai:443"),
+            ("", "wss://archive.chain.opentensor.ai:443"),
+            ("", "wss://lite.sub.latent.to:443"),
             ("wss://api-bittensor-mainnet.n.dwellir.com/some-key", ""),
         ),
     )

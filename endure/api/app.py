@@ -43,7 +43,6 @@ from endure.protocol.version_contract import CURRENT_VERSION_KEY
 from endure.publication.risk_feed import Signer, build_signed_risk_feed
 from endure.runtime.identity import runtime_identity
 from endure.scoring.context import TR_CONTEXT
-from endure.scoring.risk.policy import active_risk_coordinates
 from endure.scoring.weights import normalize_weights
 from endure.storage.repository import (
     POST_EMBARGO_ROUND_STATES,
@@ -549,11 +548,7 @@ def build_app(  # noqa: PLR0913 — explicit read API dependencies
         schema_id,
         publisher,
         runtime_health=runtime_health,
-        active_coordinates=(
-            active_risk_coordinates()
-            if active_coordinates is None and publisher == "risk"
-            else active_coordinates
-        ),
+        active_coordinates=active_coordinates,
     )
     _register_round_data_routes(app, storage, schema_id)
     _register_risk_routes(app, storage, publication_identity)

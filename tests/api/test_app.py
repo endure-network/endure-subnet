@@ -1033,13 +1033,18 @@ def test_risk_leaderboard_filters_active_memory_but_raw_scores_preserve_it(
     client = TestClient(app)
     rows = {row["miner_hotkey"]: row for row in client.get("/miners").json()}
     assert set(rows) == (
-        {"mixed", "production"}
+        {"mixed", "retired", "production"}
         if mode == "default"
         else {"mixed"}
         if mode == "subset"
         else set()
     )
-    if rows:
+    if mode == "default":
+        # None is "unfiltered" for every publisher: the validator always passes
+        # its runtime's active set, and the read API never substitutes a policy.
+        assert Decimal(rows["mixed"]["blended_score"]) == Decimal("0.6")
+        assert len(rows["mixed"]["coordinate_emas"]) == 2
+    elif rows:
         assert Decimal(rows["mixed"]["blended_score"]) == Decimal("0.2")
         assert all(
             row["target_id"] == str(active) for row in rows["mixed"]["coordinate_emas"]
