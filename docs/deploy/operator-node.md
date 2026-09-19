@@ -111,10 +111,9 @@ configuration and recreates the services.
 
 A crashed container is restarted by Docker (`restart: unless-stopped`), not by
 the timer, and the timer leaves a stopped node on the current release stopped.
-It does start the services when there is something to deploy, so disable the
-timer before any maintenance that needs them to stay down
-(`sudo systemctl disable --now endure-node-update.timer`) and enable it again
-afterwards.
+It does start the services when there is something to deploy. Before maintenance
+that needs them to stay down, follow [the maintenance procedure](#maintenance-and-database-restoration)
+to disable the timer and exclude any deployment already running.
 
 `SERVING_STAGE` must be `testnet` or `mainnet` and must match `CHAIN`: the
 neurons refuse to serve Alpha Risk when the acknowledged stage does not match
@@ -154,9 +153,10 @@ a complete commit/reveal lifecycle and chain-visible weights, shows in
 
 ## Known limit: protocol key changes
 
-Hosts upgrade within one timer interval of each other, not at the same
-instant. During a release that changes the protocol key, nodes on different
-keys reject each other for up to that interval.
+Healthy hosts normally pick up a release within a few minutes, including timer
+jitter, pull and startup time. During a release that changes the protocol key,
+nodes on different keys reject each other. A pinned host or a failed update can
+extend that mismatch until the operator intervenes.
 
 ## Rollback and holding a release
 
@@ -171,8 +171,8 @@ resume.
 There is one database-boundary exception: release `0014_drop_kre_tables` removes
 five legacy KRE tables, and older images know migrations only through `0013`.
 Copy the pre-`0014` snapshot out of `/var/lib/endure-node/backups` while it is
-still one of the three newest. When rolling back across that boundary, disable
-the update timer, stop both services and restore the integrity-checked
+still one of the three newest. When rolling back across that boundary, enter
+[maintenance](#maintenance-and-database-restoration), stop both services and restore the integrity-checked
 pre-`0014` snapshot **before** starting the old images. Do not
 run the normal image-swap procedure first, and do not use `alembic downgrade`;
 the dropped KRE rows cannot be reconstructed. The automatic rollback after a
@@ -182,13 +182,38 @@ A separate image-identity exception applies to the first migration from legacy
 local `:dev` images: those images have no registry digests or source identity.
 Preserve the pre-deploy `previous-images.txt`, old local images, and source
 directory until the new release completes a full lifecycle. If emergency
-rollback to that legacy build is required, disable the update timer, stop, and
-use the recorded local image IDs with the previous Compose configuration.
+rollback to that legacy build is required, enter
+[maintenance](#maintenance-and-database-restoration), stop, and use the recorded
+local image IDs with the previous Compose configuration.
 
-When a rollback requires database restoration, disable the update timer
-(`sudo systemctl disable --now endure-node-update.timer`) so a release that
-lands mid-restore cannot start the validator on a half-copied file. Then stop
-the validator before restoring the pre-deploy snapshot, remove stale SQLite `-wal` and `-shm` files,
-start the prior validator and miner images together, then repeat the health,
-lifecycle, and chain-side checks. Enable the timer again once the node is
-healthy, with the images pinned if the host should stay on the older release.
+## Maintenance and database restoration
+
+Disabling the timer prevents future runs; it does not stop an update already
+running. From the checkout root, open a root shell and acquire the same lock
+used by `deploy.sh` before stopping services or touching their state:
+
+```bash
+sudo systemctl disable --now endure-node-update.timer
+sudo bash
+exec 9>/var/lib/endure-node/releases/deploy.lock
+flock -x 9
+```
+
+Wait for `flock` to return. It waits for any deployment holding the lock to
+finish; keep this shell open to hold the lock throughout maintenance. Do not
+kill an update midway through its backup or rollback.
+
+In this shell, stop both services. Restore the integrity-checked snapshot and
+remove stale SQLite `-wal` and `-shm` files while the validator is stopped.
+Pin both images to the intended release in `.env`, then start them together
+using Docker Compose with that env file. Do not call `deploy.sh` while holding
+its lock: it will refuse to run. Repeat the health, lifecycle and chain-side
+checks before leaving this shell with `exit`, which releases the lock.
+
+Once maintenance is complete and the node is healthy, re-enable updates:
+
+```bash
+sudo systemctl enable --now endure-node-update.timer
+```
+
+Keep the image pins if the host should stay on the restored release.
