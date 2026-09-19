@@ -20,7 +20,7 @@ volumes:
 services:
   validator:
     <<: *ops
-    image: "${VALIDATOR_IMAGE:?set VALIDATOR_IMAGE to an immutable registry digest}"
+    image: "${VALIDATOR_IMAGE:-ghcr.io/endure-network/endure-subnet-validator:${SERVING_STAGE}}"
     pull_policy: always
     environment:
       PYTHONUNBUFFERED: "1"
@@ -63,7 +63,7 @@ services:
 
   miner-1:
     <<: *ops
-    image: "${MINER_IMAGE:?set MINER_IMAGE to an immutable registry digest}"
+    image: "${MINER_IMAGE:-ghcr.io/endure-network/endure-subnet-miner:${SERVING_STAGE}}"
     pull_policy: always
     environment:
       PYTHONUNBUFFERED: "1"

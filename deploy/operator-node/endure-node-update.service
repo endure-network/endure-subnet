@@ -1,0 +1,9 @@
+[Unit]
+Description=Follow the Endure release channel
+Wants=network-online.target
+After=network-online.target docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart="@DEPLOY_DIR@/deploy.sh"

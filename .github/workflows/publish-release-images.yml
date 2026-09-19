@@ -120,6 +120,23 @@ jobs:
             echo 'Download the release-images artifact and deploy the recorded digests.'
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # Testnet operator hosts follow :testnet (deploy/operator-node), so they
+      # run what staging runs. Only the current staging tip reaches this step,
+      # so the channel never moves backwards. The retag copies the recorded
+      # digest; buildx would otherwise wrap it in an index and change it.
+      - name: Move the testnet channel
+        run: |
+          # shellcheck disable=SC1091
+          source ./release-images.env
+          for ref in "$VALIDATOR_IMAGE" "$MINER_IMAGE"; do
+            repo="${ref%%@*}"
+            docker buildx imagetools create --prefer-index=false \
+              --tag "$repo:testnet" "$ref"
+            published_digest="$(docker buildx imagetools inspect \
+              --format '{{json .Manifest}}' "$repo:testnet" | jq -r .digest)"
+            test "$published_digest" = "${ref#*@}"
+          done
+
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: release-images-${{ inputs.source_sha || github.sha }}

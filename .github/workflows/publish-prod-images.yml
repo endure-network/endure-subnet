@@ -1,9 +1,10 @@
 name: Publish prod images
 
 # Production release channel. Pushing a final release tag (vX.Y.Z) retags the
-# already-published immutable staging images (sha-<commit>) as :prod and
-# :vX.Y.Z, so third-party validators tracking :prod deploy bytes identical to
-# what soaked on staging. Nothing is rebuilt here. The tag must point to a
+# already-published immutable staging images (sha-<commit>) as :prod, :mainnet
+# and :vX.Y.Z, so third-party validators deploy bytes identical to what soaked
+# on staging. Operator hosts follow the channel named after their
+# SERVING_STAGE, so :mainnet is the tag they pull; :prod is the same image. Nothing is rebuilt here. The tag must point to a
 # promoted source commit that has published release images — the staging tip
 # that was merged to main — not the merge commit itself.
 
@@ -97,6 +98,7 @@ jobs:
             repo="${pair%%@*}"
             docker buildx imagetools create --prefer-index=false \
               --tag "$repo:prod" \
+              --tag "$repo:mainnet" \
               --tag "$repo:$RELEASE_TAG" \
               "$pair"
           done
@@ -113,7 +115,7 @@ jobs:
             repo="${pair%%@*}"
             source_digest="${pair#*@}"
             [[ "$source_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
-            for tag in prod "$RELEASE_TAG"; do
+            for tag in prod mainnet "$RELEASE_TAG"; do
               published_digest="$(docker buildx imagetools inspect \
                 --format '{{json .Manifest}}' "$repo:$tag" | jq -r .digest)"
               test "$published_digest" = "$source_digest"
