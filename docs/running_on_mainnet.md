@@ -53,11 +53,12 @@ from testnet hotkeys; a protocol version key is not a wallet key.
 
 Third-party validators deploy through the
 [operator node path](deploy/operator-node.md) with `CHAIN=finney` and
-`SERVING_STAGE=mainnet`. There is no image to choose: the host follows
-`ghcr.io/endure-network/endure-subnet-validator:prod` and
-`ghcr.io/endure-network/endure-subnet-miner:prod` by default and upgrades itself
-when a release moves the channel. The `:prod` channel is written only by the
-release-tag workflow, which retags the images that soaked on staging without
+`SERVING_STAGE=mainnet`. There is no image to choose: that stage makes the host
+follow `ghcr.io/endure-network/endure-subnet-validator:mainnet` and
+`ghcr.io/endure-network/endure-subnet-miner:mainnet` (the same images as
+`:prod`) and upgrade itself when a release moves the channel. The channel
+exists from the first final `vX.Y.Z` release tag onwards and is written only by
+the release-tag workflow, which retags the images that soaked on staging without
 rebuilding, so the published digests equal the soaked ones.
 
 Rollback, and pinning a host to one release, are covered in

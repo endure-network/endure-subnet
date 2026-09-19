@@ -20,7 +20,7 @@ volumes:
 services:
   validator:
     <<: *ops
-    image: "${VALIDATOR_IMAGE:-ghcr.io/endure-network/endure-subnet-validator:prod}"
+    image: "${VALIDATOR_IMAGE:-ghcr.io/endure-network/endure-subnet-validator:${SERVING_STAGE}}"
     pull_policy: always
     environment:
       PYTHONUNBUFFERED: "1"
@@ -63,7 +63,7 @@ services:
 
   miner-1:
     <<: *ops
-    image: "${MINER_IMAGE:-ghcr.io/endure-network/endure-subnet-miner:prod}"
+    image: "${MINER_IMAGE:-ghcr.io/endure-network/endure-subnet-miner:${SERVING_STAGE}}"
     pull_policy: always
     environment:
       PYTHONUNBUFFERED: "1"

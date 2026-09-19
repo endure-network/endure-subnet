@@ -3,21 +3,33 @@
 This is the supported image-based path for one validator and one miner on a
 Linux/amd64 host. The operator fills in one environment file, enables one
 timer, and does not touch the host again for ordinary releases: the host
-follows the `:prod` image channel and upgrades itself, with a database snapshot
+follows the image channel for its stage and upgrades itself, with a database snapshot
 before every change and an automatic rollback when the new release is unhealthy.
 It does not require a deployment control plane, and Endure never contacts an
 operator host.
 
 ## How a release reaches the host
 
-Promoting a reviewed commit to `staging` publishes validator and miner images
-for that exact commit, and those images soak on the Endure staging deployment.
-Pushing a `v*` release tag then runs the **Publish prod images** workflow, which
-retags the soaked images as `:prod` and `:vX.Y.Z` without rebuilding, so the
-channel serves the same bytes that soaked. Within a few minutes each following
-host pulls the channel, sees a new image, and deploys it.
+The host follows the channel named after its `SERVING_STAGE`; there is no
+channel setting.
 
-Whoever can push a `v*` tag therefore decides what every following host runs.
+| `SERVING_STAGE` | Channel | Moved by |
+| --- | --- | --- |
+| `testnet` | `:testnet` | every promotion to `staging`, once its release checks pass |
+| `mainnet` | `:mainnet` (the same image as `:prod`) | a final `vX.Y.Z` release tag |
+
+Promoting a reviewed commit to `staging` publishes validator and miner images
+for that exact commit and moves `:testnet` to them, so testnet hosts run what
+the Endure staging deployment runs. Those images soak there. Pushing a final
+release tag then runs the **Publish prod images** workflow, which retags the
+soaked images as `:mainnet`, `:prod` and `:vX.Y.Z` without rebuilding, so the
+mainnet channel serves the same bytes that soaked. Within a few minutes each
+following host pulls its channel, sees a new image, and deploys it.
+
+Whoever can push to `staging` or push a `v*` tag therefore decides what every
+following host runs. The `:mainnet` channel does not exist until the first
+final release tag is published; until then a mainnet host has nothing to pull
+and `deploy.sh` fails at the pull.
 
 Both GHCR packages must allow unauthenticated pulls before a candidate is
 announced publicly. If either package requires a registry credential, treat
@@ -88,13 +100,21 @@ The installer writes `endure-node-update.service` and
 lives, and starts the timer. Every five minutes, and once after a boot that
 missed a run, the timer runs the same `deploy.sh`. When the channel has not
 moved and `.env` has not changed, that run pulls, compares image IDs, and exits
-without a snapshot or a restart. Follow it with
+without a snapshot or a restart. The two channel tags move one after the other,
+so a run that lands in between sees a validator and a miner from different
+commits; it deploys nothing, exits non-zero, and the next run picks up the
+complete release. Follow it with
 `journalctl -u endure-node-update.service`.
 
 Editing `.env` later needs no extra step: the next run sees the changed
-configuration and recreates the services. The timer also restarts a stopped
-node, so disable the timer before stopping the services on purpose
-(`sudo systemctl disable --now endure-node-update.timer`).
+configuration and recreates the services.
+
+A crashed container is restarted by Docker (`restart: unless-stopped`), not by
+the timer, and the timer leaves a stopped node on the current release stopped.
+It does start the services when there is something to deploy, so disable the
+timer before any maintenance that needs them to stay down
+(`sudo systemctl disable --now endure-node-update.timer`) and enable it again
+afterwards.
 
 `SERVING_STAGE` must be `testnet` or `mainnet` and must match `CHAIN`: the
 neurons refuse to serve Alpha Risk when the acknowledged stage does not match
@@ -113,12 +133,20 @@ image label, each image ID, and its registry digest.
 If process health fails, the script stops the replacement, restores the
 snapshot, and starts the previous validator and miner by their recorded local
 image IDs, because the channel tag now resolves to the failed release. It then
-lists the failed release in `/var/lib/endure-node/releases/rejected-releases.txt`
-so the timer does not deploy it again every five minutes. Until the next
-release, each run exits non-zero and says so, which leaves the unit visibly
-failed. A later release deploys normally. To retry the same release, for
-example after a health failure caused by the host rather than the release,
-remove that file.
+lists the failed combination of images and configuration in
+`/var/lib/endure-node/releases/rejected-releases.txt` so the timer does not
+deploy it again every five minutes. Until something changes, each run exits
+non-zero and says so, which leaves the unit visibly failed. A later release
+deploys normally, and so does the same release after `.env` is edited, so a
+failure caused by a bad `.env` value clears when the value is fixed. To retry
+the same release with the same configuration, for example after a health
+failure caused by the chain endpoint, remove that file.
+
+A run that fails before it starts anything (a full backup disk, a refused
+backup) leaves no release record and no snapshot behind. After a successful
+deploy the script removes the images of releases older than the previous one
+and keeps the three newest snapshots in `/var/lib/endure-node/backups`. Copy a
+snapshot elsewhere if it must outlive that.
 
 A successful script exit proves process health only. The chain-side outcome,
 a complete commit/reveal lifecycle and chain-visible weights, shows in
@@ -142,8 +170,10 @@ resume.
 
 There is one database-boundary exception: release `0014_drop_kre_tables` removes
 five legacy KRE tables, and older images know migrations only through `0013`.
-When rolling back across that boundary, stop both services and restore the
-integrity-checked pre-`0014` snapshot **before** starting the old images. Do not
+Copy the pre-`0014` snapshot out of `/var/lib/endure-node/backups` while it is
+still one of the three newest. When rolling back across that boundary, disable
+the update timer, stop both services and restore the integrity-checked
+pre-`0014` snapshot **before** starting the old images. Do not
 run the normal image-swap procedure first, and do not use `alembic downgrade`;
 the dropped KRE rows cannot be reconstructed. The automatic rollback after a
 failed start or health check already restores the pre-deploy snapshot.
@@ -155,7 +185,10 @@ directory until the new release completes a full lifecycle. If emergency
 rollback to that legacy build is required, disable the update timer, stop, and
 use the recorded local image IDs with the previous Compose configuration.
 
-When a rollback requires database restoration, stop the validator before
-restoring the pre-deploy snapshot, remove stale SQLite `-wal` and `-shm` files,
+When a rollback requires database restoration, disable the update timer
+(`sudo systemctl disable --now endure-node-update.timer`) so a release that
+lands mid-restore cannot start the validator on a half-copied file. Then stop
+the validator before restoring the pre-deploy snapshot, remove stale SQLite `-wal` and `-shm` files,
 start the prior validator and miner images together, then repeat the health,
-lifecycle, and chain-side checks.
+lifecycle, and chain-side checks. Enable the timer again once the node is
+healthy, with the images pinned if the host should stay on the older release.

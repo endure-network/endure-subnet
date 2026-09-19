@@ -30,11 +30,20 @@ readonly service_image_program='import json
 import sys
 
 print(json.load(sys.stdin)["services"][sys.argv[1]]["image"])'
+readonly images_program='import json
+import sys
+
+services = json.load(sys.stdin)["services"].values()
+print("\n".join(sorted({service["image"] for service in services})))'
 readonly backup_program='import os
 import sqlite3
 
 source_path = os.environ["SOURCE_PATH"]
 backup_path = os.environ["BACKUP_PATH"]
+# One fixed in-volume name: a run that died before its cleanup is overwritten
+# by the next one instead of adding another full copy to the data volume.
+if os.path.exists(backup_path):
+    os.unlink(backup_path)
 if not os.path.isfile(source_path):
     raise SystemExit("validator database is missing")
 if os.path.getsize(source_path) == 0:
@@ -62,15 +71,11 @@ if [[ ! -r "$env_file" ]]; then
   exit 1
 fi
 
-"${compose[@]}" config --quiet
-validator_wallet_root="$(
-  "${compose[@]}" config --format json \
-    | python3 -c "$wallet_source_program" validator
-)"
-miner_wallet_root="$(
-  "${compose[@]}" config --format json \
-    | python3 -c "$wallet_source_program" miner-1
-)"
+# Rendered once: this runs from a timer, and every value below is read from it.
+config_json="$("${compose[@]}" config --format json)"
+readonly config_json
+validator_wallet_root="$(python3 -c "$wallet_source_program" validator <<<"$config_json")"
+miner_wallet_root="$(python3 -c "$wallet_source_program" miner-1 <<<"$config_json")"
 validator_wallet_root="$(realpath "$validator_wallet_root")"
 miner_wallet_root="$(realpath "$miner_wallet_root")"
 if [[ "$validator_wallet_root" == "$miner_wallet_root" \
@@ -90,7 +95,7 @@ if ! flock -n 9; then
   echo "Another Endure deployment is already running." >&2
   exit 1
 fi
-mapfile -t images < <("${compose[@]}" config --images | sort -u)
+mapfile -t images < <(python3 -c "$images_program" <<<"$config_json")
 if ((${#images[@]} != 2)); then
   echo "Expected exactly two runtime images, found ${#images[@]}." >&2
   exit 1
@@ -104,53 +109,90 @@ fi
 # (endure/utils/config.py require_serving_stage_allowed); that runtime gate,
 # not this script, is the mainnet authority.
 
-# This is the only pull. Everything below works from the image IDs it resolved
-# and starts containers with --pull never, so a channel tag that moves during
-# the run cannot change what gets started or recorded.
 for image in "${images[@]}"; do
   docker pull "$image"
 done
-validator_image="$(
-  "${compose[@]}" config --format json \
-    | python3 -c "$service_image_program" validator
-)"
-miner_image="$(
-  "${compose[@]}" config --format json \
-    | python3 -c "$service_image_program" miner-1
-)"
+validator_image="$(python3 -c "$service_image_program" validator <<<"$config_json")"
+miner_image="$(python3 -c "$service_image_program" miner-1 <<<"$config_json")"
 validator_image_id="$(docker image inspect --format '{{.Id}}' "$validator_image")"
 miner_image_id="$(docker image inspect --format '{{.Id}}' "$miner_image")"
-revision="$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$validator_image_id")"
-readonly release_identity="$validator_image_id $miner_image_id"
+readonly validator_image validator_image_id miner_image miner_image_id
+
+image_revision() {
+  docker image inspect \
+    --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$1"
+}
+revision="$(image_revision "$validator_image_id")"
+miner_revision="$(image_revision "$miner_image_id")"
+readonly revision miner_revision
+# The release job moves the two channel tags one after the other, so a host
+# that polls in between sees a new validator with the old miner. Two digest
+# pins from different releases look the same.
+if [[ -z "$revision" || "$revision" != "$miner_revision" ]]; then
+  echo "Validator ($revision) and miner ($miner_revision) images come from different commits." >&2
+  echo "A channel that is mid-release settles by the next run; pinned images must name one release." >&2
+  exit 1
+fi
+
+# From here every compose call names the pulled image IDs, so a tag that moves
+# in the local store during the run cannot change what is compared, started,
+# or recorded. Compose hashes the image string, so the hashes are taken under
+# the same override the containers are started with.
+export VALIDATOR_IMAGE="$validator_image_id" MINER_IMAGE="$miner_image_id"
+config_hashes="$("${compose[@]}" config --hash '*')"
+readonly config_hashes
+service_hash() {
+  awk -v s="$1" '$1 == s {print $2}' <<<"$config_hashes"
+}
+# The hash covers the image ID and the rendered env file, so a release that
+# failed under a bad env edit is a different identity once the edit is fixed.
+release_identity="$(service_hash validator) $(service_hash miner-1)"
+readonly release_identity
 
 # After a failed release the channel tag still resolves to it. Without this the
 # next timer run would deploy it, fail, and roll back again, every interval.
 if [[ -f "$rejected_file" ]] && grep -Fxq -- "$release_identity" "$rejected_file"; then
-  echo "Release $revision failed its health gate on this host and was rolled back." >&2
-  echo "Waiting for the next release; remove $rejected_file to retry this one." >&2
+  echo "Release $revision failed its health gate on this host with this configuration." >&2
+  echo "Waiting for the next release or env change; remove $rejected_file to retry." >&2
   exit 1
 fi
 
 service_is_current() {
   local service="$1" wanted_image_id="$2"
-  local container_id wanted_hash
+  local container_id
   container_id="$("${compose[@]}" ps -aq "$service")"
   [[ -n "$container_id" ]] || return 1
-  [[ "$(docker inspect --format '{{.State.Running}}' "$container_id")" == "true" ]] \
-    || return 1
+  # Whether it is running is not checked: `restart: unless-stopped` restarts a
+  # crashed container, so a stopped one was stopped by the operator.
   [[ "$(docker inspect --format '{{.Image}}' "$container_id")" == "$wanted_image_id" ]] \
     || return 1
   # An edited env file changes this hash, so set-once values still apply.
-  wanted_hash="$("${compose[@]}" config --hash '*' | awk -v s="$service" '$1 == s {print $2}')"
-  [[ "$(docker inspect --format '{{index .Config.Labels "com.docker.compose.config-hash"}}' "$container_id")" == "$wanted_hash" ]]
+  [[ "$(docker inspect --format '{{index .Config.Labels "com.docker.compose.config-hash"}}' "$container_id")" == "$(service_hash "$service")" ]]
 }
 
 if service_is_current validator "$validator_image_id" \
   && service_is_current miner-1 "$miner_image_id"; then
-  echo "Already running revision $revision; nothing to deploy."
+  echo "Revision $revision is already deployed; nothing to do."
   exit 0
 fi
 
+validator_id="$("${compose[@]}" ps -aq validator)"
+if [[ -z "$validator_id" ]] && docker volume inspect "$state_volume" >/dev/null 2>&1; then
+  echo "Existing validator state cannot be backed up without its container." >&2
+  exit 1
+fi
+
+# A run that fails before anything is started changed nothing. Under the timer
+# it repeats every interval, so it must not leave a record or a snapshot.
+deploy_started=0
+backup_file=""
+discard_unstarted_run() {
+  if ((deploy_started == 0)); then
+    rm -rf -- "$record_dir"
+    [[ -z "$backup_file" ]] || rm -f -- "$backup_file"
+  fi
+}
+trap discard_unstarted_run EXIT
 install -d -o root -g root -m 0700 "$record_dir"
 previous_validator_image_id=""
 previous_miner_image_id=""
@@ -169,10 +211,8 @@ for service in validator miner-1; do
   fi
 done
 
-backup_file=""
-validator_id="$("${compose[@]}" ps -aq validator)"
 if [[ -n "$validator_id" ]]; then
-  backup_inside="/data/.predeploy-$timestamp.db"
+  backup_inside="/data/.predeploy.db"
   backup_file="$backup_dir/validator-predeploy-$timestamp.db"
   if [[ "$(docker inspect --format '{{.State.Running}}' "$validator_id")" == "true" ]]; then
     docker exec -i \
@@ -197,9 +237,6 @@ if [[ -n "$validator_id" ]]; then
   chmod 0600 "$backup_file"
   printf '%s\n' "$backup_file" >"$record_dir/backup-path.txt"
   sha256sum "$backup_file" >"$record_dir/backup.sha256"
-elif docker volume inspect "$state_volume" >/dev/null 2>&1; then
-  echo "Existing validator state cannot be backed up without its container." >&2
-  exit 1
 fi
 
 wait_for_healthy() {
@@ -237,7 +274,7 @@ rollback_failed_release() {
   fi
   current_validator_image="$(docker inspect --format '{{.Image}}' "$current_validator_id")" \
     || return 1
-  restore_inside="/data/.rollback-$timestamp.db"
+  restore_inside="/data/.rollback.db"
   docker cp "$backup_file" "$current_validator_id:$restore_inside" || return 1
   docker run --rm --entrypoint python --volumes-from "$current_validator_id" \
     -e RESTORE_SOURCE="$restore_inside" \
@@ -257,6 +294,7 @@ rollback_failed_release() {
   echo "Previous validator and miner images restored after failed deployment." >&2
 }
 
+deploy_started=1
 if ! "${compose[@]}" up -d --no-build --pull never validator miner-1; then
   rollback_failed_release || true
   exit 1
@@ -277,16 +315,28 @@ curl --silent --show-error --output "$record_dir/health.json" \
 
 {
   printf 'REVISION=%s\n' "$revision"
-  for image in "$validator_image" "$miner_image"; do
-    printf 'IMAGE=%s|%s|%s\n' "$image" \
-      "$(docker image inspect --format '{{.Id}}' "$image")" \
-      "$(docker image inspect --format '{{join .RepoDigests ","}}' "$image")"
+  for image in "$validator_image|$validator_image_id" "$miner_image|$miner_image_id"; do
+    printf 'IMAGE=%s|%s\n' "$image" \
+      "$(docker image inspect --format '{{join .RepoDigests ","}}' "${image#*|}")"
   done
   for service in validator miner-1; do
     container_id="$("${compose[@]}" ps -q "$service")"
     docker inspect --format '{{.Name}}|{{.Config.Image}}|{{.Image}}|{{.State.StartedAt}}' "$container_id"
   done
 } >"$record_dir/deployment.txt"
+
+# Nobody visits this host between releases: keep the running release and the
+# one before it, and the three newest snapshots. Only image IDs this script
+# recorded are removed, and never by force.
+keep_image_ids=" $validator_image_id $miner_image_id $previous_validator_image_id $previous_miner_image_id "
+while IFS='|' read -r _ _ superseded_image_id; do
+  [[ "$keep_image_ids" == *" $superseded_image_id "* ]] \
+    || docker image rm "$superseded_image_id" >/dev/null 2>&1 || true
+done < <(cat "$release_dir"/*/previous-images.txt 2>/dev/null | sort -u)
+mapfile -t snapshots < <(find "$backup_dir" -name 'validator-predeploy-*.db' | sort)
+for ((i = 0; i < ${#snapshots[@]} - 3; i++)); do
+  rm -f -- "${snapshots[i]}"
+done
 
 echo "Deployed revision $revision and passed process health checks."
 echo "Complete the lifecycle and chain-side verification in docs/deploy/operator-node.md."

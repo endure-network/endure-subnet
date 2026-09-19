@@ -11,7 +11,7 @@
 - [Economic limitations](economic-limitations.md) — calibration evidence and
   stable/mainnet blockers.
 - [Single-host operator deployment](deploy/operator-node.md) — set-once
-  deploy that follows the `:prod` channel, with backup and automatic rollback.
+  deploy that follows its stage's image channel, with backup and automatic rollback.
 - [Staging](running_on_staging.md) — provider-neutral release-candidate branch
   and environment contract.
 - [Mainnet status](running_on_mainnet.md) — explicit prohibition.
