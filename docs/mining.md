@@ -9,6 +9,12 @@ This is the public miner path: [README](../README.md) → this guide →
 miner sends commits and reveals to validator axons rather than waiting for a
 generic query.
 
+## Install
+
+For a pre-built image, follow [Run a miner](deploy/operator-node.md#run-a-miner).
+Only your miner wallet and state are needed; you do not run a validator.
+For source installation, follow the steps below.
+
 ## Before you start
 
 1. Clone the public repository and, with a Python 3.12 executable available,

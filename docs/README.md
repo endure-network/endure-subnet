@@ -10,11 +10,11 @@
   verification, and acceptance boundaries.
 - [Economic limitations](economic-limitations.md) — calibration evidence and
   stable/mainnet blockers.
-- [Single-host operator deployment](deploy/operator-node.md) — immutable-image
-  deploy, backup, verification, and rollback without a control plane.
+- [Run a validator or miner image](deploy/operator-node.md) — independent
+  container examples, image selection, and an optional combined deployment.
 - [Staging](running_on_staging.md) — provider-neutral release-candidate branch
   and environment contract.
-- [Mainnet status](running_on_mainnet.md) — explicit prohibition.
+- [Mainnet runbook](running_on_mainnet.md) — production images and serving acknowledgement.
 - [Protocol activation history](protocol_versions.md) — retired assignments and
   the exclusive current candidate lease.
 - [v0.1.0-rc.3 notes](releases/v0.1.0-rc.3.md) — current prerelease scope and rollback.

@@ -90,12 +90,6 @@ if ((${#images[@]} != 2)); then
   echo "Expected exactly two runtime images, found ${#images[@]}." >&2
   exit 1
 fi
-for image in "${images[@]}"; do
-  if [[ ! "$image" =~ @sha256:[0-9a-f]{64}$ ]]; then
-    echo "Refusing mutable image reference: $image" >&2
-    exit 1
-  fi
-done
 
 serving_stage="$(awk -F= '$1 == "SERVING_STAGE" {print $2; exit}' "$env_file")"
 if [[ "$serving_stage" != "testnet" && "$serving_stage" != "mainnet" ]]; then
@@ -116,9 +110,9 @@ for service in validator miner-1; do
     printf '%s|%s|%s\n' "$service" "$image_ref" "$image_id" \
       >>"$record_dir/previous-images.txt"
     if [[ "$service" == "validator" ]]; then
-      previous_validator_image="$image_ref"
+      previous_validator_image="$image_id"
     else
-      previous_miner_image="$image_ref"
+      previous_miner_image="$image_id"
     fi
   fi
 done
@@ -160,8 +154,7 @@ resolved_revision=""
 for image in "${images[@]}"; do
   docker pull "$image"
   revision="$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$image")"
-  # The digest already fixes the image content, revision label included. The
-  # label is read only to confirm both digests name one release and to record it.
+  # Confirm this optional two-service deployment uses one release.
   if [[ ! "$revision" =~ ^[0-9a-f]{40}$ ]]; then
     echo "Image carries no full source revision label: $image" >&2
     exit 1
@@ -225,7 +218,8 @@ rollback_failed_release() {
   echo "Previous validator and miner images restored after failed deployment." >&2
 }
 
-if ! "${compose[@]}" up -d --no-build validator miner-1; then
+# Images were pulled and checked above; do not pull moving tags a second time.
+if ! "${compose[@]}" up -d --no-build --pull never validator miner-1; then
   rollback_failed_release || true
   exit 1
 fi
