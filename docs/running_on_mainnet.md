@@ -1,11 +1,11 @@
 # Running Endure on Mainnet
 
-> **Mainnet serving is opt-in and owner-gated.** `v0.1.0-rc.3` is an
-> experimental alpha. Alpha Risk serves on mainnet only when the operator
-> passes the explicit `--endure.serving_stage mainnet` acknowledgement on a
+> **Mainnet serving is opt-in and owner-gated.** `v0.1.0` retains
+> experimental economic limitations. Alpha Risk serves on mainnet only when
+> the operator passes the explicit `--endure.serving_stage mainnet` acknowledgement on a
 > recognized mainnet endpoint, and only releases promoted to the `:prod`
-> image channel after the testnet soak gate are supported there. Do not run
-> a staging release candidate or a locally built image on mainnet.
+> image channel under the [owner release decision](releases/v0.1.0.md)
+> are supported there. Do not run a staging release candidate or a locally built image on mainnet.
 
 The current protocol key is `2041` ([version contract](../endure/protocol/version_contract.py)).
 Supported development uses Python `>=3.12,<3.13` and Bittensor `>=10.5,<11`.
@@ -62,8 +62,9 @@ wallet and persistent storage; running both is optional.
 
 Use `ghcr.io/endure-network/endure-subnet-validator:prod` for a validator or
 `ghcr.io/endure-network/endure-subnet-miner:prod` for a miner. The release-tag
-workflow updates `:prod` and publishes `:vX.Y.Z` tags using the soaked images
-without rebuilding. A published version tag or digest can be selected instead.
+workflow updates `:prod` and publishes `:vX.Y.Z` tags using the published
+staging candidate digests without rebuilding. A published version tag or
+digest can be selected instead.
 Merging into `main` alone does not publish a production release.
 
 You choose when to pull and recreate your container, or automate that in your

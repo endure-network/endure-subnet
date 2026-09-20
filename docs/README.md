@@ -9,7 +9,7 @@
 - [Consumer guide](consuming.md) — validator discovery, units, signature
   verification, and acceptance boundaries.
 - [Economic limitations](economic-limitations.md) — calibration evidence and
-  stable/mainnet blockers.
+  accepted initial-release limitations and remaining qualification requirements.
 - [Run a validator or miner image](deploy/operator-node.md) — independent
   container examples, image selection, and an optional combined deployment.
 - [Staging](running_on_staging.md) — provider-neutral release-candidate branch
@@ -17,7 +17,8 @@
 - [Mainnet runbook](running_on_mainnet.md) — production images and serving acknowledgement.
 - [Protocol activation history](protocol_versions.md) — retired assignments and
   the exclusive current candidate lease.
-- [v0.1.0-rc.3 notes](releases/v0.1.0-rc.3.md) — current prerelease scope and rollback.
+- [v0.1.0 notes](releases/v0.1.0.md) — initial release, owner decision, and limitations.
+- [v0.1.0-rc.3 notes](releases/v0.1.0-rc.3.md) — superseded candidate.
 - [v0.1.0-rc.2 notes](releases/v0.1.0-rc.2.md) — superseded candidate.
 - [v0.1.0-rc.1 notes](releases/v0.1.0-rc.1.md) — superseded candidate.
 
