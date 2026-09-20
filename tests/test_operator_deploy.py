@@ -1221,10 +1221,14 @@ def test_update_timer_runs_the_deploy_script_from_the_operators_checkout(
     ):
         assert script.count(production) == 1, production
         script = script.replace(production, patched)
-    installer.write_text(script)
-    (checkout / "check-installation.py").write_text(
-        "# Permission checker covered separately.\n"
+    check_start = script.index("<<'PY_CHECK'\n") + len("<<'PY_CHECK'\n")
+    check_end = script.index("\nPY_CHECK", check_start)
+    script = (
+        script[:check_start]
+        + "# Permission checker covered separately.\n"
+        + script[check_end:]
     )
+    installer.write_text(script)
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
     calls = tmp_path / "systemctl.log"

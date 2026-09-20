@@ -137,10 +137,14 @@ def test_existing_image_pins_are_reported(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("unsafe_kind", ["owner", "write", "symlink"])
-def test_installation_validation_checks_ancestors(unsafe_kind: str) -> None:
-    validate = runpy.run_path(str(ROOT / "deploy/operator-node/check-installation.py"))[
-        "validate_path"
-    ]
+def test_installation_validation_checks_ancestors(
+    unsafe_kind: str, tmp_path: Path
+) -> None:
+    installer = (ROOT / "deploy/operator-node/install-timer.sh").read_text()
+    program = installer.split("<<'PY_CHECK'\n", 1)[1].split("\nPY_CHECK", 1)[0]
+    checker = tmp_path / "checker.py"
+    checker.write_text(program)
+    validate = runpy.run_path(str(checker))["validate_path"]
     safe = os.stat_result((stat.S_IFDIR | 0o755, 0, 0, 1, 0, 0, 0, 0, 0, 0))
     mode = (
         stat.S_IFLNK | 0o777

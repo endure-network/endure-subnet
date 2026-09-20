@@ -59,7 +59,7 @@ working checkout. From the checkout root, for a **new installation**:
 
 ```bash
 sudo install -d -o root -g root -m 0755 /opt/endure-node
-sudo install -o root -g root -m 0755 deploy/operator-node/deploy.sh deploy/operator-node/install-timer.sh deploy/operator-node/check-installation.py /opt/endure-node/
+sudo install -o root -g root -m 0755 deploy/operator-node/deploy.sh deploy/operator-node/install-timer.sh /opt/endure-node/
 sudo install -o root -g root -m 0644 deploy/operator-node/docker-compose.yaml deploy/operator-node/endure-node-update.service deploy/operator-node/endure-node-update.timer /opt/endure-node/
 sudo install -o root -g root -m 0600 deploy/operator-node/env.example /opt/endure-node/.env
 ```
