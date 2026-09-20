@@ -16,8 +16,6 @@ Production releases publish separate Linux/amd64 images:
 `:prod` follows the latest published production release when you pull it.
 Use a published `:vX.Y.Z` version tag or `@sha256:<digest>` instead to select a
 specific release. A running container does not update when a tag moves.
-Until the first final release is published, use qualified testnet candidates;
-do not assume that `:prod` is available.
 
 For testnet, select the appropriate role's `:sha-<qualified-staging-commit>`
 image or digest from the release artifact. Set `NETUID=504`, `CHAIN=test` and

@@ -44,8 +44,7 @@ outcomes and feeds can diverge between validators; interfaces and
 internals may change before a later release. Source builds are supported on the
 environment below. Each qualified `staging` commit also publishes candidate
 Linux/amd64 validator and miner images; run the image for your role using the
-[container guide](docs/deploy/operator-node.md). No stable
-semantic-version image exists yet.
+[container guide](docs/deploy/operator-node.md).
 
 Supported source environment: Python `>=3.12,<3.13` and Bittensor `>=10.5,<11`
 (see [pyproject.toml](pyproject.toml)). Endure does not perform GPU computation;
