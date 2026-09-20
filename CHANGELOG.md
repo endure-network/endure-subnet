@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.1.0 — Initial Alpha Risk release
+
+Protocol key `2041`: signed submissions, miner score ownership, the 15-subnet
+universe, and active-coordinate scoring with retired reputation preserved.
+Independent operator installation and digest-preserving `:testnet`, `:prod`,
+and version-tag publication are documented. Package/API version is `0.1.0`.
+See the [release decision and known limitations](docs/releases/v0.1.0.md).
+
 ## v0.1.0-rc.3 — Operational hardening on the soaking key-30 line
 
 Miner hard-exit symmetry with the validator watchdog, a configurable overdue

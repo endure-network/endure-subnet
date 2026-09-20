@@ -34,8 +34,14 @@ images. The Endure team's current Coolify implementation remains a separate
 
 ## Testnet soak gate
 
-The soak gate is the promotion evidence the mainnet decision consumes. It
-passes when the deployed staging environment shows, over seven consecutive
+For the initial `v0.1.0` publication, the owner accepted the accumulated
+staging run on 2026-09-20 and did not require a fresh seven-day window for
+the deployment/documentation and package-version changes. Staging continues
+to run. See the [release decision](releases/v0.1.0.md); this is a scoped
+exception, not evidence that an unchanged seven-day window completed.
+
+The default soak gate is the promotion evidence the mainnet decision consumes.
+It passes when the deployed staging environment shows, over seven consecutive
 days with an unchanged deployed revision:
 
 - zero unexplained validator restarts (planned redeploys reset the window);
@@ -48,6 +54,7 @@ clock. The gate is evaluated against probe history and persisted `/health`
 evidence, not operator recollection.
 
 Mainnet requires a separate promotion decision after the testnet soak gate
-passes: a final release tag publishes the soaked images to the `:prod` channel,
+passes or an explicit release exception is recorded: a final release tag
+publishes the staging candidate images to the `:prod` channel,
 and serving there needs the explicit acknowledgement described in
 [running_on_mainnet.md](running_on_mainnet.md).

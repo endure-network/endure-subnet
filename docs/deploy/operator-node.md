@@ -1,15 +1,117 @@
-# Single-host testnet deployment with immutable images
+# Run a validator or miner from published images
 
-This is the supported image-based testnet path for one validator and one miner
-on a Linux/amd64 host. It does not require a deployment control plane and does
-not auto-deploy. The operator selects a qualified staging commit, takes a
-backup, and starts both services from registry digests that identify exact
-image bytes. Until `v0.1.0` is tagged, these are release-candidate images rather
-than stable semantic-version releases.
+Validators and miners are independent roles. Run only the image for your role;
+a miner discovers validators through the subnet metagraph and does not need a
+local validator. These Docker examples are a recommended starting point, not a
+required infrastructure layout. You choose when to upgrade and whether to
+use your own automation.
 
-Do not run this procedure while a release blocker is open. Mainnet deployment
-also requires the documented soak and release approvals; publishing an image
-does not authorize deploying it.
+## Choose an image
+
+Production releases publish separate Linux/amd64 images:
+
+- `ghcr.io/endure-network/endure-subnet-validator:prod`
+- `ghcr.io/endure-network/endure-subnet-miner:prod`
+
+`:prod` follows the latest published production release when you pull it.
+Use a published `:vX.Y.Z` version tag or `@sha256:<digest>` instead to select a
+specific release. A running container does not update when a tag moves.
+
+Testnet releases publish a separate channel:
+
+- `ghcr.io/endure-network/endure-subnet-validator:testnet`
+- `ghcr.io/endure-network/endure-subnet-miner:testnet`
+
+`:testnet` moves to each qualified `staging` release once that commit's release
+checks pass. Use a `:sha-<qualified-staging-commit>` tag or `@sha256:<digest>`
+instead to pin a specific candidate. Set `NETUID=504`, `CHAIN=test` and
+`SERVING_STAGE=testnet` in the examples below. Mainnet uses netuid `30`,
+`CHAIN=finney` and `SERVING_STAGE=mainnet`; see
+[the mainnet guide](../running_on_mainnet.md).
+
+## Configure your role
+
+Install Docker and register the hotkey for your chosen role using the
+[mainnet](../running_on_mainnet.md#register-and-stake) or
+[testnet](../running_on_testnet.md#install-safely) instructions. Prepare an
+absolute wallet directory containing only that hotkey and `coldkeypub.txt`,
+under `<wallet-name>/hotkeys/<hotkey-name>` and `<wallet-name>/coldkeypub.txt`.
+Keep coldkey secrets off the server. No source checkout or local Python
+installation is needed to run the images.
+
+Set these values in your shell for either role (replace the example values):
+
+```bash
+NETUID=30
+CHAIN=finney
+SERVING_STAGE=mainnet
+WALLET_ROOT=/absolute/path/to/your-role-wallets
+WALLET_NAME=replace-me
+HOTKEY=replace-me
+EXTERNAL_IP=replace-with-your-public-ip
+MARKET_DATA_ENDPOINT=wss://archive.chain.opentensor.ai:443
+```
+
+## Run a validator
+
+Use a registered validator hotkey with the required chain permit and stake.
+The wallet mount is read-only; the named volume retains the validator database.
+
+```bash
+VALIDATOR_IMAGE=ghcr.io/endure-network/endure-subnet-validator:prod
+docker run -d --name endure-validator --init --restart unless-stopped \
+  --stop-timeout 45 --pull always \
+  --mount "type=bind,src=$WALLET_ROOT,dst=/root/.bittensor/wallets,readonly" \
+  --mount type=volume,src=endure-validator-data,dst=/data \
+  -p 8091:8091 -p 127.0.0.1:8714:8714 \
+  "$VALIDATOR_IMAGE" \
+  --netuid "$NETUID" --subtensor.network "$CHAIN" \
+  --wallet.name "$WALLET_NAME" --wallet.hotkey "$HOTKEY" \
+  --endure.serving_stage "$SERVING_STAGE" \
+  --endure.market_data_endpoint "$MARKET_DATA_ENDPOINT" \
+  --endure.database_url sqlite:////data/validator-live.db \
+  --endure.api_host 0.0.0.0 --endure.api_port 8714 \
+  --axon.port 8091 --axon.external_ip "$EXTERNAL_IP" --logging.info
+```
+
+Check `docker logs endure-validator` and
+`curl --fail http://127.0.0.1:8714/health`. Publish the axon port as required by
+Bittensor; the read API is bound to localhost in this example. See
+[validating](../validating.md) for readiness, scoring and weight checks.
+
+## Run a miner
+
+Use your registered miner hotkey. The named volume retains commit/reveal state
+so the miner can reveal an outstanding commitment after a restart.
+
+```bash
+MINER_IMAGE=ghcr.io/endure-network/endure-subnet-miner:prod
+docker run -d --name endure-miner --init --restart unless-stopped \
+  --stop-timeout 45 --pull always \
+  --mount "type=bind,src=$WALLET_ROOT,dst=/root/.bittensor/wallets,readonly" \
+  --mount type=volume,src=endure-miner-state,dst=/root/.bittensor/miners \
+  -p 8092:8092 \
+  "$MINER_IMAGE" \
+  --netuid "$NETUID" --subtensor.network "$CHAIN" \
+  --wallet.name "$WALLET_NAME" --wallet.hotkey "$HOTKEY" \
+  --endure.serving_stage "$SERVING_STAGE" \
+  --endure.market_data_endpoint "$MARKET_DATA_ENDPOINT" \
+  --axon.port 8092 --axon.external_ip "$EXTERNAL_IP" --logging.info
+```
+
+Check `docker logs endure-miner` for startup and subsequent commit/reveal
+activity. See [mining](../mining.md) for eligibility and submission checks.
+You do not need a validator wallet or a local validator container.
+
+## Updating your container
+
+When you choose to upgrade, read the release notes for configuration or database
+compatibility changes. Back up persistent state as appropriate. Stop and remove
+your role's container, then repeat its run command with the same named volume
+and wallet mount. `--pull always` fetches the selected image before creating the
+container; it does not schedule updates. Do not delete the state volume.
+Existing installations should retain their actual volume names, which may
+differ from the fresh-install examples above.
 
 ## Artifact publication
 
@@ -29,7 +131,13 @@ announced publicly. If either package requires a registry credential, treat
 that as a release-configuration failure rather than asking public operators to
 use an Endure organization token.
 
-## One-time host preparation
+## Optional combined validator and miner example
+
+`deploy/operator-node/` is an alternative for operators deliberately running
+both roles on one host. Its Compose file and script require both roles and
+manage them together; neither is required for the standalone commands above.
+
+### One-time host preparation
 
 Install Docker Engine with the Compose plugin, and Python 3 (the deploy script
 runs the host `python3` to parse rendered Compose configuration). Public
@@ -46,9 +154,11 @@ cp deploy/operator-node/env.example deploy/operator-node/.env
 chmod 0600 deploy/operator-node/.env
 ```
 
-Replace every example value. Copy `SOURCE_SHA`, `VALIDATOR_IMAGE`, and
-`MINER_IMAGE` exactly from the workflow artifact. Both image references must
-end in `@sha256:<64 lowercase hexadecimal characters>`.
+Replace every example value. The example uses mainnet `:prod` images; tags or
+digests are accepted. For testnet, select both candidate images from one
+qualified staging release and change the network settings as described above.
+`SOURCE_SHA` is no longer a deployment input. An existing `.env` that still
+carries that line keeps working; the line is ignored.
 
 Set `VALIDATOR_WALLET_ROOT` and `MINER_WALLET_ROOT` to those separate
 directories. The Compose project keeps the existing `endure-subnet` project
@@ -57,11 +167,11 @@ remain attached. Snapshots are copied outside the Docker volume to
 `/var/lib/endure-node/backups`. Never run `docker compose down -v` or prune the
 project volumes.
 
-## Preflight
+### Preflight
 
 Before a deploy, confirm:
 
-- the selected SHA is the approved staging candidate;
+- the selected release is appropriate for the configured network;
 - the current release blocker list is clear;
 - the wallet directory contains no coldkey secret;
 - enough disk space exists for a database snapshot and both images;
@@ -76,7 +186,7 @@ docker compose --env-file deploy/operator-node/.env \
   -f deploy/operator-node/docker-compose.yaml config --quiet
 ```
 
-## Deploy
+### Deploy
 
 Run from the directory holding the copied `deploy/operator-node/` (the script
 resolves its env file and compose file relative to itself):
@@ -89,21 +199,23 @@ sudo deploy/operator-node/deploy.sh
 neurons refuse to serve Alpha Risk when the acknowledged stage does not match
 the configured chain endpoint, and mainnet additionally requires a recognized
 mainnet endpoint (see [running_on_mainnet.md](../running_on_mainnet.md)).
-Mainnet deployments pin the digests published on the `:prod` channel by the
+Mainnet deployments use releases published on the `:prod` channel by the
 release tag workflow, which retags the soaked staging images without rebuilding.
 
-The script refuses mutable image tags, requires both OCI revisions to match
-`SOURCE_SHA`, snapshots the live or stopped validator SQLite database with an
+The script snapshots the live or stopped validator SQLite database with an
 integrity check and host-side checksum, records the previous image identity,
-pulls the two digests, and recreates the validator and miner together. If
+pulls the selected images, requires matching OCI source revisions and records
+the revision, then recreates the validator and miner together without a second
+pull. This same-release check applies only to the combined example; independent
+operators need protocol-compatible releases, not identical source commits. If
 process health fails, it stops the replacement, restores the snapshot, and
-starts the prior validator and miner images without pulling mutable tags. A
+starts the prior validator and miner images by their recorded local image IDs. A
 deployment is refused if existing state cannot be backed up. Successful runs
 capture `/live` and `/health` results under
 `/var/lib/endure-node/releases/<timestamp>/`.
 
-A successful script exit proves process health only. Before accepting the
-deployment, record all of the following in the private operations board:
+A successful script exit proves process health only. For this combined
+example, the following evidence helps verify the deployment:
 
 1. exact source SHA and both image digests;
 2. backup path and SQLite integrity result;
@@ -115,8 +227,8 @@ deployment, record all of the following in the private operations board:
 
 ## Rollback
 
-For a normal rollback, replace the three artifact lines in `.env` with the
-previous release's `SOURCE_SHA`, `VALIDATOR_IMAGE`, and `MINER_IMAGE`, then run
+For a normal rollback, replace the two image lines in `.env` with the previous
+release's `VALIDATOR_IMAGE` and `MINER_IMAGE` (version tags or digests), then run
 `deploy.sh` again. It takes another pre-change snapshot before switching both
 services together.
 
@@ -133,8 +245,8 @@ local `:dev` images: those images have no registry digests or source identity.
 Preserve the pre-deploy `previous-images.txt`, old local images, and source
 directory until the new release completes a full lifecycle. If emergency
 rollback to that legacy build is required, stop and use the recorded local
-image IDs with the previous Compose configuration; do not weaken the immutable
-image check in `deploy.sh`.
+image IDs with the previous Compose configuration; the normal script requires
+source revision labels that legacy images do not carry.
 
 When a rollback requires database restoration, stop the validator before
 restoring the pre-deploy snapshot, remove stale SQLite `-wal` and `-shm` files,

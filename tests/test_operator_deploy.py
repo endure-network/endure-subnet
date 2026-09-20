@@ -52,9 +52,7 @@ def test_rollback_stops_partial_restart_after_start_or_health_failure(
 ) -> None:
     deploy_script = (ROOT / "deploy/operator-node/deploy.sh").read_text()
     function_start = deploy_script.index("rollback_failed_release() {")
-    function_end = deploy_script.index(
-        '\n}\n\nif ! "${compose[@]}" up -d', function_start
-    )
+    function_end = deploy_script.index("\n}\n", function_start)
     rollback_function = deploy_script[function_start : function_end + 2]
     harness = tmp_path / "rollback-harness.sh"
     event_log = tmp_path / "events.log"
@@ -67,8 +65,8 @@ def test_rollback_stops_partial_restart_after_start_or_health_failure(
         rollback_function
         + """
 compose=(fake_compose)
-previous_validator_image=validator@sha256:old
-previous_miner_image=miner@sha256:old
+previous_validator_image=sha256:old-validator
+previous_miner_image=sha256:old-miner
 current_validator_id=validator-id
 backup_file="$TEST_BACKUP_FILE"
 record_dir="$TEST_RECORD_DIR"
@@ -80,6 +78,9 @@ fake_compose() {
   elif [[ " $* " == *" ps -aq validator "* ]]; then
     printf 'validator-id\\n'
   elif [[ " $* " == *" up "* ]]; then
+    [[ "$VALIDATOR_IMAGE" == sha256:old-validator ]] || exit 90
+    [[ "$MINER_IMAGE" == sha256:old-miner ]] || exit 91
+    [[ " $* " == *" --pull never "* ]] || exit 92
     printf 'up\\n' >>"$TEST_EVENT_LOG"
     [[ "${TEST_UP_FAIL:-0}" != "1" ]]
   fi
@@ -115,6 +116,47 @@ fi
 
         assert result.returncode == 0
         assert event_log.read_text().splitlines().count("stop") == 2
+
+
+def test_operator_release_check_accepts_tags_and_digests() -> None:
+    script = (ROOT / "deploy/operator-node/deploy.sh").read_text()
+    check = script[
+        script.index('resolved_revision=""') : script.index("wait_for_healthy()")
+    ]
+    harness = (
+        """set -euo pipefail
+images=("$VALIDATOR_REF" "$MINER_REF")
+docker() {
+  if [[ "$1" == pull ]]; then return 0; fi
+  if [[ "${@: -1}" == "$VALIDATOR_REF" ]]; then
+    printf '%s' "$VALIDATOR_REV"
+  else
+    printf '%s' "$MINER_REV"
+  fi
+}
+"""
+        + check
+        + 'printf "%s" "$resolved_revision"'
+    )
+    revision = "a" * 40
+    for suffix in (":prod", ":v0.1.0", "@sha256:" + "b" * 64):
+        for miner_revision in (revision, "c" * 40, "", "short"):
+            result = subprocess.run(
+                ["bash", "-c", harness],
+                env={
+                    **os.environ,
+                    "VALIDATOR_REF": "validator" + suffix,
+                    "MINER_REF": "miner" + suffix,
+                    "VALIDATOR_REV": revision,
+                    "MINER_REV": miner_revision,
+                },
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            assert (result.returncode == 0) == (miner_revision == revision)
+            if miner_revision == revision:
+                assert result.stdout == revision
 
 
 def test_runtime_images_embed_oci_source_identity() -> None:
@@ -256,7 +298,7 @@ def test_release_workflow_publishes_only_a_green_staging_sha() -> None:
     assert "actions: read" in workflow
     assert "repos/$GITHUB_REPOSITORY/git/ref/heads/staging" in workflow
     assert 'test "$staging_sha" = "$SOURCE_SHA"' in workflow
-    assert workflow.count('test "$staging_sha" = "$SOURCE_SHA"') == 3
+    assert workflow.count('test "$staging_sha" = "$SOURCE_SHA"') == 4
     assert "ghcr.io/$owner/endure-subnet-validator:sha-$SOURCE_SHA" in workflow
     assert "ghcr.io/$owner/endure-subnet-miner:sha-$SOURCE_SHA" in workflow
     assert "ghcr.io/$owner/endure-validator:sha-$SOURCE_SHA" not in workflow
@@ -274,7 +316,7 @@ def test_release_workflow_publishes_only_a_green_staging_sha() -> None:
         < workflow.index("      - name: Record deployable digests")
     )
     assert "git fetch" not in workflow
-    assert workflow.count("scripts/quality_gates/require_release_workflows.sh") == 2
+    assert workflow.count("scripts/quality_gates/require_release_workflows.sh") == 3
     assert "commits/$SOURCE_SHA/check-runs" not in workflow
     assert '--build-arg ENDURE_SOURCE_REVISION="$SOURCE_SHA"' in workflow
     assert workflow.count("docker push") == 2
@@ -304,7 +346,7 @@ def test_release_workflow_publishes_only_a_green_staging_sha() -> None:
     assert seen_references
 
 
-def test_operator_compose_uses_only_pinned_images_and_host_durability() -> None:
+def test_operator_compose_uses_published_images_and_host_durability() -> None:
     compose_path = ROOT / "deploy/operator-node/docker-compose.yaml"
     compose_text = compose_path.read_text()
     services = yaml.safe_load(compose_text)["services"]
@@ -340,10 +382,23 @@ def test_operator_compose_uses_only_pinned_images_and_host_durability() -> None:
     assert "deploy/operator-node/docker-compose.yaml config" in ci_workflow
 
 
-def test_operator_deploy_rejects_mutable_images_and_records_rollback() -> None:
+def test_operator_deploy_takes_the_release_identity_from_the_images() -> None:
+    deploy_script = (ROOT / "deploy/operator-node/deploy.sh").read_text()
+    env_example = (ROOT / "deploy/operator-node/env.example").read_text()
+
+    assert "SOURCE_SHA" not in env_example
+    assert '"SOURCE_SHA"' not in deploy_script
+    assert "Image carries no full source revision label" in deploy_script
+    assert "Validator and miner images come from different commits." in deploy_script
+    assert "printf 'SOURCE_SHA=%s\\n' \"$resolved_revision\"" in deploy_script
+
+
+def test_operator_deploy_accepts_tags_and_records_rollback() -> None:
     deploy_script = (ROOT / "deploy/operator-node/deploy.sh").read_text()
 
-    assert "@sha256:[0-9a-f]{64}" in deploy_script
+    assert "Refusing mutable image reference" not in deploy_script
+    assert 'previous_validator_image="$image_id"' in deploy_script
+    assert 'previous_miner_image="$image_id"' in deploy_script
     assert "previous-images.txt" in deploy_script
     assert "sqlite3.connect" in deploy_script
     assert "PRAGMA integrity_check" in deploy_script
@@ -368,7 +423,8 @@ def test_operator_deploy_rejects_mutable_images_and_records_rollback() -> None:
     assert "separate, non-overlapping directories" in deploy_script
     assert "--mount" not in deploy_script
     assert (
-        'if ! "${compose[@]}" up -d --no-build validator miner-1; then' in deploy_script
+        'if ! "${compose[@]}" up -d --no-build --pull never validator miner-1; then'
+        in deploy_script
     )
     assert deploy_script.count("--entrypoint python") == 3
     assert "rendered-compose.yaml" not in deploy_script
