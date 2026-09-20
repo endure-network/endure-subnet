@@ -9,11 +9,16 @@ This is the public miner path: [README](../README.md) → this guide →
 miner sends commits and reveals to validator axons rather than waiting for a
 generic query.
 
+## Install
+
+For a pre-built image, follow [Run a miner](deploy/operator-node.md#run-a-miner).
+Only your miner wallet and state are needed; you do not run a validator.
+For source installation, follow the steps below.
+
 ## Before you start
 
 1. Clone the public repository and, with a Python 3.12 executable available,
-   run `make bootstrap` to install the pinned uv `0.11.32` and Gitleaks. The
-   signed `v0.1.0-rc.3` tag is created only after live candidate acceptance.
+   run `make bootstrap` to install the pinned uv `0.11.32` and Gitleaks.
 2. Install the locked environment with `make dev-install` (`uv sync --locked
    --extra dev`; operators who need no test tooling can use `make install`
    instead). Then run
