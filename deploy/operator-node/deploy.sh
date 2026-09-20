@@ -90,18 +90,7 @@ if ((${#images[@]} != 2)); then
   echo "Expected exactly two runtime images, found ${#images[@]}." >&2
   exit 1
 fi
-for image in "${images[@]}"; do
-  if [[ ! "$image" =~ @sha256:[0-9a-f]{64}$ ]]; then
-    echo "Refusing mutable image reference: $image" >&2
-    exit 1
-  fi
-done
 
-source_sha="$(awk -F= '$1 == "SOURCE_SHA" {print $2; exit}' "$env_file")"
-if [[ ! "$source_sha" =~ ^[0-9a-f]{40}$ ]]; then
-  echo "SOURCE_SHA must be a full lowercase commit SHA." >&2
-  exit 1
-fi
 serving_stage="$(awk -F= '$1 == "SERVING_STAGE" {print $2; exit}' "$env_file")"
 if [[ "$serving_stage" != "testnet" && "$serving_stage" != "mainnet" ]]; then
   echo "SERVING_STAGE must be testnet or mainnet (got '$serving_stage')." >&2
@@ -121,9 +110,9 @@ for service in validator miner-1; do
     printf '%s|%s|%s\n' "$service" "$image_ref" "$image_id" \
       >>"$record_dir/previous-images.txt"
     if [[ "$service" == "validator" ]]; then
-      previous_validator_image="$image_ref"
+      previous_validator_image="$image_id"
     else
-      previous_miner_image="$image_ref"
+      previous_miner_image="$image_id"
     fi
   fi
 done
@@ -165,8 +154,9 @@ resolved_revision=""
 for image in "${images[@]}"; do
   docker pull "$image"
   revision="$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$image")"
-  if [[ "$revision" != "$source_sha" ]]; then
-    echo "Image revision does not match SOURCE_SHA: $image" >&2
+  # Confirm this optional two-service deployment uses one release.
+  if [[ ! "$revision" =~ ^[0-9a-f]{40}$ ]]; then
+    echo "Image carries no full source revision label: $image" >&2
     exit 1
   fi
   if [[ -n "$resolved_revision" ]] && [[ "$revision" != "$resolved_revision" ]]; then
@@ -228,7 +218,8 @@ rollback_failed_release() {
   echo "Previous validator and miner images restored after failed deployment." >&2
 }
 
-if ! "${compose[@]}" up -d --no-build validator miner-1; then
+# Images were pulled and checked above; do not pull moving tags a second time.
+if ! "${compose[@]}" up -d --no-build --pull never validator miner-1; then
   rollback_failed_release || true
   exit 1
 fi
@@ -247,7 +238,7 @@ curl --silent --show-error --output "$record_dir/health.json" \
   >"$record_dir/health-status.txt"
 
 {
-  printf 'SOURCE_SHA=%s\n' "$source_sha"
+  printf 'SOURCE_SHA=%s\n' "$resolved_revision"
   for image in "${images[@]}"; do
     printf 'IMAGE=%s\n' "$image"
   done
@@ -257,5 +248,5 @@ curl --silent --show-error --output "$record_dir/health.json" \
   done
 } >"$record_dir/deployment.txt"
 
-echo "Deployment started from $source_sha and passed process health checks."
+echo "Deployment started from $resolved_revision and passed process health checks."
 echo "Complete the lifecycle and chain-side verification in docs/deploy/operator-node.md."

@@ -43,9 +43,8 @@ Known limitations: this is a testnet soak with one public validator endpoint;
 outcomes and feeds can diverge between validators; interfaces and
 internals may change before a later release. Source builds are supported on the
 environment below. Each qualified `staging` commit also publishes candidate
-Linux/amd64 validator and miner images; deploy them only by immutable digest
-using the [single-host operator guide](docs/deploy/operator-node.md). No stable
-semantic-version image exists yet.
+Linux/amd64 validator and miner images; run the image for your role using the
+[container guide](docs/deploy/operator-node.md).
 
 Supported source environment: Python `>=3.12,<3.13` and Bittensor `>=10.5,<11`
 (see [pyproject.toml](pyproject.toml)). Endure does not perform GPU computation;
@@ -108,8 +107,8 @@ prefix and stop each process manually.
 
 ## Run a miner
 
-Follow the complete public path: [mining guide](docs/mining.md), then the
-[testnet runbook](docs/running_on_testnet.md). Acceptance is gated by hotkey
+Use the [standalone miner image](docs/deploy/operator-node.md#run-a-miner)
+or follow the [mining guide](docs/mining.md) for source installation. Acceptance is gated by hotkey
 registration and each validator's configured stake floor, and covering the
 [full round universe](docs/mining.md#cover-the-full-universe) is the dominant
 earnings lever — skipped coordinates score zero. Never share a mnemonic, coldkey,
@@ -117,11 +116,11 @@ hotkey file, seed, wallet archive, or endpoint credential in a public report.
 
 ## Run a validator
 
-Follow [validating](docs/validating.md), then the [testnet runbook](docs/running_on_testnet.md).
-Validators need durable database storage, backed-up state, a registered testnet
-hotkey, and an archive market-data endpoint. Operators who prefer qualified,
-digest-pinned images can use the [single-host deployment](docs/deploy/operator-node.md).
-Mainnet operation is prohibited.
+Use the [standalone validator image](docs/deploy/operator-node.md#run-a-validator)
+or follow [validating](docs/validating.md) for source installation. Validators
+need durable database storage, backed-up state, a registered hotkey, and an
+archive market-data endpoint. Mainnet requires a qualified production release
+and the explicit acknowledgement described in [the mainnet guide](docs/running_on_mainnet.md).
 
 ## Register on testnet
 

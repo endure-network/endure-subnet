@@ -4,6 +4,11 @@
 > not a mainnet guide. The authoritative compatibility value is
 > [version_contract.py](../endure/protocol/version_contract.py).
 
+Choose your role: [run a miner image](deploy/operator-node.md#run-a-miner) or
+[run a validator image](deploy/operator-node.md#run-a-validator). Use a qualified
+testnet candidate with `NETUID=504`, `CHAIN=test` and `SERVING_STAGE=testnet`.
+The source-install commands below are alternatives; each role runs independently.
+
 ## Install safely
 
 ```bash
@@ -20,8 +25,8 @@ lockfile. `make bootstrap` installs the pinned uv and Gitleaks tools into a
 local user cache, which every Endure locked target verifies before its command.
 Do not replace `make bootstrap` or `make dev-install` with `pip install`.
 
-Use only funded **testnet** wallets. Create/register the validator and miner
-hotkeys with the pinned `.venv-seeder/bin/btcli`; registration, stake, permits,
+Use only funded **testnet** wallets. Create/register your chosen role's
+hotkey with the pinned `.venv-seeder/bin/btcli`; registration, stake, permits,
 fees, and the testnet endpoint are chain-controlled and must be checked at execution.
 Keep coldkeys and mnemonics off servers. Provision only the required testnet
 hotkey plus `coldkeypub.txt` through the documented operator path, and never
@@ -32,19 +37,19 @@ hotkeys, then check the prompted fee and chain state before confirming:
 
 ```bash
 .venv-seeder/bin/btcli subnets register --netuid 504 --wallet-name <wallet-name> \
-  --hotkey <validator-hotkey> --network test
+  --hotkey <your-role-hotkey> --network test
 .venv-seeder/bin/btcli stake add --netuid 504 --amount <tao> --wallet-name <wallet-name> \
-  --hotkey <validator-hotkey> --network test
+  --hotkey <your-role-hotkey> --network test
 ```
 
-Register and stake the miner hotkey the same way. Validators may enforce a
+The commands apply to your chosen role. Validators may enforce a
 minimum miner stake (`MIN_MINER_STAKE`) and reject commits from under-staked
 hotkeys with `Insufficient stake`; the public testnet soak validator's floor is
 deployment-configured (`0.3` at the time of writing) and can change without a
 release, so stake the miner hotkey above the current floor or its submissions
 will never be accepted — the rejection reason appears in the miner log.
 
-## Validator first
+## Run a validator
 
 Start one validator with a registered hotkey, persistent database URL, a
 reachable axon address, and `--endure.serving_stage testnet`. Set
@@ -60,7 +65,7 @@ reachable axon address, and `--endure.serving_stage testnet`. Set
 
 Expose the axon as Bittensor requires; expose the read API separately behind
 appropriate TLS and rate limits. Confirm `/health` and `/schemas` before
-starting miners; `/live` is process liveness only and must not replace the
+accepting submissions; `/live` is process liveness only and must not replace the
 operational `/health` check. Back up and restore-test the persistent database; restart
 behavior depends on retained durable state. See [validating](validating.md).
 
@@ -71,7 +76,7 @@ only public validator HTTP endpoint. Miner transport still discovers validator
 axons from the netuid-504 metagraph; the HTTPS endpoint is for consumers and
 operator checks, not commit/reveal delivery.
 
-## Then start miners
+## Run a miner
 
 ```bash
 .venv/bin/python neurons/miner.py --netuid 504 --subtensor.network test \
@@ -93,9 +98,9 @@ See [mining](mining.md) for the commit/reveal contract and troubleshooting.
 
 ## Deployment topology
 
-Use the direct commands above or the
-[digest-pinned single-host deployment](deploy/operator-node.md). Neither public
-path requires Coolify. The root `docker-compose.yml` remains a local reference
+Use the direct command for your role above or its
+[standalone container example](deploy/operator-node.md). Neither path requires
+Coolify or running the other role. The root `docker-compose.yml` remains a local reference
 topology; it cannot enforce separation between host wallet paths and is not a
 supported public deployment boundary. The Endure team operates its own
 multi-host soak through Coolify; that provider-specific procedure is documented

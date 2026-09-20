@@ -41,33 +41,35 @@ prompted values before confirming.
 
 ```bash
 .venv-seeder/bin/btcli subnets register --netuid 30 --wallet-name <wallet-name> \
-  --hotkey <validator-hotkey> --network finney
+  --hotkey <your-role-hotkey> --network finney
 .venv-seeder/bin/btcli stake add --netuid 30 --amount <tao> --wallet-name <wallet-name> \
-  --hotkey <validator-hotkey> --network finney
+  --hotkey <your-role-hotkey> --network finney
 ```
+
+Register the hotkey for the role you will run. Validator permits and miner
+admission have different requirements; see [validating](validating.md) and
+[mining](mining.md).
 
 Keep coldkeys and mnemonics off servers. Mainnet wallet hotkeys are distinct
 from testnet hotkeys; a protocol version key is not a wallet key.
 
 ## Deploy the `:prod` images
 
-Third-party validators deploy through the
-[operator node path](deploy/operator-node.md) with `CHAIN=finney` and
-`SERVING_STAGE=mainnet`. Pin `VALIDATOR_IMAGE` and `MINER_IMAGE` to the
-digests behind `ghcr.io/endure-network/endure-subnet-validator:prod` and
-`ghcr.io/endure-network/endure-subnet-miner:prod`, and set `SOURCE_SHA` to the
-release tag's source commit. The `:prod` channel is written only by the
-release-tag workflow, which retags the images that soaked on staging without
-rebuilding, so the published digests equal the soaked ones.
+Choose [Run a validator](deploy/operator-node.md#run-a-validator) or
+[Run a miner](deploy/operator-node.md#run-a-miner), with `NETUID=30`,
+`CHAIN=finney` and `SERVING_STAGE=mainnet`. Each role uses its own image,
+wallet and persistent storage; running both is optional.
 
-```bash
-docker buildx imagetools inspect ghcr.io/endure-network/endure-subnet-validator:prod
-docker buildx imagetools inspect ghcr.io/endure-network/endure-subnet-miner:prod
-```
+Use `ghcr.io/endure-network/endure-subnet-validator:prod` for a validator or
+`ghcr.io/endure-network/endure-subnet-miner:prod` for a miner. The release-tag
+workflow updates `:prod` and publishes `:vX.Y.Z` tags using the soaked images
+without rebuilding. A published version tag or digest can be selected instead.
+Merging into `main` alone does not publish a production release.
 
-The deploy script refuses mutable tags, so copy the `sha256:` digests rather
-than the `:prod` tag into the env file. Upgrade and rollback guidance is in
-[operator-node.md](deploy/operator-node.md#rollback).
+You choose when to pull and recreate your container, or automate that in your
+own infrastructure. See the [container guide](deploy/operator-node.md#updating-your-container)
+for persistent-state considerations. The optional two-service example also
+accepts tags and digests.
 
 ## Weights and abstention
 
