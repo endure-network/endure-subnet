@@ -298,7 +298,7 @@ def test_release_workflow_publishes_only_a_green_staging_sha() -> None:
     assert "actions: read" in workflow
     assert "repos/$GITHUB_REPOSITORY/git/ref/heads/staging" in workflow
     assert 'test "$staging_sha" = "$SOURCE_SHA"' in workflow
-    assert workflow.count('test "$staging_sha" = "$SOURCE_SHA"') == 3
+    assert workflow.count('test "$staging_sha" = "$SOURCE_SHA"') == 4
     assert "ghcr.io/$owner/endure-subnet-validator:sha-$SOURCE_SHA" in workflow
     assert "ghcr.io/$owner/endure-subnet-miner:sha-$SOURCE_SHA" in workflow
     assert "ghcr.io/$owner/endure-validator:sha-$SOURCE_SHA" not in workflow
@@ -316,7 +316,7 @@ def test_release_workflow_publishes_only_a_green_staging_sha() -> None:
         < workflow.index("      - name: Record deployable digests")
     )
     assert "git fetch" not in workflow
-    assert workflow.count("scripts/quality_gates/require_release_workflows.sh") == 2
+    assert workflow.count("scripts/quality_gates/require_release_workflows.sh") == 3
     assert "commits/$SOURCE_SHA/check-runs" not in workflow
     assert '--build-arg ENDURE_SOURCE_REVISION="$SOURCE_SHA"' in workflow
     assert workflow.count("docker push") == 2

@@ -17,8 +17,14 @@ Production releases publish separate Linux/amd64 images:
 Use a published `:vX.Y.Z` version tag or `@sha256:<digest>` instead to select a
 specific release. A running container does not update when a tag moves.
 
-For testnet, select the appropriate role's `:sha-<qualified-staging-commit>`
-image or digest from the release artifact. Set `NETUID=504`, `CHAIN=test` and
+Testnet releases publish a separate channel:
+
+- `ghcr.io/endure-network/endure-subnet-validator:testnet`
+- `ghcr.io/endure-network/endure-subnet-miner:testnet`
+
+`:testnet` moves to each qualified `staging` release once that commit's release
+checks pass. Use a `:sha-<qualified-staging-commit>` tag or `@sha256:<digest>`
+instead to pin a specific candidate. Set `NETUID=504`, `CHAIN=test` and
 `SERVING_STAGE=testnet` in the examples below. Mainnet uses netuid `30`,
 `CHAIN=finney` and `SERVING_STAGE=mainnet`; see
 [the mainnet guide](../running_on_mainnet.md).

@@ -126,3 +126,44 @@ jobs:
           path: release-images.env
           if-no-files-found: error
           retention-days: 30
+
+  channel:
+    name: Publish testnet channel from recorded digests
+    needs: publish
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.source_sha || github.sha }}
+      - name: Load the published release artifact
+        run: |
+          gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+            --name "release-images-$SOURCE_SHA"
+          test "$(wc -l < release-images.env)" -eq 3
+          grep -Fx "SOURCE_SHA=$SOURCE_SHA" release-images.env
+          staging_sha="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/staging" --jq .object.sha)"
+          test "$staging_sha" = "$SOURCE_SHA"
+          scripts/quality_gates/require_release_workflows.sh "$SOURCE_SHA"
+      - name: Authenticate to the container registry
+        run: echo "$GH_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+      # Retry this failed job to reuse the saved digests without rebuilding.
+      - name: Move the testnet channel
+        run: |
+          # shellcheck disable=SC1091
+          source ./release-images.env
+          for ref in "$VALIDATOR_IMAGE" "$MINER_IMAGE"; do
+            repo="${ref%%@*}"
+            docker buildx imagetools create --prefer-index=false \
+              --tag "$repo:testnet" "$ref"
+            published_digest="$(docker buildx imagetools inspect \
+              --format '{{json .Manifest}}' "$repo:testnet" | jq -r .digest)"
+            test "$published_digest" = "${ref#*@}"
+          done
