@@ -5,6 +5,8 @@ from __future__ import annotations
 from datetime import UTC, date, datetime
 from decimal import Decimal
 
+import pytest
+
 from endure.assessment.coordinates import (
     AssessmentConsensusRow,
     AssessmentCoordinate,
@@ -544,3 +546,64 @@ class TestRecordAssessmentScoringPass:
         assert not storage.assessment_realized_targets_for(
             ROUND, FORGE_LENDING_SCHEMA_ID
         )
+
+
+@pytest.mark.parametrize("mode", ["unrestricted", "active_only", "retired_only"])
+def test_inactivity_pruning_deletes_only_supplied_active_coordinates(
+    storage: Storage,
+    mode: str,
+) -> None:
+    _open_lending_round(storage)
+    realized, scores, emas, history = _scoring_pass_rows()
+    [ema] = emas
+    other = next(
+        output
+        for output in LendingOutput
+        if output is not LendingOutput.COLLATERAL_FACTOR
+    )
+    pruned_coordinates = {
+        "unrestricted": None,
+        "active_only": frozenset({ema.coordinate}),
+        "retired_only": frozenset({_coordinate(other)}),
+    }[mode]
+    storage.record_assessment_scoring_pass(
+        ROUND,
+        FORGE_LENDING_SCHEMA_ID,
+        horizon_value=LENDING_HORIZON_SECONDS,
+        realized_targets=realized,
+        output_scores=scores,
+        ema_updates=emas,
+        score_history=history,
+        now_iso=NOW,
+        pruned_hotkeys=["hk-a"],
+        pruned_coordinates=pruned_coordinates,
+    )
+    assert storage.assessment_ema_states(FORGE_LENDING_SCHEMA_ID) == (
+        emas if mode == "retired_only" else []
+    )
+    assert (
+        storage.assessment_score_history_for_round(ROUND, FORGE_LENDING_SCHEMA_ID)
+        == history
+    )
+
+
+def test_inactivity_pruning_refuses_an_empty_active_coordinate_set(
+    storage: Storage,
+) -> None:
+    _open_lending_round(storage)
+    realized, scores, emas, history = _scoring_pass_rows()
+
+    with pytest.raises(ValueError, match="active coordinate"):
+        storage.record_assessment_scoring_pass(
+            ROUND,
+            FORGE_LENDING_SCHEMA_ID,
+            horizon_value=LENDING_HORIZON_SECONDS,
+            realized_targets=realized,
+            output_scores=scores,
+            ema_updates=emas,
+            score_history=history,
+            now_iso=NOW,
+            pruned_hotkeys=["hk-a"],
+            pruned_coordinates=frozenset(),
+        )
+    assert storage.assessment_ema_states(FORGE_LENDING_SCHEMA_ID) == []

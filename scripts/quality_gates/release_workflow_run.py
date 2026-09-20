@@ -34,8 +34,19 @@ def main(argv: list[str] | None = None) -> int:
     try:
         payload = json.load(sys.stdin)
     except (json.JSONDecodeError, OSError):
+        print(
+            "release workflow gate: unreadable workflow-runs payload", file=sys.stderr
+        )
         return 1
-    return 0 if latest_push_succeeded(payload, source_sha=str(args.sha)) else 1
+    if latest_push_succeeded(payload, source_sha=str(args.sha)):
+        return 0
+    print(
+        f"release workflow gate: no successful staging push run for {args.sha}. "
+        "Release images are published only for commits pushed to staging; tag "
+        "the promoted staging source commit, not the main merge commit.",
+        file=sys.stderr,
+    )
+    return 1
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
 # Alpha Risk economic limitations
 
-Protocol key `30` retains payout sharpening `gamma = 3` and an EMA payout
+Protocol key `2041` retains payout sharpening `gamma = 3` and an EMA payout
 half-life of `5` rounds as experimental testnet starting values. They are not
 validated mainnet parameters.
 

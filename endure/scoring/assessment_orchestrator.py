@@ -164,6 +164,7 @@ class AssessmentScoringConfig:
     universe_members: Callable[[tuple[str, ...]], Iterable[int]]
     accepted_values: Callable[[str], Mapping[str, Mapping[AssessmentCoordinate, int]]]
     outputs: tuple[ScoredOutputConfig, ...]
+    active_coordinates: frozenset[AssessmentCoordinate] | None = None
     coordinate_for: Callable[[int, int, str], AssessmentCoordinate] = (
         _subnet_asset_coordinate
     )
@@ -232,17 +233,17 @@ def _fully_decayed_hotkeys(
     *,
     previous: Mapping[tuple[str, AssessmentCoordinate], AssessmentEmaState],
     updates: Sequence[AssessmentEmaState],
-    scored_outputs: set[str],
+    eligible: Callable[[AssessmentCoordinate], bool],
 ) -> set[str]:
     post_update: dict[str, dict[AssessmentCoordinate, Decimal]] = {
         hotkey: {} for hotkey in absent
     }
     for (hotkey, coordinate), state in previous.items():
-        if hotkey in post_update and coordinate.output in scored_outputs:
+        if hotkey in post_update and eligible(coordinate):
             post_update[hotkey][coordinate] = state.ema
     for update in updates:
         per_hotkey = post_update.get(update.miner_hotkey)
-        if per_hotkey is not None and update.coordinate.output in scored_outputs:
+        if per_hotkey is not None and eligible(update.coordinate):
             per_hotkey[update.coordinate] = update.ema
     return {
         hotkey
@@ -278,6 +279,19 @@ class AssessmentScoringOrchestrator:
         self._config = config
         self._half_life = half_life_rounds
         self._registered_hotkeys = registered_hotkeys
+        self._scored_outputs = frozenset(output.output for output in config.outputs)
+
+    def _eligible_coordinate(self, coordinate: AssessmentCoordinate) -> bool:
+        """True when the coordinate contributes to payout and consensus blends."""
+        active = self._config.active_coordinates
+        if active is not None:
+            return coordinate in active
+        return coordinate.output in self._scored_outputs
+
+    @property
+    def active_coordinates(self) -> frozenset[AssessmentCoordinate] | None:
+        """Coordinates contributing to current payout and consensus blends."""
+        return self._config.active_coordinates
 
     @property
     def horizons(self) -> tuple[int, ...]:
@@ -337,7 +351,19 @@ class AssessmentScoringOrchestrator:
             (state.miner_hotkey, state.coordinate): state
             for state in self._storage.assessment_ema_states(self._config.schema_id)
         }
-        previously_active = {hotkey for hotkey, _coordinate in previous_emas}
+        # Old rounds retain their absence obligations while their coordinates
+        # are retired. New rounds cannot reactivate retired-only miners.
+        round_coordinates = frozenset(
+            self._config.coordinate_for(netuid, prior_horizon, output.output)
+            for netuid in netuids
+            for prior_horizon in self._config.horizons
+            for output in self._config.outputs
+        )
+        previously_active = {
+            hotkey
+            for hotkey, coordinate in previous_emas
+            if self._eligible_coordinate(coordinate) or coordinate in round_coordinates
+        }
         historically_eligible = self._storage.assessment_hotkeys_eligible_for_round(
             self._config.schema_id, round_id
         )
@@ -398,14 +424,16 @@ class AssessmentScoringOrchestrator:
                         len(coordinate_scores)
                     )
 
-        zero_filled_hotkeys = {update.miner_hotkey for update in ema_updates} - set(
-            accepted_values
-        )
+        zero_filled_hotkeys = {
+            update.miner_hotkey
+            for update in ema_updates
+            if self._eligible_coordinate(update.coordinate)
+        } - set(accepted_values)
         pruned = _fully_decayed_hotkeys(
             zero_filled_hotkeys,
             previous=previous_emas,
             updates=ema_updates,
-            scored_outputs={output.output for output in self._config.outputs},
+            eligible=self._eligible_coordinate,
         )
         self._storage.record_assessment_scoring_pass(
             round_id,
@@ -419,14 +447,14 @@ class AssessmentScoringOrchestrator:
             now_iso=now_iso,
             archive_hotkeys=archive_hotkeys,
             pruned_hotkeys=sorted(pruned),
+            pruned_coordinates=self._config.active_coordinates,
         )
         return round_scores
 
     def blended_scores(self) -> dict[str, Decimal]:
         by_hotkey: dict[str, list[Decimal]] = {}
-        scored_outputs = {output.output for output in self._config.outputs}
         for state in self._storage.assessment_ema_states(self._config.schema_id):
-            if state.coordinate.output not in scored_outputs:
+            if not self._eligible_coordinate(state.coordinate):
                 continue
             by_hotkey.setdefault(state.miner_hotkey, []).append(state.ema)
         with localcontext(TR_CONTEXT):

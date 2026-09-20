@@ -105,7 +105,7 @@ first-parent staging lineage in commit
 format above produces
 `d8bd3956158777b7f4355e9298abe2a7d411ef42914b3d5520fdd4bc0edc5f71`.
 
-Key `30` is leased exclusively to the `v0.1.0-rc.2`/`v0.1.0-rc.3` candidate
+Key `30` was leased exclusively to the `v0.1.0-rc.2`/`v0.1.0-rc.3` candidate
 line — `v0.1.0-rc.3` changes no watched protocol path, so the digest and
 lease receipt carry over unchanged. It budgets
 target resolution per validator tick: work exceeding the wall-clock resolution
@@ -123,3 +123,43 @@ Its public lease authority receipt is SHA-256 over the UTF-8 lines
 each terminated by one LF byte. The resulting receipt is
 `77afcb26d890245818340f23cb191c3192d682664006fd9bf2d9251a7537a304`.
 No private ledger value is involved in any lease authority receipt.
+
+Key `30` is recorded as `activation-0043`. It first appeared on the public
+first-parent staging lineage in commit
+`90c973f7a369746a4b19a8b4eb04fed2d37e4caa`; its source-bound receipt is
+`86150d44b3134f1a10fe4a98d4bafda63eb6aa55c9d348ec0284bb83c2d384fc`.
+
+Key `2041` is leased to the SN30 qualification candidate. Signed commit and
+reveal requests bind all request fields, and rejected reveal persistence is
+bounded by admission while accepted retries remain idempotent. Miners and
+validators must upgrade together. The candidate line also carries the
+mainnet-launch universe refresh: the Alpha Risk whitelist becomes the
+15-netuid tuple in `endure/assessment/subnet_alpha_universe.py`, selected as
+the top pools by TAO reserve plus operator picks, including this subnet's own
+netuid 30 rated under the same rules. The key was unserved on every network
+when the refresh folded in, so the lease re-folded at `2041` with a new
+digest instead of burning a key. Its watched-tree digest is
+`570989ed4a3e73bc1283e99742c3931712ec0e3c4aebc96a5aebcc1375ea87f7`. Every
+re-fold of an unserved lease chains from the last activated record, key
+`30`, never from an earlier fold of the same lease. The public lease
+authority receipt uses
+`PREVIOUS_RECEIPT=77afcb26d890245818340f23cb191c3192d682664006fd9bf2d9251a7537a304`,
+`CURRENT_VERSION_KEY=2041`, and
+`CURRENT_VERSION_DIGEST=570989ed4a3e73bc1283e99742c3931712ec0e3c4aebc96a5aebcc1375ea87f7`
+under the `LEASE_AUTHORITY` format above, producing
+`27e8f797e62ce76333067470e18a32bdccdd80a385235b4d700d21513880c2b1`.
+
+The jump from `30` to `2041` deliberately clears the observed SN30 on-chain
+minimum of `2040`; intermediate application keys need not be deployed. Stage
+the complete release on testnet first, then promote the same source and protocol
+key to mainnet after qualification. The candidate opens the mainnet serving
+gate behind the explicit `--endure.serving_stage mainnet` acknowledgement.
+This lease does not change either chain's configuration, start mainnet
+serving on any deployment, or qualify a release by itself. Wallet hotkeys remain distinct
+per environment; a protocol version key is not a wallet key.
+
+Key `2041` also excludes retired Alpha Risk coordinates from active scoring and
+consensus weights while preserving retired EMA memory and historical round
+settlement. Reintroduction resumes preserved scores under the existing
+registration rules; validators clear cached scores when no eligible scores remain. See the [universe-change policy](specs/2026-07-20-scoring-fairness-deltas.md#universe-changes)
+and [upgrade and rollback guidance](deploy/operator-node.md#rollback).

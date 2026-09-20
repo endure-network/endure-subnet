@@ -53,6 +53,17 @@ _TESTNET_HOSTS = {
     "test.finney.opentensor.ai",
     "api-bittensor-testnet.n.dwellir.com",
 }
+# Hosts the serving-stage gate accepts as Bittensor MAINNET. Serving still
+# requires the explicit --endure.serving_stage mainnet acknowledgement;
+# unrecognized remote endpoints are refused outright.
+_MAINNET_HOSTS = {
+    "entrypoint-finney.opentensor.ai",
+    "archive.chain.opentensor.ai",
+    "lite.sub.latent.to",
+    "api-bittensor-mainnet.n.dwellir.com",
+}
+# bittensor's built-in --subtensor.network aliases that resolve to mainnet.
+_MAINNET_NETWORKS = {"finney", "archive", "latent-lite"}
 
 
 class DevOnlyConfigError(RuntimeError):
@@ -102,6 +113,13 @@ def _is_bittensor_testnet(config: "bt.Config") -> bool:
     return bool({_host_of(endpoint), _host_of(network)} & _TESTNET_HOSTS)
 
 
+def _is_bittensor_mainnet(config: "bt.Config") -> bool:
+    endpoint, network = _effective_chain(config)
+    if network in _MAINNET_NETWORKS:
+        return True
+    return bool({_host_of(endpoint), _host_of(network)} & _MAINNET_HOSTS)
+
+
 def requires_serving_stage_gate(
     config: "bt.Config", registry: SchemaRegistry | None = None
 ) -> bool:
@@ -129,10 +147,18 @@ def require_serving_stage_allowed(
             f"{endpoint!r} is refused"
         )
 
+    if _is_bittensor_mainnet(config):
+        if serving_stage == "mainnet":
+            return
+        raise DevOnlyConfigError(
+            "risk.v1.subnet_alpha mainnet serving requires the explicit "
+            "--endure.serving_stage mainnet acknowledgement; configured "
+            f"endpoint {endpoint!r} is refused"
+        )
+
     raise DevOnlyConfigError(
-        "risk.v1.subnet_alpha serving is blocked until the R7 soak gate passes "
-        "(risk scope §R7); mainnet serving requires a code change "
-        f"after soak approval. Configured endpoint {endpoint!r} is refused"
+        "risk.v1.subnet_alpha serving requires a recognized Bittensor testnet "
+        f"or mainnet endpoint; configured endpoint {endpoint!r} is refused"
     )
 
 
@@ -394,12 +420,12 @@ def add_args(cls, parser):
     )
     parser.add_argument(
         "--endure.serving_stage",
-        choices=("testnet",),
+        choices=("testnet", "mainnet"),
         default=None,
         help=(
-            "Explicit serving-stage acknowledgement for Alpha Risk. Only "
-            "'testnet' is accepted; mainnet serving requires a code change after "
-            "the R7 soak gate passes."
+            "Explicit serving-stage acknowledgement for Alpha Risk. The named "
+            "stage must match the configured chain endpoint; serving on a live "
+            "network is refused without it."
         ),
     )
     parser.add_argument(

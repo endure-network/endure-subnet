@@ -252,14 +252,20 @@
       "evidence_sha256": "d8bd3956158777b7f4355e9298abe2a7d411ef42914b3d5520fdd4bc0edc5f71",
       "key": 29,
       "record_id": "activation-0042"
+    },
+    {
+      "digest": "3904a799a6560082a05b0ff62274cf4c71547cf1f5dfd0311418d2f4e574ef14",
+      "evidence_sha256": "86150d44b3134f1a10fe4a98d4bafda63eb6aa55c9d348ec0284bb83c2d384fc",
+      "key": 30,
+      "record_id": "activation-0043"
     }
   ],
   "current_lease": {
-    "authority_sha256": "77afcb26d890245818340f23cb191c3192d682664006fd9bf2d9251a7537a304",
-    "digest": "3904a799a6560082a05b0ff62274cf4c71547cf1f5dfd0311418d2f4e574ef14",
-    "holder": "release/v0.1.0-rc.3",
-    "key": 30
+    "authority_sha256": "27e8f797e62ce76333067470e18a32bdccdd80a385235b4d700d21513880c2b1",
+    "digest": "570989ed4a3e73bc1283e99742c3931712ec0e3c4aebc96a5aebcc1375ea87f7",
+    "holder": "codex/pr57-release-mitigations",
+    "key": 2041
   },
-  "previous_activation_id": "activation-0042",
+  "previous_activation_id": "activation-0043",
   "schema_version": 1
 }

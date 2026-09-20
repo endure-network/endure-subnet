@@ -27,7 +27,7 @@ curl --fail https://api.testnet.endure.network/risk/v1/subnets \
 ```
 
 `/health` must report `status: ok`, schema `risk.v1.subnet_alpha`, protocol key
-`30`, and an explicit release source revision. `/schemas` reports horizons in
+`2041`, and an explicit release source revision. `/schemas` reports horizons in
 seconds. Alpha Risk uses `432000` (5 days) and `2592000` (30 days).
 
 `source_revision` is attested by whoever built the image, not proven to you.
@@ -67,6 +67,8 @@ consumer's use.
   `n_submitters`.
 - `tier` is derived from 30-day consensus medians and may be `unrated` until
   the required resolved history exists.
+- The rated universe includes Endure's own subnet (netuid 30), assessed under
+  the same rules and objective chain data as every other member.
 - `round_id` identifies the newest publication-eligible consensus round. During
   the next-round commit embargo the feed intentionally continues serving the
   prior eligible round.

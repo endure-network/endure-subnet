@@ -136,6 +136,21 @@ def test_validator_wires_served_risk_schema_with_devnet_compression(
     assert validator._service._universe_provider.fetch_universe(
         "2026-08-25"
     ).tickers == ("8", "44")
+    from endure.scoring.risk.policy import active_risk_coordinates
+
+    assert validator._vertical_runtime.active_coordinates == active_risk_coordinates(
+        (8, 44)
+    )
+    validator.config.endure.api_port = 12345
+    with (
+        patch("endure.api.app.build_app") as build,
+        patch("uvicorn.Server"),
+        patch("threading.Thread"),
+    ):
+        validator._start_api()
+    assert build.call_args.kwargs["active_coordinates"] == active_risk_coordinates(
+        (8, 44)
+    )
 
 
 def test_validator_rejects_concurrent_risk_forwards(
@@ -165,7 +180,7 @@ def test_validator_refuses_served_risk_schema_on_finney(
     production_validator_config.neuron.axon_off = True
     production_validator_config.neuron.disable_set_weights = True
 
-    with _patched_chain(), pytest.raises(RuntimeError, match="R7 soak gate"):
+    with _patched_chain(), pytest.raises(RuntimeError, match="serving_stage mainnet"):
         Validator(config=production_validator_config)
 
 
@@ -219,7 +234,7 @@ def test_validator_serving_gate_prevents_axon_creation_on_finney(
     with (
         _patched_chain() as subtensor,
         patch("bittensor.Axon") as create_axon,
-        pytest.raises(RuntimeError, match="R7 soak gate"),
+        pytest.raises(RuntimeError, match="serving_stage mainnet"),
     ):
         Validator(config=production_validator_config)
 
