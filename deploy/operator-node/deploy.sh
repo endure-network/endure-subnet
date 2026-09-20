@@ -97,11 +97,6 @@ for image in "${images[@]}"; do
   fi
 done
 
-source_sha="$(awk -F= '$1 == "SOURCE_SHA" {print $2; exit}' "$env_file")"
-if [[ ! "$source_sha" =~ ^[0-9a-f]{40}$ ]]; then
-  echo "SOURCE_SHA must be a full lowercase commit SHA." >&2
-  exit 1
-fi
 serving_stage="$(awk -F= '$1 == "SERVING_STAGE" {print $2; exit}' "$env_file")"
 if [[ "$serving_stage" != "testnet" && "$serving_stage" != "mainnet" ]]; then
   echo "SERVING_STAGE must be testnet or mainnet (got '$serving_stage')." >&2
@@ -165,8 +160,10 @@ resolved_revision=""
 for image in "${images[@]}"; do
   docker pull "$image"
   revision="$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$image")"
-  if [[ "$revision" != "$source_sha" ]]; then
-    echo "Image revision does not match SOURCE_SHA: $image" >&2
+  # The digest already fixes the image content, revision label included. The
+  # label is read only to confirm both digests name one release and to record it.
+  if [[ ! "$revision" =~ ^[0-9a-f]{40}$ ]]; then
+    echo "Image carries no full source revision label: $image" >&2
     exit 1
   fi
   if [[ -n "$resolved_revision" ]] && [[ "$revision" != "$resolved_revision" ]]; then
@@ -247,7 +244,7 @@ curl --silent --show-error --output "$record_dir/health.json" \
   >"$record_dir/health-status.txt"
 
 {
-  printf 'SOURCE_SHA=%s\n' "$source_sha"
+  printf 'SOURCE_SHA=%s\n' "$resolved_revision"
   for image in "${images[@]}"; do
     printf 'IMAGE=%s\n' "$image"
   done
@@ -257,5 +254,5 @@ curl --silent --show-error --output "$record_dir/health.json" \
   done
 } >"$record_dir/deployment.txt"
 
-echo "Deployment started from $source_sha and passed process health checks."
+echo "Deployment started from $resolved_revision and passed process health checks."
 echo "Complete the lifecycle and chain-side verification in docs/deploy/operator-node.md."

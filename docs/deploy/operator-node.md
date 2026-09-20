@@ -46,9 +46,12 @@ cp deploy/operator-node/env.example deploy/operator-node/.env
 chmod 0600 deploy/operator-node/.env
 ```
 
-Replace every example value. Copy `SOURCE_SHA`, `VALIDATOR_IMAGE`, and
-`MINER_IMAGE` exactly from the workflow artifact. Both image references must
-end in `@sha256:<64 lowercase hexadecimal characters>`.
+Replace every example value. Copy `VALIDATOR_IMAGE` and `MINER_IMAGE` exactly
+from the workflow artifact. Both image references must end in
+`@sha256:<64 lowercase hexadecimal characters>`. The artifact's `SOURCE_SHA`
+line is not a deployment input: a digest already fixes the image and the source
+revision label inside it. An existing `.env` that still carries the line keeps
+working; the line is ignored.
 
 Set `VALIDATOR_WALLET_ROOT` and `MINER_WALLET_ROOT` to those separate
 directories. The Compose project keeps the existing `endure-subnet` project
@@ -92,8 +95,8 @@ mainnet endpoint (see [running_on_mainnet.md](../running_on_mainnet.md)).
 Mainnet deployments pin the digests published on the `:prod` channel by the
 release tag workflow, which retags the soaked staging images without rebuilding.
 
-The script refuses mutable image tags, requires both OCI revisions to match
-`SOURCE_SHA`, snapshots the live or stopped validator SQLite database with an
+The script refuses mutable image tags, requires both images to carry the same
+OCI source revision and records it, snapshots the live or stopped validator SQLite database with an
 integrity check and host-side checksum, records the previous image identity,
 pulls the two digests, and recreates the validator and miner together. If
 process health fails, it stops the replacement, restores the snapshot, and
@@ -115,9 +118,8 @@ deployment, record all of the following in the private operations board:
 
 ## Rollback
 
-For a normal rollback, replace the three artifact lines in `.env` with the
-previous release's `SOURCE_SHA`, `VALIDATOR_IMAGE`, and `MINER_IMAGE`, then run
-`deploy.sh` again. It takes another pre-change snapshot before switching both
+For a normal rollback, replace the two image lines in `.env` with the previous
+release's `VALIDATOR_IMAGE` and `MINER_IMAGE`, then run `deploy.sh` again. It takes another pre-change snapshot before switching both
 services together.
 
 There is one database-boundary exception: release `0014_drop_kre_tables` removes

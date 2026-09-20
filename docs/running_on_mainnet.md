@@ -55,8 +55,7 @@ Third-party validators deploy through the
 [operator node path](deploy/operator-node.md) with `CHAIN=finney` and
 `SERVING_STAGE=mainnet`. Pin `VALIDATOR_IMAGE` and `MINER_IMAGE` to the
 digests behind `ghcr.io/endure-network/endure-subnet-validator:prod` and
-`ghcr.io/endure-network/endure-subnet-miner:prod`, and set `SOURCE_SHA` to the
-release tag's source commit. The `:prod` channel is written only by the
+`ghcr.io/endure-network/endure-subnet-miner:prod`. The `:prod` channel is written only by the
 release-tag workflow, which retags the images that soaked on staging without
 rebuilding, so the published digests equal the soaked ones.
 

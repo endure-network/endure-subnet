@@ -340,6 +340,17 @@ def test_operator_compose_uses_only_pinned_images_and_host_durability() -> None:
     assert "deploy/operator-node/docker-compose.yaml config" in ci_workflow
 
 
+def test_operator_deploy_takes_the_release_identity_from_the_pinned_images() -> None:
+    deploy_script = (ROOT / "deploy/operator-node/deploy.sh").read_text()
+    env_example = (ROOT / "deploy/operator-node/env.example").read_text()
+
+    assert "SOURCE_SHA" not in env_example
+    assert '"SOURCE_SHA"' not in deploy_script
+    assert "Image carries no full source revision label" in deploy_script
+    assert "Validator and miner images come from different commits." in deploy_script
+    assert "printf 'SOURCE_SHA=%s\\n' \"$resolved_revision\"" in deploy_script
+
+
 def test_operator_deploy_rejects_mutable_images_and_records_rollback() -> None:
     deploy_script = (ROOT / "deploy/operator-node/deploy.sh").read_text()
 
