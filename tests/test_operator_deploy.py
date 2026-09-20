@@ -41,7 +41,8 @@ fi
             text=True,
             env={
                 "ENDURE_ENV_FILE": str(env_file),
-                "PATH": f"{fake_bin}:{Path(sys.executable).parent}:/usr/bin:/bin",
+                "PATH": f"{fake_bin}:{Path(sys.executable).parent}:"
+                + os.environ["PATH"],
                 "TEST_VALIDATOR_WALLET": str(wallet_root),
                 "TEST_MINER_WALLET": str(miner_root),
             },
@@ -267,7 +268,7 @@ def test_release_workflow_publishes_only_a_green_staging_sha() -> None:
     assert "actions: read" in workflow
     assert "repos/$GITHUB_REPOSITORY/git/ref/heads/staging" in workflow
     assert 'test "$staging_sha" = "$SOURCE_SHA"' in workflow
-    assert workflow.count('test "$staging_sha" = "$SOURCE_SHA"') == 3
+    assert workflow.count('test "$staging_sha" = "$SOURCE_SHA"') == 4
     assert "ghcr.io/$owner/endure-subnet-validator:sha-$SOURCE_SHA" in workflow
     assert "ghcr.io/$owner/endure-subnet-miner:sha-$SOURCE_SHA" in workflow
     assert "ghcr.io/$owner/endure-validator:sha-$SOURCE_SHA" not in workflow
@@ -285,7 +286,7 @@ def test_release_workflow_publishes_only_a_green_staging_sha() -> None:
         < workflow.index("      - name: Record deployable digests")
     )
     assert "git fetch" not in workflow
-    assert workflow.count("scripts/quality_gates/require_release_workflows.sh") == 2
+    assert workflow.count("scripts/quality_gates/require_release_workflows.sh") == 3
     assert "commits/$SOURCE_SHA/check-runs" not in workflow
     assert '--build-arg ENDURE_SOURCE_REVISION="$SOURCE_SHA"' in workflow
     assert workflow.count("docker push") == 2
@@ -474,11 +475,11 @@ def test_staging_publish_moves_the_testnet_channel_to_the_recorded_digests(
     workflow = yaml.safe_load(
         (ROOT / ".github/workflows/publish-release-images.yml").read_text()
     )
-    steps = workflow["jobs"]["publish"]["steps"]
+    publish_steps = workflow["jobs"]["publish"]["steps"]
+    assert "actions/upload-artifact@" in publish_steps[-1]["uses"]
+    assert workflow["jobs"]["channel"]["needs"] == "publish"
+    steps = workflow["jobs"]["channel"]["steps"]
     names = [step.get("name") for step in steps]
-    assert names.index("Record deployable digests") < names.index(
-        "Move the testnet channel"
-    )
     command = steps[names.index("Move the testnet channel")]["run"]
     digests = {
         "ghcr.io/example/endure-subnet-validator": "sha256:" + "a" * 64,
@@ -568,6 +569,7 @@ MINER_CHANNEL = "ghcr.io/endure-network/endure-subnet-miner:testnet"
 FAKE_DOCKER = r"""#!/usr/bin/env python3
 import json
 import os
+import signal
 import sys
 
 state_path = os.environ["FAKE_DOCKER_STATE"]
@@ -604,6 +606,9 @@ def render(template, entry):
     if ".Name" in template:
         return f'/{entry["id"]}|{entry["ref"]}|{entry["image_id"]}|started'
     if ".State.Health" in template:
+        if state.get("health_failures_remaining", 0):
+            state["health_failures_remaining"] -= 1
+            return "unhealthy"
         if not entry["running"]:
             return "exited"
         broken = {entry["image_id"], entry["hash"].split("+")[0]}
@@ -682,6 +687,10 @@ if args[0] == "compose":
             f'{name}={entry["image_id"]}'
             for name, entry in state["containers"].items()
         ) + " :: " + " ".join(rest))
+        if state.pop("interrupt_after_up", False):
+            with open(state_path, "w") as handle:
+                json.dump(state, handle)
+            os.kill(os.getppid(), signal.SIGKILL)
 elif args[0] == "pull":
     log(f"pull {args[1]}")
     state["local"][args[1]] = state["registry"][args[1]]
@@ -745,6 +754,8 @@ class FakeDockerState(TypedDict):
     retag_after_pull: NotRequired[dict[str, str]]
     volume: NotRequired[bool]
     host_backup_disk_full: NotRequired[bool]
+    interrupt_after_up: NotRequired[bool]
+    health_failures_remaining: NotRequired[int]
 
 
 class OperatorHost:
@@ -758,6 +769,15 @@ class OperatorHost:
             capture_output=True,
             text=True,
         ).stdout.strip()
+        missing = [
+            name
+            for name in ("flock", "sha256sum", "realpath")
+            if not shutil.which(name)
+        ]
+        if missing:
+            pytest.skip(
+                "Linux deployment test prerequisites missing: " + ", ".join(missing)
+            )
         if int(version) < 4:
             pytest.skip("deploy.sh needs bash 4+ (mapfile)")
         self.bash = str(bash)
@@ -968,7 +988,8 @@ def test_operator_deploy_leaves_a_deliberately_stopped_node_stopped(
 
     result = host.deploy()
 
-    assert result.returncode == 0, result.stderr
+    assert result.returncode != 0
+    assert "left unchanged" in result.stderr
     assert host.events == [f"pull {MINER_CHANNEL}", f"pull {VALIDATOR_CHANNEL}"]
     assert not host.state["containers"]["validator"]["running"]
 
@@ -1058,8 +1079,10 @@ def test_operator_deploy_retries_a_release_after_a_bad_env_edit_is_fixed(
     # Until the operator fixes it, the timer must not loop on the bad edit.
     looped = host.deploy()
     assert looped.returncode != 0
-    assert host.events == [f"pull {MINER_CHANNEL}", f"pull {VALIDATOR_CHANNEL}"]
+    assert "maintenance recovery" in looped.stderr
+    assert host.events == []
 
+    (host.releases / "pending-deployment").unlink()
     host.state["config_hash"]["validator"] = "hash-v-fixed-edit"
     host.save()
     fixed = host.deploy()
@@ -1170,7 +1193,7 @@ def test_update_timer_runs_the_deploy_script_from_the_operators_checkout(
     timer = (node_dir / "endure-node-update.timer").read_text()
 
     assert "Type=oneshot" in service
-    assert 'ExecStart="@DEPLOY_DIR@/deploy.sh"' in service
+    assert 'ExecStart=/bin/bash -p "@DEPLOY_DIR@/deploy.sh"' in service
     # Persistent= only applies to calendar timers.
     assert "OnCalendar=*:0/5" in timer
     assert "Persistent=true" in timer
@@ -1193,11 +1216,15 @@ def test_update_timer_runs_the_deploy_script_from_the_operators_checkout(
     script = installer.read_text()
     for production, patched in (
         ('"/etc/systemd/system"', f'"{unit_dir}"'),
+        ('"/opt/endure-node"', f'"{checkout}"'),
         ("if ((EUID != 0)); then", "if false; then"),
     ):
         assert script.count(production) == 1, production
         script = script.replace(production, patched)
     installer.write_text(script)
+    (checkout / "check-installation.py").write_text(
+        "# Permission checker covered separately.\n"
+    )
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
     calls = tmp_path / "systemctl.log"
@@ -1209,12 +1236,12 @@ def test_update_timer_runs_the_deploy_script_from_the_operators_checkout(
         check=False,
         capture_output=True,
         text=True,
-        env={"PATH": f"{fake_bin}:/usr/bin:/bin"},
+        env={"PATH": f"{fake_bin}:{Path(sys.executable).parent}:" + os.environ["PATH"]},
     )
 
     assert result.returncode == 0, result.stderr
     installed = (unit_dir / "endure-node-update.service").read_text()
-    assert f'ExecStart="{checkout.resolve()}/deploy.sh"' in installed
+    assert f'ExecStart=/bin/bash -p "{checkout.resolve()}/deploy.sh"' in installed
     assert (unit_dir / "endure-node-update.timer").read_text() == timer
     assert calls.read_text().splitlines() == [
         "daemon-reload",

@@ -9,6 +9,8 @@ readonly release_dir="/var/lib/endure-node/releases"
 timestamp="$(date -u +%Y%m%dT%H%M%SZ)-$$"
 readonly timestamp
 readonly record_dir="$release_dir/$timestamp"
+readonly pending_file="$release_dir/pending-deployment"
+readonly retry_file="$release_dir/backup-retry-after"
 readonly rejected_file="$release_dir/rejected-releases.txt"
 readonly compose_file="$deploy_dir/docker-compose.yaml"
 readonly -a compose=(docker compose --env-file "$env_file" -f "$compose_file")
@@ -66,6 +68,13 @@ for suffix in ("-wal", "-shm"):
 shutil.copyfile(source_path, target_path)
 os.unlink(source_path)'
 
+for required in docker python3 realpath flock sha256sum curl; do
+  if ! command -v "$required" >/dev/null 2>&1; then
+    echo "Missing deployment prerequisite: $required" >&2
+    exit 1
+  fi
+done
+
 if [[ ! -r "$env_file" ]]; then
   echo "Missing deployment environment: $env_file" >&2
   exit 1
@@ -95,6 +104,11 @@ if ! flock -n 9; then
   echo "Another Endure deployment is already running." >&2
   exit 1
 fi
+if [[ -f "$pending_file" ]]; then
+  echo "Unfinished deployment requires maintenance recovery: $(cat "$pending_file")" >&2
+  echo "Verify or restore that release under deploy.lock before clearing pending-deployment." >&2
+  exit 1
+fi
 mapfile -t images < <(python3 -c "$images_program" <<<"$config_json")
 if ((${#images[@]} != 2)); then
   echo "Expected exactly two runtime images, found ${#images[@]}." >&2
@@ -108,6 +122,15 @@ fi
 # The neurons refuse to serve when SERVING_STAGE does not match CHAIN
 # (endure/utils/config.py require_serving_stage_allowed); that runtime gate,
 # not this script, is the mainnet authority.
+
+for service in validator miner-1; do
+  configured_image="$(python3 -c "$service_image_program" "$service" <<<"$config_json")"
+  case "$configured_image" in
+    "ghcr.io/endure-network/endure-subnet-validator:$serving_stage"|"ghcr.io/endure-network/endure-subnet-miner:$serving_stage")
+      echo "$service follows :$serving_stage." ;;
+    *) echo "$service uses an explicit image override: $configured_image" ;;
+  esac
+done
 
 for image in "${images[@]}"; do
   docker pull "$image"
@@ -157,13 +180,34 @@ if [[ -f "$rejected_file" ]] && grep -Fxq -- "$release_identity" "$rejected_file
   exit 1
 fi
 
+wait_for_healthy() {
+  local service="$1"
+  local container_id status
+  container_id="$("${compose[@]}" ps -aq "$service")"
+  [[ -n "$container_id" ]] || return 1
+  [[ "$(docker inspect --format '{{.State.Running}}' "$container_id")" == "true" ]] || return 1
+  for _ in $(seq 1 48); do
+    status="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$container_id")"
+    if [[ "$status" == "healthy" ]]; then
+      return 0
+    fi
+    if [[ "$status" == "unhealthy" || "$status" == "exited" || "$status" == "dead" ]]; then
+      echo "$service entered state $status." >&2
+      return 1
+    fi
+    sleep 5
+  done
+  echo "$service did not become healthy within 240 seconds." >&2
+  return 1
+}
+
 service_is_current() {
   local service="$1" wanted_image_id="$2"
   local container_id
   container_id="$("${compose[@]}" ps -aq "$service")"
   [[ -n "$container_id" ]] || return 1
-  # Whether it is running is not checked: `restart: unless-stopped` restarts a
-  # crashed container, so a stopped one was stopped by the operator.
+  # Compare identity here; health is checked separately. An identical stopped
+  # service is reported, never implicitly restarted.
   [[ "$(docker inspect --format '{{.Image}}' "$container_id")" == "$wanted_image_id" ]] \
     || return 1
   # An edited env file changes this hash, so set-once values still apply.
@@ -172,6 +216,10 @@ service_is_current() {
 
 if service_is_current validator "$validator_image_id" \
   && service_is_current miner-1 "$miner_image_id"; then
+  if ! wait_for_healthy validator || ! wait_for_healthy miner-1; then
+    echo "Current services are stopped or unhealthy; left unchanged." >&2
+    exit 1
+  fi
   echo "Revision $revision is already deployed; nothing to do."
   exit 0
 fi
@@ -184,10 +232,29 @@ fi
 
 # A run that fails before anything is started changed nothing. Under the timer
 # it repeats every interval, so it must not leave a record or a snapshot.
+if [[ -f "$retry_file" ]] && (( $(date +%s) < $(cat "$retry_file") )); then
+  echo "Backup retry deferred for up to one hour; remove $retry_file after fixing the failure to retry now." >&2
+  exit 1
+fi
 deploy_started=0
 backup_file=""
+backup_inside="/data/.predeploy.db"
+cleanup_snapshot() {
+  [[ -n "$validator_id" ]] || return 0
+  if [[ "$(docker inspect --format '{{.State.Running}}' "$validator_id")" == "true" ]]; then
+    docker exec -e BACKUP_PATH="$backup_inside" "$validator_id" python -c \
+      'import os; p=os.environ["BACKUP_PATH"]; os.path.exists(p) and os.unlink(p)'
+  else
+    local snapshot_image
+    snapshot_image="$(docker inspect --format '{{.Image}}' "$validator_id")"
+    docker run --rm --entrypoint python --volumes-from "$validator_id" \
+      -e BACKUP_PATH="$backup_inside" "$snapshot_image" -c \
+      'import os; p=os.environ["BACKUP_PATH"]; os.path.exists(p) and os.unlink(p)'
+  fi
+}
 discard_unstarted_run() {
   if ((deploy_started == 0)); then
+    cleanup_snapshot >/dev/null 2>&1 || true
     rm -rf -- "$record_dir"
     [[ -z "$backup_file" ]] || rm -f -- "$backup_file"
   fi
@@ -212,7 +279,7 @@ for service in validator miner-1; do
 done
 
 if [[ -n "$validator_id" ]]; then
-  backup_inside="/data/.predeploy.db"
+  printf '%s\n' "$(( $(date +%s) + 3600 ))" >"$retry_file"
   backup_file="$backup_dir/validator-predeploy-$timestamp.db"
   if [[ "$(docker inspect --format '{{.State.Running}}' "$validator_id")" == "true" ]]; then
     docker exec -i \
@@ -220,8 +287,6 @@ if [[ -n "$validator_id" ]]; then
       -e BACKUP_PATH="$backup_inside" \
       "$validator_id" python -c "$backup_program"
     docker cp "$validator_id:$backup_inside" "$backup_file"
-    docker exec -e BACKUP_PATH="$backup_inside" "$validator_id" python -c \
-      'import os; os.unlink(os.environ["BACKUP_PATH"])'
   else
     stopped_validator_image_id="$(docker inspect --format '{{.Image}}' "$validator_id")"
     docker run --rm --entrypoint python --volumes-from "$validator_id" \
@@ -229,34 +294,27 @@ if [[ -n "$validator_id" ]]; then
       -e BACKUP_PATH="$backup_inside" \
       "$stopped_validator_image_id" -c "$backup_program"
     docker cp "$validator_id:$backup_inside" "$backup_file"
-    docker run --rm --entrypoint python --volumes-from "$validator_id" \
-      -e BACKUP_PATH="$backup_inside" \
-      "$stopped_validator_image_id" -c \
-      'import os; os.unlink(os.environ["BACKUP_PATH"])'
   fi
+  cleanup_snapshot
   chmod 0600 "$backup_file"
   printf '%s\n' "$backup_file" >"$record_dir/backup-path.txt"
   sha256sum "$backup_file" >"$record_dir/backup.sha256"
 fi
 
-wait_for_healthy() {
-  local service="$1"
-  local container_id status
-  container_id="$("${compose[@]}" ps -q "$service")"
-  for _ in $(seq 1 48); do
-    status="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$container_id")"
-    if [[ "$status" == "healthy" ]]; then
-      return 0
-    fi
-    if [[ "$status" == "unhealthy" || "$status" == "exited" || "$status" == "dead" ]]; then
-      echo "$service entered state $status." >&2
-      return 1
-    fi
-    sleep 5
-  done
-  echo "$service did not become healthy within 240 seconds." >&2
-  return 1
-}
+
+rm -f -- "$retry_file"
+if [[ ! -f "$release_dir/retention-initialized" ]]; then
+  { cat "$release_dir"/*/previous-images.txt 2>/dev/null || true; } \
+    | awk -F'|' '{print $3}' >>"$release_dir/protected-images.txt"
+  find "$backup_dir" -maxdepth 1 -name 'validator-predeploy-*.db' \
+    >>"$release_dir/protected-backups.txt"
+  touch "$record_dir/protected" "$release_dir/retention-initialized"
+fi
+printf '%s\n' "$validator_image_id" "$miner_image_id" >>"$release_dir/managed-images.txt"
+printf '%s\n' "$release_identity" >"$record_dir/target-identity.txt"
+printf '%s\n' "$validator_image_id" "$miner_image_id" >"$record_dir/target-images.txt"
+touch "$record_dir/managed"
+
 
 rollback_failed_release() {
   echo "New release failed health checks; attempting automatic rollback." >&2
@@ -291,10 +349,19 @@ rollback_failed_release() {
     "${compose[@]}" stop validator miner-1 || true
     return 1
   fi
+  if [[ "$previous_validator_image_id" == "$validator_image_id" && "$previous_miner_image_id" == "$miner_image_id" ]]; then
+    # The same configuration just passed health on rollback; do not poison it.
+    awk -v identity="$release_identity" '$0 != identity' "$rejected_file" >"$rejected_file.tmp"
+    mv "$rejected_file.tmp" "$rejected_file"
+  fi
+  touch "$record_dir/rollback-complete"
+  rm -f -- "$pending_file"
   echo "Previous validator and miner images restored after failed deployment." >&2
 }
 
 deploy_started=1
+printf '%s\n' "$record_dir" >"$pending_file.tmp"
+mv "$pending_file.tmp" "$pending_file"
 if ! "${compose[@]}" up -d --no-build --pull never validator miner-1; then
   rollback_failed_release || true
   exit 1
@@ -324,18 +391,31 @@ curl --silent --show-error --output "$record_dir/health.json" \
     docker inspect --format '{{.Name}}|{{.Config.Image}}|{{.Image}}|{{.State.StartedAt}}' "$container_id"
   done
 } >"$record_dir/deployment.txt"
+rm -f -- "$pending_file"
 
-# Nobody visits this host between releases: keep the running release and the
-# one before it, and the three newest snapshots. Only image IDs this script
-# recorded are removed, and never by force.
+# Keep the adoption baseline plus current/previous images and recent snapshots.
+# Only inventory written by this deployer is eligible for automatic cleanup.
 keep_image_ids=" $validator_image_id $miner_image_id $previous_validator_image_id $previous_miner_image_id "
-while IFS='|' read -r _ _ superseded_image_id; do
-  [[ "$keep_image_ids" == *" $superseded_image_id "* ]] \
-    || docker image rm "$superseded_image_id" >/dev/null 2>&1 || true
-done < <(cat "$release_dir"/*/previous-images.txt 2>/dev/null | sort -u)
-mapfile -t snapshots < <(find "$backup_dir" -name 'validator-predeploy-*.db' | sort)
+while IFS= read -r superseded_image_id; do
+  [[ -n "$superseded_image_id" ]] || continue
+  if [[ "$keep_image_ids" != *" $superseded_image_id "* ]] \
+    && ! grep -Fxq -- "$superseded_image_id" "$release_dir/protected-images.txt"; then
+    docker image rm "$superseded_image_id" >/dev/null 2>&1 || true
+  fi
+done < <(sort -u "$release_dir/managed-images.txt")
+mapfile -t snapshots < <(find "$backup_dir" -maxdepth 1 -name 'validator-predeploy-*.db' | sort)
 for ((i = 0; i < ${#snapshots[@]} - 3; i++)); do
-  rm -f -- "${snapshots[i]}"
+  if ! grep -Fxq -- "${snapshots[i]}" "$release_dir/protected-backups.txt"; then
+    rm -f -- "${snapshots[i]}"
+  fi
+done
+mapfile -t records < <(find "$release_dir" -mindepth 1 -maxdepth 1 -type d | sort)
+for ((i = 0; i < ${#records[@]} - 20; i++)); do
+  record="${records[i]}"
+  if [[ -f "$record/managed" && ! -f "$record/protected" ]] \
+    && [[ -f "$record/deployment.txt" || -f "$record/rollback-complete" ]]; then
+    rm -rf -- "$record"
+  fi
 done
 
 echo "Deployed revision $revision and passed process health checks."

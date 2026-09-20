@@ -23,6 +23,9 @@ jobs:
   publish:
     name: Publish immutable validator and miner images
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
     env:
       GH_TOKEN: ${{ github.token }}
       SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
@@ -69,7 +72,22 @@ jobs:
       - name: Authenticate to the container registry
         run: echo "$GH_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
 
+      - name: Reuse already published images
+        run: |
+          for role in VALIDATOR MINER; do
+            variable="${role}_TAG"
+            if docker buildx imagetools inspect "${!variable}" >"$role.manifest" 2>"$role.error"; then
+              echo "${role}_PUBLISHED=true" >> "$GITHUB_ENV"
+            elif grep -Eqi 'manifest unknown|not found|404' "$role.error"; then
+              echo "${role}_PUBLISHED=false" >> "$GITHUB_ENV"
+            else
+              cat "$role.error" >&2
+              exit 1
+            fi
+          done
+
       - name: Build validator
+        if: env.VALIDATOR_PUBLISHED != 'true'
         run: |
           docker build --platform linux/amd64 \
             --build-arg ENDURE_SOURCE_REVISION="$SOURCE_SHA" \
@@ -79,6 +97,7 @@ jobs:
             --tag "$VALIDATOR_TAG" .
 
       - name: Build miner
+        if: env.MINER_PUBLISHED != 'true'
         run: |
           docker build --platform linux/amd64 \
             --build-arg ENDURE_SOURCE_REVISION="$SOURCE_SHA" \
@@ -96,8 +115,8 @@ jobs:
 
       - name: Publish images
         run: |
-          docker push "$VALIDATOR_TAG"
-          docker push "$MINER_TAG"
+          if [[ "$VALIDATOR_PUBLISHED" != "true" ]]; then docker push "$VALIDATOR_TAG"; fi
+          if [[ "$MINER_PUBLISHED" != "true" ]]; then docker push "$MINER_TAG"; fi
 
       - name: Record deployable digests
         run: |
@@ -120,10 +139,42 @@ jobs:
             echo 'Download the release-images artifact and deploy the recorded digests.'
           } >> "$GITHUB_STEP_SUMMARY"
 
-      # Testnet operator hosts follow :testnet (deploy/operator-node), so they
-      # run what staging runs. Only the current staging tip reaches this step,
-      # so the channel never moves backwards. The retag copies the recorded
-      # digest; buildx would otherwise wrap it in an index and change it.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: release-images-${{ inputs.source_sha || github.sha }}
+          path: release-images.env
+          if-no-files-found: error
+          retention-days: 30
+          overwrite: true
+
+  channel:
+    name: Publish testnet channel from recorded digests
+    needs: publish
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.source_sha || github.sha }}
+      - name: Load the published release artifact
+        run: |
+          gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+            --name "release-images-$SOURCE_SHA"
+          test "$(wc -l < release-images.env)" -eq 3
+          grep -Fx "SOURCE_SHA=$SOURCE_SHA" release-images.env
+          staging_sha="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/staging" --jq .object.sha)"
+          test "$staging_sha" = "$SOURCE_SHA"
+          scripts/quality_gates/require_release_workflows.sh "$SOURCE_SHA"
+      - name: Authenticate to the container registry
+        run: echo "$GH_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+      # Retry this failed job to reuse the saved digests without rebuilding.
       - name: Move the testnet channel
         run: |
           # shellcheck disable=SC1091
@@ -136,10 +187,3 @@ jobs:
               --format '{{json .Manifest}}' "$repo:testnet" | jq -r .digest)"
             test "$published_digest" = "${ref#*@}"
           done
-
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: release-images-${{ inputs.source_sha || github.sha }}
-          path: release-images.env
-          if-no-files-found: error
-          retention-days: 30

@@ -6,4 +6,9 @@ Requires=docker.service
 
 [Service]
 Type=oneshot
-ExecStart="@DEPLOY_DIR@/deploy.sh"
+User=root
+WorkingDirectory=@DEPLOY_DIR@
+Environment=HOME=/root
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+UnsetEnvironment=BASH_ENV ENV PYTHONPATH PYTHONHOME ENDURE_ENV_FILE DOCKER_HOST DOCKER_CONTEXT DOCKER_CONFIG COMPOSE_FILE
+ExecStart=/bin/bash -p "@DEPLOY_DIR@/deploy.sh"
