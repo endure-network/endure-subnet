@@ -53,7 +53,8 @@ The wallet mount is read-only; the named volume retains the validator database.
 
 ```bash
 VALIDATOR_IMAGE=ghcr.io/endure-network/endure-subnet-validator:prod
-docker run -d --name endure-validator --init --stop-timeout 45 --pull always \
+docker run -d --name endure-validator --init --restart unless-stopped \
+  --stop-timeout 45 --pull always \
   --mount "type=bind,src=$WALLET_ROOT,dst=/root/.bittensor/wallets,readonly" \
   --mount type=volume,src=endure-validator-data,dst=/data \
   -p 8091:8091 -p 127.0.0.1:8714:8714 \
@@ -79,7 +80,8 @@ so the miner can reveal an outstanding commitment after a restart.
 
 ```bash
 MINER_IMAGE=ghcr.io/endure-network/endure-subnet-miner:prod
-docker run -d --name endure-miner --init --stop-timeout 45 --pull always \
+docker run -d --name endure-miner --init --restart unless-stopped \
+  --stop-timeout 45 --pull always \
   --mount "type=bind,src=$WALLET_ROOT,dst=/root/.bittensor/wallets,readonly" \
   --mount type=volume,src=endure-miner-state,dst=/root/.bittensor/miners \
   -p 8092:8092 \
