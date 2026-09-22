@@ -15,10 +15,6 @@ jobs:
           SOAK_EXPECTED_SHA: ${{ vars.SOAK_EXPECTED_SHA }}
           SOAK_EXPECTED_PROTOCOL_KEY: ${{ vars.SOAK_EXPECTED_PROTOCOL_KEY }}
           SOAK_EXPECTED_CONTENT_REVISION: ${{ vars.SOAK_EXPECTED_CONTENT_REVISION }}
-          # A restart inside the last two probe intervals (5-minute cron)
-          # reads as a red run: watchdog self-heals and crash loops must
-          # surface here instead of hiding behind a recovered "ok" status.
-          SOAK_MIN_UPTIME_SECONDS: "600"
         run: |
           set -euo pipefail
           [[ "$SOAK_EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]
@@ -39,15 +35,20 @@ jobs:
               --retry-delay 5 --connect-timeout 10 --max-time 20 \
               https://api.testnet.endure.network/health
           )"
+          # `.status` already rolls up loop/tick/failure-counter/RPC health
+          # server-side (endure/api/app.py) as a 503 that curl --fail rejects,
+          # so asserting those runtime fields here would be redundant. Restart
+          # detection is deliberately absent: it needs sampling faster than the
+          # recovery window, and GitHub schedules are best-effort -- observed
+          # gaps here run 105-305 min against "*/5". Use an external /live
+          # monitor for liveness.
           jq --exit-status --arg sha "$SOAK_EXPECTED_SHA" \
             --arg content "$SOAK_EXPECTED_CONTENT_REVISION" \
-            --argjson key "$expected_key" \
-            --argjson min_uptime "$SOAK_MIN_UPTIME_SECONDS" '
+            --argjson key "$expected_key" '
             .status == "ok"
             and .schema_id == "risk.v1.subnet_alpha"
             and .protocol_version_key == $key
             and .source_revision == $sha
             and .image_version == ("sha-" + $sha)
             and .content_revision == $content
-            and (.runtime.process_uptime_seconds >= $min_uptime)
           ' <<<"$body"
