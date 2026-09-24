@@ -5,7 +5,6 @@ from __future__ import annotations
 import os
 import stat
 from datetime import UTC, date, datetime
-from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -13,8 +12,6 @@ from sqlalchemy import insert, select, update
 
 from endure.assessment.coordinates import (
     AssessmentConsensusRow,
-    AssessmentCoordinate,
-    AssessmentScoreHistoryRow,
 )
 from endure.assessment.registry import UniverseSnapshot
 from endure.assessment.schemas.subnet_alpha_risk import RISK_SCHEMA_ID
@@ -659,72 +656,3 @@ class TestSqliteParentDirectory:
 
         assert stat.S_IMODE((tmp_path / "secure").stat().st_mode) == 0o700
         assert stat.S_IMODE((tmp_path / "secure" / "endure.db").stat().st_mode) == 0o600
-
-
-class TestPositiveScoreHistory:
-    @pytest.mark.parametrize("positive_field", ["round_score", "ema_after"])
-    def test_incremental_history_and_restart_preserve_positive_evidence(
-        self, storage: Storage, positive_field: str
-    ) -> None:
-        round_id = _open_round(storage)
-        coordinate = AssessmentCoordinate.subnet_asset(
-            netuid=44, horizon_seconds=432000, output="max_drawdown"
-        )
-        assert storage.positive_assessment_score_history_since(RISK_SCHEMA_ID) == (
-            0,
-            False,
-        )
-        storage.record_assessment_score_history(
-            round_id,
-            RISK_SCHEMA_ID,
-            [
-                AssessmentScoreHistoryRow(
-                    miner_hotkey="zero",
-                    coordinate=coordinate,
-                    round_score=Decimal("0E-28"),
-                    ema_after=Decimal("0.000"),
-                )
-            ],
-            now_iso=NOW,
-        )
-        cursor, positive = storage.positive_assessment_score_history_since(
-            RISK_SCHEMA_ID
-        )
-        assert cursor > 0 and positive is False
-        assert storage.positive_assessment_score_history_since(
-            RISK_SCHEMA_ID, after_id=cursor
-        ) == (cursor, False)
-        storage.record_assessment_score_history(
-            round_id,
-            RISK_SCHEMA_ID,
-            [
-                AssessmentScoreHistoryRow(
-                    miner_hotkey="earned",
-                    coordinate=coordinate,
-                    round_score=Decimal("1E-999")
-                    if positive_field == "round_score"
-                    else Decimal(0),
-                    ema_after=Decimal("1E-999")
-                    if positive_field == "ema_after"
-                    else Decimal(0),
-                )
-            ],
-            now_iso=NOW,
-        )
-        advanced, positive = storage.positive_assessment_score_history_since(
-            RISK_SCHEMA_ID, after_id=cursor
-        )
-        assert advanced > cursor and positive is True
-        reopened = Storage.from_url(str(storage._engine.url))
-        try:
-            assert (
-                reopened.positive_assessment_score_history_since(RISK_SCHEMA_ID)[1]
-                is True
-            )
-            assert reopened.positive_assessment_score_history_since("other-schema") == (
-                0,
-                False,
-            )
-            assert reopened.assessment_ema_states(RISK_SCHEMA_ID) == []
-        finally:
-            reopened.close()

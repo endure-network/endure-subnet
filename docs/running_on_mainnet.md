@@ -108,38 +108,64 @@ accepts tags and digests.
 
 ## Weights and abstention
 
-Key `2042` supports unattended cold start only for served Alpha Risk on mainnet
-SN30. While the active schema has no positive resolved score history, including
-when no miners have submitted, one emission-enabled Endure process maintains
-the approved owner allocation. This transition allocation is not earned miner
-reputation and is not evidence of model accuracy.
+Key `2042` adds a standing owner-vote fallback for served Alpha Risk on mainnet
+SN30 and Bittensor testnet. Whenever the validator's score vector has no
+positive entry — at cold start, including when no miners have submitted, and
+again whenever every scored miner has been archived (EMA below the archive
+epsilon, or deregistration confirmed over 2 consecutive metagraph resyncs) — one
+emission-enabled Endure process submits its whole vote (u16 `65535`) to the UID
+of the on-chain `SubnetOwnerHotkey`. As soon as any score is positive, the same
+process submits earned score-derived weights; no flag change or restart is
+needed in either direction, and there is no operator flag for the fallback.
+Mock and local chains keep abstaining in the all-zero case. The owner vote is a
+fallback allocation, not earned miner reputation and not evidence of model
+accuracy. It writes no synthetic scores/EMAs, and its audit rows have null
+earned-score and precap provenance.
 
-The release-pinned recipient is UID `176`, hotkey
-`5HW12NvEZoGz8ZzcWMh4xyDUy6H1Af85m5LB8V1L11erK1S1`. Bootstrap requires the
-mainnet genesis identity, netuid `30`, and live agreement between that UID,
-hotkey, and subnet owner. Validator permit, chain weight constraints, rate
-limits, startup fencing, and one-in-flight submission still apply. Endure uses
-its normal key-`2042` durable prepare/submit/confirm pipeline; a submission is
-not an immediate finalized confirmation. Failed identity or chain checks do not
-authorize a replacement recipient. The
+The recipient is the on-chain `SubnetOwnerHotkey`, resolved to its UID in the
+same metagraph snapshot used for the attempt, both at selection and at the
+pre-submission recheck; no UID is fixed. On mainnet the owner vote additionally
+requires the mainnet genesis identity, netuid `30`, and owner hotkey
+`5HW12NvEZoGz8ZzcWMh4xyDUy6H1Af85m5LB8V1L11erK1S1`. Testnet has no hotkey or
+netuid pin. Validator permit, chain weight constraints, rate limits, startup
+fencing, and one-in-flight submission still apply. Endure uses its normal
+key-`2042` durable prepare/submit/confirm pipeline; a submission is not an
+immediate finalized confirmation. The
 [reference setter](https://github.com/endure-network/bittensor-validator-repo/blob/main/validator.py)
-is context for the recipient/owner, permit, and rate checks, not a second writer
-to run alongside Endure.
+is context for the owner, permit, and rate checks, not a second writer to run
+alongside Endure.
 
-A positive `round_score` or `ema_after` in the active schema's append-only
-`assessment_score_history` ends bootstrap permanently for the retained database.
-Existing positive history also rules out bootstrap at startup. The same running
-process then uses earned score-derived weights without a flag change or restart.
-If decay, deregistration, or an empty eligible score vector later leaves no
-positive earned weights, it abstains and leaves previously submitted on-chain
-weights untouched; it never returns to bootstrap. Other chains/netuids retain
-all-zero abstention. Bootstrap creates no synthetic scores/EMAs, and its audit
-rows do not claim earned-score or precap provenance.
+Unsafe owner state never authorizes a replacement recipient. The validator
+abstains without submitting; `/health` stays 200 with `emission_mode=abstain`,
+`emission_expected=false`, and one of these `emission_reason` values:
+
+| `emission_reason` | Cause |
+| --- | --- |
+| `owner_vote_chain_mismatch` | mainnet genesis or netuid `30` pin fails |
+| `owner_hotkey_mismatch` | mainnet subnet owner is not the pinned hotkey |
+| `owner_unregistered` | the subnet owner hotkey holds no UID |
+| `owner_snapshot_inconsistent` | no or stale snapshot, owner at more than one UID, or local metagraph disagreeing with the chain UID |
+| `validator_identity_invalid` | the validator's own UID/hotkey is not valid in the snapshot |
+
+These are retried each epoch and clear automatically once chain state is safe
+again. A pre-submission recheck failure, `owner_vote_vector_invalid` (chain
+`min_allowed_weights` or `max_weight_limit` is not `1`, or the owner UID
+moved), aborts before sending, counts as a failed `set_weights` attempt so
+health degrades, and shows in `emission_blocked_reason`. The plain all-zero case
+on mock/local chains reports `abstain` / `no_positive_scores`. Abstention leaves
+previously submitted on-chain weights untouched.
+
+Mode is a pure function of current scores and network; there is no latch and
+no retained history decision. Scores are rebuilt from durable EMAs at startup,
+and a failed scoring tick keeps the previous vector, so neither a restart nor a
+tick failure reads as zero scores: a validator restarted while scored resumes
+earned weights with no owner-vote flicker.
 
 Resolution runs against the configured `MARKET_DATA_ENDPOINT`, which defaults
-to the mainnet archive node. Independent validators may graduate at different
-times because their accepted submissions, resolution timing, and durable
-histories can differ; a shared release is not a guarantee of identical live weights.
+to the mainnet archive node. Independent validators may enter or leave the
+owner vote at different times because their accepted submissions, resolution
+timing, and durable histories can differ; a shared release is not a guarantee
+of identical live weights.
 
 ## Coordinated cutover
 
@@ -154,23 +180,25 @@ validator already approaching inactivity.
    the existing release process and pin their digests.
 2. Back up and preserve the distinct mainnet database and use a read-only
    host-mounted mainnet hotkey. Never copy testnet score state or use the
-   testnet wallet-archive bootstrap. Bootstrap graduation is reconstructed from
-   this database's history after restart. Use a consistent SQLite backup
+   testnet wallet-archive bootstrap. Use a consistent SQLite backup
    (the backup API, or a copy taken while stopped), not the main file alone
-   while WAL writes are live. A post-graduation backup preserves the decision
-   even after EMA retirement; a backup predating graduation cannot remember
-   later events. Stop the process before restoring; there is no history repair.
+   while WAL writes are live. A restored backup reproduces its own scoring
+   state: one with positive EMAs resumes earned weights, one without resumes
+   the owner vote. Stop the process before restoring.
 3. Stop the old weight writer before starting Endure. Keep exactly one writer
-   per hotkey; do not run an external transition setter beside it.
+   per hotkey; do not run an external weight setter beside it.
 4. Start one final emission-enabled Endure process, with the axon on and
    `--neuron.disable_set_weights` omitted (default `false`). Verify archive
    readiness, accepted submissions, and durable weight confirmations. The
-   process maintains the approved bootstrap allocation until positive score
-   history exists, then hands off automatically to earned weights. No later
-   operator flag flip or restart is needed.
+   process submits the owner vote while no score is positive and earned
+   weights as soon as one is. No later operator flag flip or restart is needed.
 5. An explicitly true `disable_set_weights` is an indefinite off switch for both
    modes, not an unattended cutover configuration. Scores never auto-enable it.
-   Do not raise chain `weights_version` merely to force this application cutover.
+   Do not raise chain `weights_version` for this cutover: SN30's value is
+   `2040` and Subtensor accepts a `version_key` at or above it, so key-`2042`
+   submissions are accepted unchanged. Raising it is a later, deliberate owner
+   decision only after every permit validator runs `2042`; raising it earlier
+   would reject validators still on `2040`.
 
 First emission is not immediate even with healthy RPC. In direct mode with the
 default 100-block epoch, an example schedule is: block `1000` seeds pacing;

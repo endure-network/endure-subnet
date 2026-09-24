@@ -1,5 +1,3 @@
-"""Behavioral coverage for cold-start allocation and permanent graduation."""
-
 from __future__ import annotations
 
 from decimal import Decimal
@@ -8,145 +6,151 @@ import pytest
 
 from endure.protocol.consensus_policy import (
     MAINNET_GENESIS_HASH,
-    SN30_BOOTSTRAP_HOTKEY,
-    SN30_BOOTSTRAP_NETUID,
-    SN30_BOOTSTRAP_UID,
+    SN30_NETUID,
+    SN30_OWNER_HOTKEY,
 )
 from endure.scoring.emission_policy import (
-    BootstrapPolicyError,
-    bootstrap_submission_due,
-    select_emission_candidate,
-    validate_bootstrap_recipient,
-    validate_bootstrap_vector,
+    OwnerVoteBlocked,
+    OwnerVoteNetwork,
+    owner_vote_submission_due,
+    owner_vote_weights,
+    resolve_owner_vote_uid,
+    select_emission_mode,
+    validate_owner_vote_vector,
 )
 
 
-def test_cold_start_allocates_only_to_owner_without_creating_scores() -> None:
-    scores = [Decimal(0)] * 200
-
-    candidate = select_emission_candidate(
-        scores, bootstrap_enabled=True, has_positive_history=False
-    )
-
-    assert candidate.mode == "bootstrap"
-    assert candidate.weights == (Decimal(0),) * 176 + (Decimal(1),) + (Decimal(0),) * 23
-    assert scores == [Decimal(0)] * 200
-
-
-@pytest.mark.parametrize("bootstrap_enabled", [False, True])
-@pytest.mark.parametrize("has_positive_history", [False, True])
-def test_positive_scores_take_precedence_and_preserve_values(
-    bootstrap_enabled: bool, has_positive_history: bool
+@pytest.mark.parametrize("network", [None, "mainnet", "testnet"])
+def test_any_positive_score_selects_earned_weights(
+    network: OwnerVoteNetwork | None,
 ) -> None:
-    scores = [Decimal("-0.2"), Decimal("0.15"), Decimal("0.35")]
+    scores = [Decimal("-0.2"), Decimal(0), Decimal("1E-999")]
 
-    candidate = select_emission_candidate(
-        scores,
-        bootstrap_enabled=bootstrap_enabled,
-        has_positive_history=has_positive_history,
-    )
-    scores[1] = Decimal(0)
-
-    assert candidate.mode == "scored"
-    assert candidate.weights == (Decimal("-0.2"), Decimal("0.15"), Decimal("0.35"))
+    assert select_emission_mode(scores, owner_vote_network=network) == "scored"
 
 
-@pytest.mark.parametrize("scores", [[], [Decimal(0)], [Decimal("-1"), Decimal(0)]])
 @pytest.mark.parametrize(
-    ("bootstrap_enabled", "has_positive_history"),
-    [(False, False), (False, True), (True, True)],
+    "scores",
+    [[], [Decimal(0)] * 3, [Decimal("-1"), Decimal("0E-28")]],
 )
-def test_disabled_or_graduated_nonpositive_scores_abstain(
-    scores: list[Decimal], bootstrap_enabled: bool, has_positive_history: bool
+@pytest.mark.parametrize(
+    ("network", "expected"),
+    [(None, "abstain"), ("mainnet", "owner_vote"), ("testnet", "owner_vote")],
+)
+def test_nonpositive_scores_fall_back_to_owner_vote_only_on_vote_networks(
+    scores: list[Decimal], network: OwnerVoteNetwork | None, expected: str
 ) -> None:
-    candidate = select_emission_candidate(
-        scores,
-        bootstrap_enabled=bootstrap_enabled,
-        has_positive_history=has_positive_history,
-    )
-
-    assert candidate.mode == "abstain"
-    assert candidate.weights == ()
+    assert select_emission_mode(scores, owner_vote_network=network) == expected
 
 
-@pytest.mark.parametrize("size", [0, 176])
-def test_bootstrap_requires_recipient_within_vector(size: int) -> None:
-    with pytest.raises(BootstrapPolicyError):
-        select_emission_candidate(
-            [Decimal(0)] * size,
-            bootstrap_enabled=True,
-            has_positive_history=False,
+@pytest.mark.parametrize("network", ["mainnet", "testnet"])
+@pytest.mark.parametrize("owner_uid", [0, 7, 176])
+def test_owner_resolves_to_its_current_uid(
+    network: OwnerVoteNetwork, owner_uid: int
+) -> None:
+    hotkeys = [f"hk-{uid}" for uid in range(200)]
+    hotkeys[owner_uid] = SN30_OWNER_HOTKEY
+
+    assert (
+        resolve_owner_vote_uid(
+            network=network,
+            chain_identity=MAINNET_GENESIS_HASH,
+            netuid=SN30_NETUID,
+            hotkeys=hotkeys,
+            owner_hotkey=SN30_OWNER_HOTKEY,
         )
-
-    candidate = select_emission_candidate(
-        [Decimal(0)] * 177, bootstrap_enabled=True, has_positive_history=False
+        == owner_uid
     )
-    assert candidate.mode == "bootstrap"
-    assert candidate.weights == (Decimal(0),) * 176 + (Decimal(1),)
+
+
+def test_testnet_accepts_any_owner_hotkey_chain_and_netuid() -> None:
+    assert (
+        resolve_owner_vote_uid(
+            network="testnet",
+            chain_identity="testnet-genesis",
+            netuid=417,
+            hotkeys=["a", "testnet-owner", "b"],
+            owner_hotkey="testnet-owner",
+        )
+        == 1
+    )
 
 
 @pytest.mark.parametrize(
-    ("chain_identity", "netuid", "recipient", "owner", "size"),
+    ("network", "chain_identity", "netuid", "hotkeys", "owner", "reason"),
     [
         (
+            "mainnet",
             "testnet-genesis",
-            SN30_BOOTSTRAP_NETUID,
-            SN30_BOOTSTRAP_HOTKEY,
-            SN30_BOOTSTRAP_HOTKEY,
-            177,
+            SN30_NETUID,
+            [SN30_OWNER_HOTKEY],
+            SN30_OWNER_HOTKEY,
+            "owner_vote_chain_mismatch",
         ),
         (
+            "mainnet",
             MAINNET_GENESIS_HASH.upper(),
-            SN30_BOOTSTRAP_NETUID,
-            SN30_BOOTSTRAP_HOTKEY,
-            SN30_BOOTSTRAP_HOTKEY,
-            177,
+            SN30_NETUID,
+            [SN30_OWNER_HOTKEY],
+            SN30_OWNER_HOTKEY,
+            "owner_vote_chain_mismatch",
         ),
-        (MAINNET_GENESIS_HASH, 31, SN30_BOOTSTRAP_HOTKEY, SN30_BOOTSTRAP_HOTKEY, 177),
         (
+            "mainnet",
             MAINNET_GENESIS_HASH,
-            SN30_BOOTSTRAP_NETUID,
+            31,
+            [SN30_OWNER_HOTKEY],
+            SN30_OWNER_HOTKEY,
+            "owner_vote_chain_mismatch",
+        ),
+        (
+            "mainnet",
+            MAINNET_GENESIS_HASH,
+            SN30_NETUID,
+            ["replacement"],
             "replacement",
-            SN30_BOOTSTRAP_HOTKEY,
-            177,
+            "owner_hotkey_mismatch",
         ),
         (
+            "mainnet",
             MAINNET_GENESIS_HASH,
-            SN30_BOOTSTRAP_NETUID,
-            SN30_BOOTSTRAP_HOTKEY,
-            "replacement",
-            177,
+            SN30_NETUID,
+            ["other"],
+            SN30_OWNER_HOTKEY,
+            "owner_unregistered",
         ),
-        (MAINNET_GENESIS_HASH, SN30_BOOTSTRAP_NETUID, SN30_BOOTSTRAP_HOTKEY, None, 177),
-        (
-            MAINNET_GENESIS_HASH,
-            SN30_BOOTSTRAP_NETUID,
-            SN30_BOOTSTRAP_HOTKEY,
-            SN30_BOOTSTRAP_HOTKEY,
-            176,
-        ),
+        ("testnet", "g", 1, ["other"], "owner", "owner_unregistered"),
+        ("testnet", "g", 1, ["owner"], None, "owner_snapshot_inconsistent"),
+        ("testnet", "g", 1, ["owner"], "", "owner_snapshot_inconsistent"),
+        ("testnet", "g", 1, ["owner", "owner"], "owner", "owner_snapshot_inconsistent"),
     ],
 )
-def test_recipient_validation_rejects_changed_chain_registration_or_owner(
-    chain_identity: str, netuid: int, recipient: str, owner: str | None, size: int
+def test_owner_resolution_blocks_with_a_stable_reason(
+    network: OwnerVoteNetwork,
+    chain_identity: str,
+    netuid: int,
+    hotkeys: list[str],
+    owner: str | None,
+    reason: str,
 ) -> None:
-    hotkeys = ["other"] * 177
-    hotkeys[SN30_BOOTSTRAP_UID] = SN30_BOOTSTRAP_HOTKEY
-    validate_bootstrap_recipient(
-        chain_identity=MAINNET_GENESIS_HASH,
-        netuid=SN30_BOOTSTRAP_NETUID,
-        hotkeys=hotkeys,
-        owner_hotkey=SN30_BOOTSTRAP_HOTKEY,
-    )
-
-    hotkeys[SN30_BOOTSTRAP_UID] = recipient
-    with pytest.raises(BootstrapPolicyError):
-        validate_bootstrap_recipient(
+    with pytest.raises(OwnerVoteBlocked) as blocked:
+        resolve_owner_vote_uid(
+            network=network,
             chain_identity=chain_identity,
             netuid=netuid,
-            hotkeys=hotkeys[:size],
+            hotkeys=hotkeys,
             owner_hotkey=owner,
         )
+
+    assert blocked.value.reason == reason
+
+
+def test_owner_vote_weights_are_one_hot_within_the_local_metagraph() -> None:
+    assert owner_vote_weights(3, 2) == (Decimal(0), Decimal(0), Decimal(1))
+    for size, uid in ((3, 3), (0, 0), (3, -1)):
+        with pytest.raises(OwnerVoteBlocked) as blocked:
+            owner_vote_weights(size, uid)
+        assert blocked.value.reason == "owner_snapshot_inconsistent"
 
 
 @pytest.mark.parametrize(
@@ -163,7 +167,7 @@ def test_submission_obeys_permit_and_inclusive_rate_boundary(
     permit: bool, last_update: int, block: int, rate_limit: int, expected: bool
 ) -> None:
     assert (
-        bootstrap_submission_due(
+        owner_vote_submission_due(
             validator_uid=1,
             validator_hotkey="validator",
             hotkeys=["other", "validator"],
@@ -177,30 +181,31 @@ def test_submission_obeys_permit_and_inclusive_rate_boundary(
 
 
 @pytest.mark.parametrize(
-    ("uid", "hotkey", "permits", "updates", "block", "rate_limit"),
+    ("uid", "hotkey", "permits", "updates", "block", "rate_limit", "reason"),
     [
-        (-1, "validator", [False, True], [0, 100], 280, 180),
-        (2, "validator", [False, True], [0, 100], 280, 180),
-        (0, "validator", [False, True], [0, 100], 280, 180),
-        (1, "", [False, True], [0, 100], 280, 180),
-        (1, "validator", [False], [0, 100], 280, 180),
-        (1, "validator", [False, True], [0], 280, 180),
-        (1, "validator", [False, True], [0, 100], -1, 180),
-        (1, "validator", [False, True], [0, 100], 280, -1),
-        (1, "validator", [False, True], [0, -1], 280, 180),
-        (1, "validator", [False, False], [0, 281], 280, 180),
+        (-1, "validator", [False, True], [0, 100], 280, 180, "identity"),
+        (2, "validator", [False, True], [0, 100], 280, 180, "identity"),
+        (0, "validator", [False, True], [0, 100], 280, 180, "identity"),
+        (1, "", [False, True], [0, 100], 280, 180, "identity"),
+        (1, "validator", [False], [0, 100], 280, 180, "snapshot"),
+        (1, "validator", [False, True], [0], 280, 180, "snapshot"),
+        (1, "validator", [False, True], [0, 100], -1, 180, "snapshot"),
+        (1, "validator", [False, True], [0, 100], 280, -1, "snapshot"),
+        (1, "validator", [False, True], [0, -1], 280, 180, "snapshot"),
+        (1, "validator", [False, False], [0, 281], 280, 180, "snapshot"),
     ],
 )
-def test_submission_rejects_identity_or_incoherent_metadata(
+def test_submission_rejects_identity_or_incoherent_metadata(  # noqa: PLR0913
     uid: int,
     hotkey: str,
     permits: list[bool],
     updates: list[int],
     block: int,
     rate_limit: int,
+    reason: str,
 ) -> None:
-    with pytest.raises(BootstrapPolicyError):
-        bootstrap_submission_due(
+    with pytest.raises(OwnerVoteBlocked) as blocked:
+        owner_vote_submission_due(
             validator_uid=uid,
             validator_hotkey=hotkey,
             hotkeys=["other", "validator"],
@@ -209,6 +214,12 @@ def test_submission_rejects_identity_or_incoherent_metadata(
             block=block,
             weights_rate_limit=rate_limit,
         )
+
+    assert blocked.value.reason == (
+        "validator_identity_invalid"
+        if reason == "identity"
+        else "owner_snapshot_inconsistent"
+    )
 
 
 @pytest.mark.parametrize(
@@ -237,17 +248,20 @@ def test_vector_validation_refuses_padding_redirection_or_incompatible_constrain
     minimum: int | None,
     maximum: Decimal | None,
 ) -> None:
-    validate_bootstrap_vector(
+    validate_owner_vote_vector(
+        owner_uid=176,
         uids=[176],
         weights=[65535],
         min_allowed_weights=1,
         max_weight_limit=Decimal(1),
     )
 
-    with pytest.raises(BootstrapPolicyError):
-        validate_bootstrap_vector(
+    with pytest.raises(OwnerVoteBlocked) as blocked:
+        validate_owner_vote_vector(
+            owner_uid=176,
             uids=uids,
             weights=weights,
             min_allowed_weights=minimum,
             max_weight_limit=maximum,
         )
+    assert blocked.value.reason == "owner_vote_vector_invalid"

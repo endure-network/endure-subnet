@@ -86,18 +86,18 @@ record, not single rounds — one missed round dents the EMA, and sustained
 absence decays every coordinate toward the archival threshold (`0.01`), after
 which the hotkey leaves the scoring set entirely.
 
-Key `2042` has one cold-start exception to score-derived allocation: served
-Alpha Risk on mainnet SN30 maintains the approved owner allocation while the
-validator has no positive resolved score history, including when no miners have
-submitted. This transition allocation is not earned miner reputation or proof
-of model accuracy; it writes no synthetic scores or EMAs. The first positive
-`round_score` or `ema_after` in the active schema's durable history permanently
-ends bootstrap for that validator's retained database. Its running process then
-uses earned weights without an operator flag change or restart. Later zero or
-absent eligible scores cause abstention, not renewed bootstrap; prior on-chain
-weights remain untouched. Other chains/netuids retain all-zero abstention.
-Independent validator histories can differ, so neither graduation nor chain
-confirmation is guaranteed to occur simultaneously across validators. See the
+Key `2042` has one fallback to score-derived allocation: on mainnet SN30 and
+Bittensor testnet, a served Alpha Risk validator whose score vector has no
+positive entry — at cold start, including when no miners have submitted, and
+again after every scored miner is archived — submits its whole vote to the UID
+of the on-chain subnet owner hotkey. This owner vote is a fallback allocation,
+not earned miner reputation or proof of model accuracy; it writes no synthetic
+scores or EMAs. As soon as any miner's score is positive, the same running
+process submits earned weights without an operator flag change or restart.
+Mock and local chains abstain in the all-zero case. Independent validators'
+accepted submissions, resolution timing, and durable histories can differ, so
+they may enter or leave the owner vote at different times, and chain
+confirmation is not guaranteed to be simultaneous across validators. See the
 [mainnet lifecycle and safety gates](running_on_mainnet.md#weights-and-abstention).
 
 ## Cover the full universe
@@ -165,7 +165,7 @@ The shared scoring policy is defined by
 canonical.
 
 In plain terms, earned miner weights reward scored prediction accuracy; the
-SN30 cold-start owner allocation is separate:
+owner-vote fallback is separate:
 
 - Each coordinate scores your revealed value against the realized outcome. A
   grace band absorbs small misses (for example 200 bps on drawdown, 500 bps on

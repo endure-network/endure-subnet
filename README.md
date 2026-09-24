@@ -42,15 +42,14 @@ accuracy record rather than single rounds; submission and finalized confirmation
 remain separate — see
 [eligibility and the earnings timeline](docs/mining.md#eligibility-and-the-earnings-timeline).
 
-The key-`2042` source candidate adds unattended cold start only for served Alpha
-Risk on mainnet SN30: one emission-enabled validator maintains the approved owner
-allocation while there is no positive resolved score history, including when
-there are no miners. This is a transition allocation, not earned miner reputation
-or proof of model accuracy. Positive history permanently ends bootstrap for the
-retained database and the same process switches to earned weights without a flag
-change or restart. Later zero or absent eligible scores cause abstention, never
-renewed bootstrap, and leave prior chain weights untouched. Other chains/netuids
-retain all-zero abstention. See the
+Key `2042` adds a standing owner-vote fallback for served Alpha Risk on mainnet
+SN30 and Bittensor testnet: whenever a validator's score vector has no positive
+entry — at cold start, including when there are no miners, and again after every
+scored miner is archived — it submits its whole vote to the UID of the on-chain
+subnet owner hotkey. This is a fallback allocation, not earned miner reputation
+or proof of model accuracy. As soon as any score is positive the same process
+submits earned score-derived weights, with no flag change or restart in either
+direction. Mock and local chains keep all-zero abstention. See the
 [identity and emission safety gates](docs/running_on_mainnet.md#weights-and-abstention).
 
 Known limitations: this is a testnet soak with one public validator endpoint;
@@ -138,11 +137,11 @@ archive market-data endpoint. Mainnet requires a qualified production release
 and the explicit acknowledgement described in [the mainnet guide](docs/running_on_mainnet.md).
 For the key-`2042` cutover, stop the old writer before starting one final Endure
 process with the axon on and `disable_set_weights` omitted/default-false.
-Explicitly setting the flag true disables both bootstrap and earned emission
-indefinitely; scores never auto-enable it. Preserve the mainnet database/history
-across restarts. A consistent post-graduation backup retains that decision;
-an older backup cannot recover later events. No automatic history repair or
-new migration is added. Never copy a testnet database into mainnet.
+Explicitly setting the flag true disables both the owner vote and earned
+emission indefinitely; scores never auto-enable it. Keep the mainnet database
+durable and back it up consistently (SQLite backup API, or a copy taken while
+stopped); a restored backup reproduces its own scoring state. Never copy a
+testnet database into mainnet.
 
 ## Register on testnet
 

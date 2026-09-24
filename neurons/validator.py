@@ -12,6 +12,7 @@ import asyncio
 import os
 import threading
 import time
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -49,7 +50,7 @@ from endure.live.alpha_market_data import (
     LiveAlphaPriceProviderConfig,
     validate_mainnet_archive,
 )
-from endure.protocol.consensus_policy import SN30_BOOTSTRAP_NETUID
+from endure.protocol.admission import miner_admission
 from endure.protocol.handlers import SubmissionHandlers
 from endure.protocol.risk_runtime import (
     RECORDED_FIXTURE_WINDOW_START_BLOCK,
@@ -64,12 +65,17 @@ from endure.protocol.vertical import AssessmentRoundProgram, VerticalRuntime
 from endure.runtime.identity import runtime_identity
 from endure.runtime.resolve import resolve_runtime_provider
 from endure.scoring.assessment_orchestrator import ResolutionBudget
+from endure.scoring.eligibility import DeregistrationTracker
 from endure.scoring.emission_policy import (
-    BootstrapPolicyError,
-    bootstrap_submission_due,
-    select_emission_candidate,
-    validate_bootstrap_recipient,
-    validate_bootstrap_vector,
+    OwnerVoteBlocked,
+    OwnerVoteBlockReason,
+    OwnerVoteNetwork,
+    OwnerVoteRecipient,
+    owner_vote_submission_due,
+    owner_vote_weights,
+    resolve_owner_vote_uid,
+    select_emission_mode,
+    validate_owner_vote_vector,
 )
 from endure.scoring.market_data import recorded_mainnet_fixture_provider
 from endure.scoring.policy import DEFAULT_PAYOUT_HALF_LIFE_ROUNDS
@@ -86,6 +92,7 @@ from endure.storage.repository import (
 from endure.utils.config import (
     DevOnlyConfigError,
     active_runtime_schema_id,
+    owner_vote_network,
     permits_dev_only_runtime,
     require_compression_runtime_allowed,
     require_explicit_netuid,
@@ -98,8 +105,6 @@ from endure.utils.logging import safe_endpoint_label, safe_error
 
 _RECORDED_FIXTURE_NETUIDS: Final = (8, 44)
 ZERO = Decimal("0")
-
-DEREGISTRATION_CONFIRMATION_SYNCS = 2
 
 
 def _cr4_reveal_scan_batch_budget(epoch_length: int) -> int:
@@ -201,9 +206,8 @@ class Validator(BaseValidatorNeuron):
         _run_migrations(self.config.endure.database_url)
         self._storage = Storage.from_url(self.config.endure.database_url)
         self._weight_emission_startup_fence_block: int | None = None
-        self._positive_score_history_id = 0
-        self._has_positive_score_history = False
-        self._bootstrap_chain_snapshot: bt.MetagraphInfo | None = None
+        self._owner_vote_recipient: OwnerVoteRecipient | None = None
+        self._owner_vote_block_reason: OwnerVoteBlockReason | None = None
         self._emission_mode = (
             "disabled" if self.config.neuron.disable_set_weights else "abstain"
         )
@@ -582,37 +586,30 @@ class Validator(BaseValidatorNeuron):
         )
 
     def _blacklist(self, synapse: bt.Synapse) -> Tuple[bool, str]:
-        if synapse.dendrite is None or synapse.dendrite.hotkey is None:
-            return True, "Missing dendrite or hotkey"
-        if synapse.dendrite.hotkey not in self.metagraph.hotkeys:
-            return True, "Unrecognized hotkey"
-        # Mainnet pins this floor to zero. Testnet/local operators may use S
-        # to bound commit/reveal load; cross the SDK boundary through str so
-        # Decimal comparisons do not inherit binary-float artifacts.
-        min_stake = self.config.endure.min_miner_stake
-        if min_stake > 0:
-            uid = self.metagraph.hotkeys.index(synapse.dendrite.hotkey)
-            if Decimal(str(self.metagraph.S[uid])) < min_stake:
-                return True, "Insufficient stake"
-        return False, "Hotkey recognized"
+        dendrite = synapse.dendrite
+        # Cross the SDK boundary through str so Decimal comparisons do not
+        # inherit binary-float artifacts at the floor.
+        return miner_admission(
+            None if dendrite is None else dendrite.hotkey,
+            registered_hotkeys=self.metagraph.hotkeys,
+            stake_weight=lambda uid: Decimal(str(self.metagraph.S[uid])),
+            min_stake=self.config.endure.min_miner_stake,
+        )
 
     def _observed_emission_mode(self) -> str:
         """Read local policy facts only; never consult RPC from the health route."""
         if self.config.neuron.disable_set_weights:
             return "disabled"
-        if any(score > ZERO for score in getattr(self, "scores", ())):
-            return "scored"
-        bootstrap = int(
-            self.config.netuid
-        ) == SN30_BOOTSTRAP_NETUID and uses_mainnet_consensus_policy(self.config)
-        graduated = getattr(self, "_has_positive_score_history", False)
-        storage = getattr(self, "_storage", None)
-        if bootstrap and not graduated and storage is not None:
-            _, graduated = storage.positive_assessment_score_history_since(
-                self._schema_id,
-                after_id=getattr(self, "_positive_score_history_id", 0),
-            )
-        return "bootstrap" if bootstrap and not graduated else "abstain"
+        mode = select_emission_mode(
+            getattr(self, "scores", ()),
+            owner_vote_network=owner_vote_network(self.config),
+        )
+        if (
+            mode == "owner_vote"
+            and getattr(self, "_owner_vote_block_reason", None) is not None
+        ):
+            return "abstain"
+        return mode
 
     def _set_emission_observation(self, mode: str, reason: str) -> None:
         if (mode, reason) != (
@@ -626,7 +623,7 @@ class Validator(BaseValidatorNeuron):
     def _defer_emission(self, reason: str) -> None:
         self._emission_expected_since = None
         self._emission_deadline = None
-        if reason in {"disabled", "no_positive_scores"}:
+        if self._observed_emission_mode() in {"disabled", "abstain"}:
             self._emission_blocked_reason = None
         self._set_emission_observation(self._observed_emission_mode(), reason)
 
@@ -668,7 +665,9 @@ class Validator(BaseValidatorNeuron):
         if mode == "disabled":
             return "disabled"
         if mode == "abstain":
-            return "no_positive_scores"
+            return getattr(self, "_owner_vote_block_reason", None) or (
+                "no_positive_scores"
+            )
         if open_confirmation:
             return "confirmation_pending"
         if block is None:
@@ -731,57 +730,46 @@ class Validator(BaseValidatorNeuron):
         return due
 
     def set_weights(self) -> None:
-        """Select bootstrap or earned weights without changing score authority."""
+        """Emit earned weights, or the owner vote whenever no score is positive.
+
+        Scores come from durable EMAs, so a restart or failed tick never reads
+        as zero scores. The owner allocation never enters scores or EMAs.
+        """
         if self.config.neuron.disable_set_weights:
             self._defer_emission("disabled")
             return
-        storage = getattr(self, "_storage", None)
-        bootstrap_enabled = int(
-            self.config.netuid
-        ) == SN30_BOOTSTRAP_NETUID and uses_mainnet_consensus_policy(self.config)
-        positive_history = False
-        if bootstrap_enabled:
-            if storage is None:
-                self._emission_blocked_reason = "score_history_unavailable"
-                self._set_emission_observation("bootstrap", "score_history_unavailable")
-                raise BootstrapPolicyError("bootstrap requires durable score history")
-            if not self._has_positive_score_history:
-                (
-                    self._positive_score_history_id,
-                    self._has_positive_score_history,
-                ) = storage.positive_assessment_score_history_since(
-                    self._schema_id, after_id=self._positive_score_history_id
-                )
-            positive_history = self._has_positive_score_history
-        try:
-            candidate = select_emission_candidate(
-                self.scores,
-                bootstrap_enabled=bootstrap_enabled,
-                has_positive_history=positive_history,
-            )
-        except BootstrapPolicyError:
-            self._emission_blocked_reason = "bootstrap_vector_invalid"
-            self._set_emission_observation("bootstrap", "bootstrap_vector_invalid")
-            raise
-        self._set_emission_observation(
-            candidate.mode, getattr(self, "_emission_reason", "initializing")
-        )
-        if candidate.mode == "abstain":
+        network = owner_vote_network(self.config)
+        mode = select_emission_mode(self.scores, owner_vote_network=network)
+        if mode == "scored":
+            self._owner_vote_block_reason = None
+        if mode == "abstain":
             self._defer_emission("no_positive_scores")
             return
+        self._set_emission_observation(
+            self._observed_emission_mode(),
+            getattr(self, "_emission_reason", "initializing"),
+        )
+        storage = getattr(self, "_storage", None)
         if not self._weight_emission_ready(storage):
             return
-        snapshot = None
-        if candidate.mode == "bootstrap":
-            snapshot = self._bootstrap_snapshot_if_due()
-            if snapshot is None:
+        weights: Sequence[Decimal] = self.scores
+        recipient: OwnerVoteRecipient | None = None
+        if mode == "owner_vote" and network is not None:
+            resolved = self._owner_vote_if_due(network)
+            if resolved is None:
                 return
+            recipient, weights = resolved
         self._emission_blocked_reason = None
-        self._bootstrap_chain_snapshot = snapshot
+        self._owner_vote_recipient = recipient
         try:
-            self._emit_weight_candidate(candidate.weights)
+            self._emit_weight_candidate(weights)
         finally:
-            self._bootstrap_chain_snapshot = None
+            self._owner_vote_recipient = None
+
+    def _block_owner_vote(self, blocked: OwnerVoteBlocked) -> None:
+        bt.logging.warning(f"owner vote abstains: {blocked.reason}: {blocked}")
+        self._owner_vote_block_reason = blocked.reason
+        self._defer_emission(blocked.reason)
 
     def _weight_emission_ready(self, storage: Storage | None) -> bool:
         """Keep startup fencing and durable single-flight common to both modes."""
@@ -832,23 +820,26 @@ class Validator(BaseValidatorNeuron):
             return False
         return True
 
-    def _bootstrap_snapshot_if_due(self) -> bt.MetagraphInfo | None:
-        """Check current registration, owner identity, permit and chain pacing."""
+    def _owner_vote_if_due(
+        self, network: OwnerVoteNetwork
+    ) -> tuple[OwnerVoteRecipient, tuple[Decimal, ...]] | None:
+        """Resolve the on-chain owner, validator permit and pacing in one snapshot."""
         netuid = int(self.config.netuid)
         block = int(self.subtensor.get_current_block())
         snapshot = self.subtensor.get_metagraph_info(netuid=netuid, block=block)
-        if snapshot is None or snapshot.block != block:
-            self._emission_blocked_reason = "bootstrap_snapshot_invalid"
-            self._set_emission_observation("bootstrap", "bootstrap_snapshot_invalid")
-            raise BootstrapPolicyError("bootstrap requires a current chain snapshot")
         try:
-            validate_bootstrap_recipient(
+            if snapshot is None or snapshot.block != block:
+                raise OwnerVoteBlocked(
+                    "owner_snapshot_inconsistent", "No chain snapshot at this block"
+                )
+            owner_uid = resolve_owner_vote_uid(
+                network=network,
                 chain_identity=self.gated_subtensor.get_block_hash(0),
                 netuid=netuid,
                 hotkeys=snapshot.hotkeys,
                 owner_hotkey=snapshot.owner_hotkey,
             )
-            due = bootstrap_submission_due(
+            due = owner_vote_submission_due(
                 validator_uid=int(self.uid),
                 validator_hotkey=str(self.wallet.hotkey.ss58_address),
                 hotkeys=snapshot.hotkeys,
@@ -857,10 +848,22 @@ class Validator(BaseValidatorNeuron):
                 block=block,
                 weights_rate_limit=snapshot.weights_rate_limit,
             )
-        except BootstrapPolicyError:
-            self._emission_blocked_reason = "bootstrap_identity_invalid"
-            self._set_emission_observation("bootstrap", "bootstrap_identity_invalid")
-            raise
+            # The emitter indexes the local metagraph; it must place the owner
+            # at the same UID as the chain snapshot or the vote goes elsewhere.
+            local_hotkeys = self.metagraph.hotkeys
+            if (
+                owner_uid >= len(local_hotkeys)
+                or local_hotkeys[owner_uid] != snapshot.owner_hotkey
+            ):
+                raise OwnerVoteBlocked(
+                    "owner_snapshot_inconsistent",
+                    "Local metagraph disagrees with the chain owner UID",
+                )
+            weights = owner_vote_weights(len(local_hotkeys), owner_uid)
+        except OwnerVoteBlocked as blocked:
+            self._block_owner_vote(blocked)
+            return None
+        self._owner_vote_block_reason = None
         self._emission_chain_due_block = (
             snapshot.last_update[self.uid] + snapshot.weights_rate_limit
         )
@@ -873,7 +876,7 @@ class Validator(BaseValidatorNeuron):
                 else "chain_rate_limit"
             )
             return None
-        return snapshot
+        return OwnerVoteRecipient(network, local_hotkeys[owner_uid], owner_uid), weights
 
     def _emission_blended_snapshot(self) -> dict[str, Decimal]:
         cached: dict[str, Decimal] = getattr(self, "_blended_snapshot", {})
@@ -893,7 +896,7 @@ class Validator(BaseValidatorNeuron):
             return []
         blended = (
             {}
-            if getattr(self, "_bootstrap_chain_snapshot", None) is not None
+            if getattr(self, "_owner_vote_recipient", None) is not None
             else self._emission_blended_snapshot()
         )
         u16_by_uid = dict(zip(attempt.uint_uids, attempt.uint_weights, strict=True))
@@ -923,24 +926,37 @@ class Validator(BaseValidatorNeuron):
         return rows
 
     def _on_weights_prepared(self, attempt: WeightEmissionAttempt) -> int | None:
-        snapshot = getattr(self, "_bootstrap_chain_snapshot", None)
-        if snapshot is not None:
+        recipient: OwnerVoteRecipient | None = getattr(
+            self, "_owner_vote_recipient", None
+        )
+        if recipient is not None:
+            # Pre-submission recheck against the exact metagraph, chain
+            # identity and constraints that produced this prepared vector.
             try:
-                validate_bootstrap_recipient(
+                owner_uid = resolve_owner_vote_uid(
+                    network=recipient.network,
                     chain_identity=attempt.chain_identity or "",
                     netuid=attempt.netuid if attempt.netuid is not None else -1,
                     hotkeys=attempt.hotkeys,
-                    owner_hotkey=snapshot.owner_hotkey,
+                    owner_hotkey=recipient.hotkey,
                 )
-                validate_bootstrap_vector(
+                validate_owner_vote_vector(
+                    owner_uid=recipient.uid,
                     uids=attempt.uint_uids,
                     weights=attempt.uint_weights,
                     min_allowed_weights=attempt.min_allowed_weights,
                     max_weight_limit=attempt.max_weight_limit,
                 )
-            except BootstrapPolicyError:
-                self._emission_blocked_reason = "bootstrap_vector_invalid"
-                self._set_emission_observation("bootstrap", "bootstrap_vector_invalid")
+                if owner_uid != recipient.uid:
+                    raise OwnerVoteBlocked(
+                        "owner_snapshot_inconsistent",
+                        "Owner UID moved between selection and submission",
+                    )
+            except OwnerVoteBlocked as blocked:
+                self._emission_blocked_reason = blocked.reason
+                self._set_emission_observation(
+                    self._observed_emission_mode(), blocked.reason
+                )
                 raise
         self._set_emission_observation(self._observed_emission_mode(), "prepared")
         storage = getattr(self, "_storage", None)
@@ -1196,73 +1212,41 @@ class Validator(BaseValidatorNeuron):
         self._apply_weights(weights)
 
     def resync_metagraph(self):
-        """Advance the deregistration tracker once per metagraph refresh.
-
-        Fairness-deltas spec §1 decision 3: the two-sync confirmation counts
-        metagraph resync generations — never scoring-pass ticks, which can
-        repeat against one stale snapshot. The tracker is deliberately
-        in-memory: a restart only delays archival by one confirmation cycle
-        while the hotkey keeps receiving zero observations.
-        """
+        """Advance the deregistration tracker once per metagraph refresh."""
         super().resync_metagraph()
-        self._advance_deregistration_tracker(set(self.metagraph.hotkeys))
+        self._deregistration_tracker().advance(self.metagraph.hotkeys)
+
+    def _deregistration_tracker(self) -> DeregistrationTracker:
+        # The base constructor's first sync can resync before __init__ seeds.
+        tracker: DeregistrationTracker | None = getattr(self, "_dereg_tracker", None)
+        if tracker is None:
+            tracker = DeregistrationTracker()
+            self._dereg_tracker = tracker
+        return tracker
 
     def _seed_deregistration_tracker(self) -> None:
-        """Baseline the tracker from durable EMA state, not process history.
-
-        Fairness-deltas spec §1 decision 3 promises a restart merely delays
-        archival by one confirmation cycle. Without this seed, a hotkey whose
-        EMA state persisted while it was already absent from the first
-        post-restart metagraph would never enter the missing-count tracker
-        and could never reach two-sync archival.
-        """
         persisted = {
             state.miner_hotkey
             for state in self._storage.assessment_ema_states(self._schema_id)
         }
-        self._dereg_missing_counts: dict[str, int] = {}
-        self._dereg_last_registered: set[str] = set(self.metagraph.hotkeys) | persisted
-
-    def _advance_deregistration_tracker(self, current: set[str]) -> None:
-        counts = getattr(self, "_dereg_missing_counts", None)
-        if counts is None:
-            counts = {}
-            self._dereg_missing_counts = counts
-        last_registered: set[str] = getattr(self, "_dereg_last_registered", set())
-        for hotkey in (set(counts) | last_registered) - current:
-            counts[hotkey] = counts.get(hotkey, 0) + 1
-        for hotkey in current:
-            counts.pop(hotkey, None)
-        self._dereg_last_registered = current
-
-    def _confirmed_deregistered(self) -> list[str]:
-        counts: dict[str, int] = getattr(self, "_dereg_missing_counts", {})
-        return sorted(
-            hotkey
-            for hotkey, missed in counts.items()
-            if missed >= DEREGISTRATION_CONFIRMATION_SYNCS
-        )
+        self._deregistration_tracker().seed(self.metagraph.hotkeys, persisted)
 
     def _prune_archived_deregistrations(self) -> None:
-        counts: dict[str, int] = getattr(self, "_dereg_missing_counts", {})
-        confirmed = self._confirmed_deregistered()
-        if not confirmed:
+        tracker = self._deregistration_tracker()
+        if not tracker.confirmed():
             return
         storage = getattr(self, "_storage", None)
         if storage is None:
             return
-        active_hotkeys = {
-            state.miner_hotkey
-            for state in storage.assessment_ema_states(self._schema_id)
-        }
-        for hotkey in confirmed:
-            if (
-                hotkey not in active_hotkeys
-                and not storage.has_unfinished_assessment_submission(
-                    self._schema_id, hotkey
-                )
-            ):
-                counts.pop(hotkey, None)
+        tracker.forget_settled(
+            active_hotkeys={
+                state.miner_hotkey
+                for state in storage.assessment_ema_states(self._schema_id)
+            },
+            has_unfinished_submission=lambda hotkey: (
+                storage.has_unfinished_assessment_submission(self._schema_id, hotkey)
+            ),
+        )
 
     async def forward(self) -> None:
         """One round-service tick; updates scores when new resolutions land."""
@@ -1271,7 +1255,7 @@ class Validator(BaseValidatorNeuron):
             weights = await asyncio.to_thread(
                 self._service.tick,
                 expected_miners=list(self.metagraph.hotkeys),
-                archive_hotkeys=self._confirmed_deregistered(),
+                archive_hotkeys=self._deregistration_tracker().confirmed(),
             )
             if weights is not None:
                 self._blended_snapshot = self._service.blended_snapshot()
@@ -1443,7 +1427,14 @@ def main() -> None:
             f"protocol_version_key={CURRENT_VERSION_KEY}"
         )
         stop = install_shutdown_handlers()
-        validator = Validator()
+        try:
+            validator = Validator()
+        except (SystemExit, KeyboardInterrupt):
+            # BaseNeuron exits via sys.exit (e.g. an unregistered hotkey), which
+            # bypasses the Exception handler below; interpreter finalization can
+            # then block forever in SDK websocket teardown.
+            _schedule_forced_exit_after_grace()
+            raise
         try:
             with validator:
                 while not stop.is_set():

@@ -276,6 +276,7 @@ def _audit_validator(storage: Storage) -> Validator:
     validator.config.neuron.epoch_length = 60
     validator.config.neuron.disable_set_weights = False
     validator.config.netuid = 1
+    validator.config.endure.active_schema = RISK_SCHEMA_ID
     validator._blended_snapshot = {
         VALIDATOR_HOTKEY: Decimal("0.5"),
         "hk-b": Decimal("0.25"),

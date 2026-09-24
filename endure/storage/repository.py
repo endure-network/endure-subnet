@@ -2089,38 +2089,6 @@ class Storage:
                 connection, round_id, schema_id, rows, now_iso=now_iso
             )
 
-    def positive_assessment_score_history_since(
-        self, schema_id: str, *, after_id: int = 0
-    ) -> tuple[int, bool]:
-        """Read the append-only graduation evidence without changing earned state.
-
-        The cursor avoids rescanning zero-only history during warm-up. A restart
-        starts at zero, so retirement, EMA pruning and an empty current vector
-        cannot erase the fact that positive resolved scores once existed.
-        Decimal parsing preserves zero exponents and arbitrarily small positives.
-        """
-        cursor = after_id
-        with self._engine.connect() as connection:
-            rows = connection.execute(
-                select(
-                    assessment_score_history.c.id,
-                    assessment_score_history.c.round_score_text,
-                    assessment_score_history.c.ema_after_text,
-                )
-                .where(
-                    assessment_score_history.c.schema_id == schema_id,
-                    assessment_score_history.c.id > after_id,
-                )
-                .order_by(assessment_score_history.c.id)
-            ).mappings()
-            for row in rows:
-                cursor = _int_from_mapping(row, "id")
-                if _decimal_from_mapping(row, "round_score_text") > Decimal(
-                    "0"
-                ) or _decimal_from_mapping(row, "ema_after_text") > Decimal("0"):
-                    return cursor, True
-        return cursor, False
-
     def record_assessment_scoring_pass(
         self,
         round_id: str,

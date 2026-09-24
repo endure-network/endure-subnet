@@ -39,6 +39,7 @@ from endure.protocol.consensus_policy import (
     MIN_MINER_STAKE,
     require_canonical_mainnet_policy,
 )
+from endure.scoring.emission_policy import OwnerVoteNetwork
 
 from .logging import safe_endpoint_label, setup_events_logger
 
@@ -134,6 +135,23 @@ def uses_mainnet_consensus_policy(config: "bt.Config") -> bool:
         and not permits_dev_only_runtime(config)
         and _is_bittensor_mainnet(config)
     )
+
+
+def owner_vote_network(config: "bt.Config") -> OwnerVoteNetwork | None:
+    """Served live Alpha Risk on mainnet or testnet votes for the owner when idle.
+
+    Mock and local chains keep abstaining so development runs never emit an
+    owner allocation.
+    """
+    if uses_mainnet_consensus_policy(config):
+        return "mainnet"
+    if (
+        requires_serving_stage_gate(config)
+        and not permits_dev_only_runtime(config)
+        and _is_bittensor_testnet(config)
+    ):
+        return "testnet"
+    return None
 
 
 def require_mainnet_validator_policy(config: "bt.Config") -> None:

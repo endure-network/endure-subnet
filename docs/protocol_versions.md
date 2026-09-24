@@ -170,30 +170,42 @@ first-parent staging lineage in commit
 `0df17c6368167b0f8b3f376b2d84e5f9810d89860c67532dfaef348a2559918d`.
 The published `v0.1.0` images retain that assignment.
 
-Key `2042` is leased to the SN30 correctness and unattended cold-start cutover.
+Key `2042` is leased to the SN30 correctness and owner-vote fallback cutover.
 It pins mainnet admission to zero additional miner stake, commit/reveal caps of
 10, and a 100-block metagraph/weight-attempt epoch. Admission and snapshot closure
 serialize in SQLite, empty frozen snapshots never backfill during reads, and
-commit retries validate the key and window. Storage admission/selection,
-pure Decimal score-to-u16 processing, and the approved SN30 bootstrap policy
-are digest-covered. One emission-enabled process maintains the pinned UID-176
-allocation until positive resolved history exists, then uses earned weights
-without a flag change or restart. Retained history prevents bootstrap re-entry.
+commit retries validate the key and window. Storage admission/selection, miner
+axon admission (registered hotkey and stake floor, in
+[admission.py](../endure/protocol/admission.py)), deregistration confirmation
+over `DEREGISTRATION_CONFIRMATION_SYNCS = 2` metagraph resyncs (in
+[consensus_policy.py](../endure/protocol/consensus_policy.py), tracked by
+[eligibility.py](../endure/scoring/eligibility.py)), pure Decimal score-to-u16
+processing, and the owner-vote fallback policy are digest-covered. On mainnet
+SN30 and Bittensor testnet, one emission-enabled process submits its whole vote
+to the UID of the on-chain subnet owner hotkey whenever no score is positive,
+and earned weights as soon as any score is positive, without a flag change or
+restart; there is no latch. Mainnet additionally pins the genesis, netuid `30`,
+and owner hotkey.
 Explicitly disabling emission remains a true off switch. Startup teardown and
 existing health/log observability are hardened in the same release.
 No schema migration is introduced; scoring coefficients and the target universe
 are unchanged. This remains one unserved `2042` lease, not another key bump.
 
 Its watched-tree digest is
-`4be32f79360668468c6405e7af56a4f6a02abae9adace8f51e391f2e102ee435`.
+`271d95c8bd68982ba1c3d3f018d3e798400d9bd00f34cb66379065cfad135ac9`.
 The public lease authority receipt uses
 `PREVIOUS_RECEIPT=27e8f797e62ce76333067470e18a32bdccdd80a385235b4d700d21513880c2b1`,
 `CURRENT_VERSION_KEY=2042`, and
-`CURRENT_VERSION_DIGEST=4be32f79360668468c6405e7af56a4f6a02abae9adace8f51e391f2e102ee435`
+`CURRENT_VERSION_DIGEST=271d95c8bd68982ba1c3d3f018d3e798400d9bd00f34cb66379065cfad135ac9`
 under the `LEASE_AUTHORITY` format above, producing
-`73e7392d3101bc635420e5148492edf373b8230eb26ed0d4c297980775aee71e`.
+`64c15ebe281a8cc181c346d2f428f1a3a398d2d20a379aa09f1b02891f96e93f`.
 
 Miners and validators must upgrade together. This source update does not publish
 production images, deploy services, or raise the chain's weight-version floor.
+SN30's chain `weights_version` is `2040` and Subtensor accepts a `version_key`
+at or above it, so key-`2042` submissions are accepted without a
+`weights_version` change. Raising it is a later, deliberate owner decision only
+after every permit validator runs `2042`; raising it earlier would reject
+validators still on `2040`.
 Follow the [coordinated cutover](running_on_mainnet.md#coordinated-cutover) after
 qualification and agreement with independently operated validators.

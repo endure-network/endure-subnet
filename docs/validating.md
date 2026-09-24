@@ -114,11 +114,11 @@ Beyond `round_resolution`, monitor the `runtime` block of `/health`:
 | `validator_loop_alive`, `tick_stale` | `true`, `false` | the loop dies or ticks go stale — the process is up but not working |
 | `consecutive_tick_failures`, `consecutive_universe_failures`, `consecutive_resolution_failures` | `0` | values climb — persistent market-data or chain trouble |
 | `weight_emission_degraded`, `consecutive_set_weights_failures` | `false`, `0` | any degradation — emissions at risk |
-| `emission_mode`, `emission_reason`, `emission_blocked_reason` | intended mode and a known progress/wait reason | unexpected mode or a retained identity/vector/history failure |
+| `emission_mode`, `emission_reason`, `emission_blocked_reason` | intended mode and a known progress/wait reason | unexpected mode, an owner-safety abstain reason, or a retained identity/vector failure |
 | `emission_expected`, `emission_next_eligible_block` | expected only after eligibility; next block where known | eligibility fails to advance without an explained gate |
 | `emission_submission_overdue`, `emission_deadline_in_seconds` | `false`; nonnegative while expected | overdue, including when no first batch was ever persisted |
 | `emission_confirmation_deadline_block` | pending submission remains within its deadline | cached chain block passes the durable deadline without confirmation |
-| `last_confirmed_weights_at` | advances when emission is eligible | it stalls for multiple epochs during eligible SN30 bootstrap or while positive earned scores exist |
+| `last_confirmed_weights_at` | advances when emission is eligible | it stalls for multiple epochs during an eligible owner vote or while positive earned scores exist |
 | `open_weight_submissions`, `oldest_open_weight_submission_age_blocks` | small, young | submissions age without confirmation |
 | `rpc_gate.degraded`, `rpc_gate.rate_limited_total` | `false`, stable | endpoint throttling — revisit the two-connection prerequisite |
 
@@ -127,7 +127,7 @@ so only its growth rate is a signal. `/health` does not report which RPC
 endpoints the process is connected to; confirm endpoint identity from the
 deployment configuration, not from health output.
 
-Emission modes are `bootstrap`, `scored`, `abstain`, and `disabled`. The mode
+Emission modes are `owner_vote`, `scored`, `abstain`, and `disabled`. The mode
 describes current policy, not proof that its vector is finalized on-chain.
 Stable wait reasons distinguish `startup_fence`, `epoch_pacing`,
 `no_validator_permit`, `chain_rate_limit`, and `confirmation_pending` from
@@ -144,8 +144,8 @@ including after disabling emission. Startup scheduling can exceed 300 blocks
 before first eligibility: check the [cutover headroom example](running_on_mainnet.md#coordinated-cutover).
 
 Earned weights are derived from resolved assessment scores and emitted through
-the validator lifecycle. Key `2042` adds the SN30-only cold-start allocation
-described below; it does not manufacture scores. Shared scoring policy is defined
+the validator lifecycle. Key `2042` adds the owner-vote fallback described
+below; it does not manufacture scores. Shared scoring policy is defined
 in [policy.py](../endure/scoring/policy.py), with EMA and normalization helpers in
 [weights.py](../endure/scoring/weights.py).
 Alpha Risk is absence-aware: a historically eligible hotkey with active EMA
@@ -154,33 +154,39 @@ which decays that coordinate's EMA. Later joiners are not charged for rounds
 before their first accepted reveal. See [assessment_orchestrator.py](../endure/scoring/assessment_orchestrator.py)
 and [the scoring fairness deltas](specs/2026-07-20-scoring-fairness-deltas.md#1--absence-aware-scoring).
 
-For served Alpha Risk on mainnet SN30 only, key `2042` maintains the
-[approved owner allocation](running_on_mainnet.md#weights-and-abstention) while
-the active schema has no positive resolved score history, including when no
-miners have submitted. This is a transition allocation, not earned miner
-reputation or proof of model accuracy. Identity/owner checks, validator permit,
-chain constraints, rate limits, startup fencing, one-in-flight submission, and
-finalized confirmation still gate the normal durable emission pipeline.
-Bootstrap audit rows have no earned-score or precap provenance.
+For served Alpha Risk on mainnet SN30 and Bittensor testnet, key `2042` submits
+the [owner vote](running_on_mainnet.md#weights-and-abstention) whenever the
+validator's score vector has no positive entry: at cold start, including when
+no miners have submitted, and again whenever every scored miner has been
+archived. The whole vote goes to the UID of the on-chain `SubnetOwnerHotkey`,
+resolved in the same metagraph snapshot at selection and at the pre-submission
+recheck; mainnet additionally pins the genesis, netuid `30`, and owner hotkey.
+This is a fallback allocation, not earned miner reputation or proof of model
+accuracy. Validator permit, chain constraints, rate limits, startup fencing,
+one-in-flight submission, and finalized confirmation still gate the normal
+durable emission pipeline. Owner-vote audit rows have null earned-score and
+precap provenance.
 
-A positive `round_score` or `ema_after` in the active schema's append-only
-`assessment_score_history` permanently ends bootstrap for the retained database.
-The same running process automatically uses earned score-derived weights, with
-no flag change or restart. Existing positive history rules out bootstrap on
-startup, even if the current scores are zero or absent. Later decay,
-deregistration, or an empty eligible score vector causes abstention, never
-renewed bootstrap. Other chains/netuids abstain in the all-zero case.
-Abstention does not clear previously submitted on-chain weights.
+As soon as any score is positive, the same running process submits earned
+score-derived weights, with no flag change or restart in either direction.
+Mock and local chains abstain in the all-zero case (`no_positive_scores`).
+Unsafe owner state also abstains, keeping `/health` at 200 with
+`emission_expected=false` and a distinct `emission_reason`
+(`owner_hotkey_mismatch`, `owner_unregistered`, `owner_snapshot_inconsistent`,
+`owner_vote_chain_mismatch`, or `validator_identity_invalid`); it is retried
+each epoch and clears automatically. A pre-submission recheck failure
+(`owner_vote_vector_invalid`) counts as a failed `set_weights` attempt and shows
+in `emission_blocked_reason`. Abstention does not clear previously submitted
+on-chain weights.
 
-Keep the mainnet database and score history durable across restarts. A consistent
-post-graduation backup preserves that decision even after EMA retirement; a
-backup predating graduation cannot recover later events. Deleting history loses
-that evidence. Never copy a testnet database into mainnet. No migration or
-automatic history repair is introduced. For unattended
-cold start, stop any prior writer and start one final Endure process with the
-axon on and `--neuron.disable_set_weights` omitted/default-false. An explicitly
-true flag disables both bootstrap and earned emission indefinitely; positive
-scores never enable it automatically.
+Mode has no latch: scores are rebuilt from durable EMAs at startup and a failed
+scoring tick keeps the previous vector, so a restart while scored resumes earned
+weights. Keep the mainnet database durable and use consistent SQLite backups; a
+restored backup reproduces its own scoring state. Never copy a testnet database
+into mainnet. For unattended cold start, stop any prior writer and start one
+final Endure process with the axon on and `--neuron.disable_set_weights`
+omitted/default-false. An explicitly true flag disables both the owner vote and
+earned emission indefinitely; positive scores never enable it automatically.
 
 An archive outage delays new scores; it does not erase previously earned scores
 or independently disable their emission. Mainnet startup requires the

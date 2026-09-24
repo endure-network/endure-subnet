@@ -1,4 +1,4 @@
-"""One durable emitter transitions from SN30 bootstrap to earned weights."""
+"""One durable emitter alternates between the owner vote and earned weights."""
 
 from __future__ import annotations
 
@@ -27,14 +27,14 @@ from endure.assessment.schemas.subnet_alpha_risk import (
 from endure.base.validator import WEIGHT_EMISSION_FINALITY_MARGIN_BLOCKS
 from endure.protocol.consensus_policy import (
     MAINNET_GENESIS_HASH,
-    SN30_BOOTSTRAP_HOTKEY,
-    SN30_BOOTSTRAP_UID,
+    SN30_NETUID,
+    SN30_OWNER_HOTKEY,
 )
 from endure.protocol.round_engine import DEFAULT_OFFSETS, compute_fixed_utc_windows
 from endure.protocol.schedulers import FixedUtcScheduler
 from endure.protocol.version_contract import CURRENT_VERSION_KEY
 from endure.protocol.vertical import AssessmentRoundProgram, VerticalRuntime
-from endure.scoring.emission_policy import BootstrapPolicyError
+from endure.scoring.emission_policy import OwnerVoteBlocked
 from endure.scoring.market_data import recorded_mainnet_fixture_provider
 from endure.scoring.risk.orchestrator import RiskScoringOrchestrator, risk_coordinate
 from endure.scoring.weights import ema_update
@@ -42,18 +42,31 @@ from endure.storage.repository import Storage, WeightEmissionChainSnapshot
 from neurons.validator import Validator
 
 NOW = "2026-09-24T20:00:00+00:00"
+TESTNET_GENESIS = "0xtestnet-genesis"
+OWNER_VOTE_176 = ((176,), (65535,), CURRENT_VERSION_KEY)
+EARNED = ((1, 2), (65535, 8192), CURRENT_VERSION_KEY)
 
 
 class ReplayChain:
     """Stateful SDK boundary; no network, wallet signing, or chain mutation."""
 
-    def __init__(self, storage: Storage) -> None:
+    def __init__(
+        self,
+        storage: Storage,
+        *,
+        owner_uid: int = 176,
+        owner_hotkey: str = SN30_OWNER_HOTKEY,
+        genesis: str = MAINNET_GENESIS_HASH,
+        netuid: int = SN30_NETUID,
+    ) -> None:
         self.storage = storage
+        self.genesis = genesis
+        self.netuid = netuid
         self.block = 1_000
-        self.hotkeys = [f"hotkey-{uid}" for uid in range(SN30_BOOTSTRAP_UID + 1)]
-        self.hotkeys[SN30_BOOTSTRAP_UID] = SN30_BOOTSTRAP_HOTKEY
-        self.owner_hotkey = SN30_BOOTSTRAP_HOTKEY
-        self.permits = [True] + [False] * SN30_BOOTSTRAP_UID
+        self.hotkeys = [f"hotkey-{uid}" for uid in range(max(owner_uid, 176) + 1)]
+        self.hotkeys[owner_uid] = owner_hotkey
+        self.owner_hotkey = owner_hotkey
+        self.permits = [True] + [False] * (len(self.hotkeys) - 1)
         self.last_updates = [0] * len(self.hotkeys)
         self.weights_rate_limit = 180
         self.minimum = 1
@@ -68,10 +81,10 @@ class ReplayChain:
 
     def get_block_hash(self, block: int) -> str:
         assert block == 0
-        return MAINNET_GENESIS_HASH
+        return self.genesis
 
     def commit_reveal_enabled(self, *, netuid: int) -> bool:
-        assert netuid == 30
+        assert netuid == self.netuid
         return False
 
     def min_allowed_weights(self, *, netuid: int) -> int:
@@ -81,7 +94,7 @@ class ReplayChain:
         return self.maximum
 
     def get_metagraph_info(self, netuid: int, *, block: int) -> SimpleNamespace:
-        assert netuid == 30 and block == self.block
+        assert netuid == self.netuid and block == self.block
         return SimpleNamespace(
             block=block,
             hotkeys=list(self.hotkeys),
@@ -113,13 +126,13 @@ class ReplayChain:
             raise OSError("connection lost after submission")
         return ExtrinsicResponse(True, "submitted")
 
-    def confirm(self) -> None:
+    def resolve(self, *, confirmed: bool) -> None:
         self.block = self.last_updates[0] + WEIGHT_EMISSION_FINALITY_MARGIN_BLOCKS + 1
         result = self.storage.resolve_weight_emission_confirmations(
             schema_id=RISK_SCHEMA_ID,
             snapshot=WeightEmissionChainSnapshot(
-                chain_identity=MAINNET_GENESIS_HASH,
-                netuid=30,
+                chain_identity=self.genesis,
+                netuid=self.netuid,
                 validator_uid=0,
                 validator_hotkey=self.hotkeys[0],
                 block=self.block,
@@ -132,7 +145,11 @@ class ReplayChain:
             finality_margin_blocks=WEIGHT_EMISSION_FINALITY_MARGIN_BLOCKS,
             confirmed_at_iso=NOW,
         )
-        assert result.confirmed == 1
+        assert (result.confirmed if confirmed else result.unconfirmed) == 1
+
+    def confirm_and_pace(self) -> None:
+        self.resolve(confirmed=True)
+        self.block += self.weights_rate_limit
 
 
 class ReplayValidator(Validator):
@@ -143,22 +160,25 @@ class ReplayValidator(Validator):
 
 
 def replay_validator(
-    storage: Storage, config: bt.Config, chain: ReplayChain
+    storage: Storage,
+    config: bt.Config,
+    chain: ReplayChain,
+    *,
+    network: str = "finney",
 ) -> ReplayValidator:
     validator = ReplayValidator.__new__(ReplayValidator)
     validator.config = copy.deepcopy(config)
     validator.config.runtime.mode = "live"
-    validator.config.subtensor.network = "finney"
-    validator.config.netuid = 30
+    validator.config.subtensor.network = network
+    validator.config.netuid = chain.netuid
     validator.config.endure.active_schema = RISK_SCHEMA_ID
     validator.config.endure.serving_stage = "mainnet"
     validator.config.neuron.disable_set_weights = False
     validator.config.neuron.axon_off = False
     validator._storage = storage
     validator._schema_id = RISK_SCHEMA_ID
-    validator._positive_score_history_id = 0
-    validator._has_positive_score_history = False
-    validator._bootstrap_chain_snapshot = None
+    validator._owner_vote_recipient = None
+    validator._owner_vote_block_reason = None
     validator._weight_emission_startup_fence_block = None
     validator._consecutive_provider_throttles = 0
     validator._consecutive_set_weights_failures = 0
@@ -252,7 +272,13 @@ def record_resolved_scores(storage: Storage, chain: ReplayChain) -> None:
     )
 
 
-def test_bootstrap_hands_off_without_restart_and_never_returns_after_restart(
+def archive_scored_miners(storage: Storage, chain: ReplayChain) -> None:
+    storage.archive_assessment_ema_horizon(
+        RISK_SCHEMA_ID, HORIZON_5D_SECONDS, chain.hotkeys[1:3]
+    )
+
+
+def test_owner_vote_hands_off_to_scores_and_returns_when_all_miners_archive(
     storage: Storage, mock_validator_config: bt.Config
 ) -> None:
     chain = ReplayChain(storage)
@@ -260,49 +286,215 @@ def test_bootstrap_hands_off_without_restart_and_never_returns_after_restart(
     advance_past_startup_fence(validator, chain)
     validator.set_weights()
 
-    assert chain.submissions == [((176,), (65535,), CURRENT_VERSION_KEY)]
+    assert chain.submissions == [OWNER_VOTE_176]
     assert validator.scores == [Decimal("0")] * len(chain.hotkeys)
     assert storage.assessment_ema_states(RISK_SCHEMA_ID) == []
-    batch = storage.weight_emission_history(RISK_SCHEMA_ID)[0]
-    assert batch["confirmation_state"] == "submitted"
-    rows = batch["rows"]
-    assert isinstance(rows, list)
-    [bootstrap_row] = rows
-    assert isinstance(bootstrap_row, dict)
-    assert bootstrap_row["blended_score_text"] is None
-    assert bootstrap_row["weight_norm_precap_text"] is None
+    [owner_row] = storage.weight_emission_history(RISK_SCHEMA_ID)[0]["rows"]
+    assert owner_row["blended_score_text"] is None
+    assert owner_row["weight_norm_precap_text"] is None
 
-    # Positive resolved state appears in the same running process. An open
-    # bootstrap intent still blocks replacement until chain confirmation.
+    # The first positive score in the same process switches to earned weights
+    # once the open owner-vote intent is confirmed.
     record_resolved_scores(storage, chain)
     validator._reconstruct_scores()
     validator.set_weights()
-    assert len(chain.submissions) == 1
-    chain.confirm()
-    chain.block += chain.weights_rate_limit
+    assert chain.submissions == [OWNER_VOTE_176]
+    chain.confirm_and_pace()
     validator.set_weights()
-    assert chain.submissions[-1] == ((1, 2), (65535, 8192), CURRENT_VERSION_KEY)
-    assert len(chain.submissions) == 2
-    chain.confirm()
+    assert chain.submissions == [OWNER_VOTE_176, EARNED]
+    assert validator._observed_emission_mode() == "scored"
 
-    # EMA retirement does not remove score history. Reopening the actual SQLite
-    # file reconstructs graduation instead of choosing owner allocation again.
+    # Every scored miner archived: the owner vote is a standing fallback.
+    archive_scored_miners(storage, chain)
+    validator._reconstruct_scores()
+    assert validator._observed_emission_mode() == "owner_vote"
+    chain.confirm_and_pace()
+    validator.set_weights()
+    assert chain.submissions == [OWNER_VOTE_176, EARNED, OWNER_VOTE_176]
+
+
+def test_confirmed_deregistration_archival_returns_to_owner_vote(
+    storage: Storage, mock_validator_config: bt.Config
+) -> None:
+    chain = ReplayChain(storage)
+    record_resolved_scores(storage, chain)
+    validator = replay_validator(storage, mock_validator_config, chain)
+    validator._seed_deregistration_tracker()
+    tracker = validator._deregistration_tracker()
+    advance_past_startup_fence(validator, chain)
+    validator.set_weights()
+    assert chain.submissions == [EARNED]
+
+    remaining = [hotkey for hotkey in chain.hotkeys if hotkey not in chain.hotkeys[1:3]]
+    tracker.advance(remaining)
+    assert tracker.confirmed() == []
+    tracker.advance(remaining)
     storage.archive_assessment_ema_horizon(
-        RISK_SCHEMA_ID, HORIZON_5D_SECONDS, chain.hotkeys[1:3]
+        RISK_SCHEMA_ID, HORIZON_5D_SECONDS, tracker.confirmed()
     )
+    validator._reconstruct_scores()
+    chain.confirm_and_pace()
+    validator.set_weights()
+
+    assert chain.submissions == [EARNED, OWNER_VOTE_176]
+
+
+def test_restart_while_scored_resumes_earned_weights_without_owner_flicker(
+    storage: Storage, mock_validator_config: bt.Config
+) -> None:
+    chain = ReplayChain(storage)
+    record_resolved_scores(storage, chain)
+    validator = replay_validator(storage, mock_validator_config, chain)
+    advance_past_startup_fence(validator, chain)
+    validator.set_weights()
+    chain.confirm_and_pace()
+
     reopened = Storage.from_url(str(storage._engine.url))
     try:
         chain.storage = reopened
         restarted = replay_validator(reopened, mock_validator_config, chain)
-        assert restarted.scores == [Decimal("0")] * len(chain.hotkeys)
+        assert restarted._observed_emission_mode() == "scored"
         restarted.set_weights()
-        assert len(chain.submissions) == 2
-        assert restarted._has_positive_score_history is True
+        assert restarted._observed_emission_mode() == "scored"
+        assert chain.submissions == [EARNED, EARNED]
     finally:
         reopened.close()
 
 
-def test_ambiguous_bootstrap_survives_restart_without_duplicate_submission(
+@pytest.mark.parametrize(
+    ("network", "genesis", "netuid", "owner_hotkey"),
+    [
+        ("finney", MAINNET_GENESIS_HASH, SN30_NETUID, SN30_OWNER_HOTKEY),
+        ("test", TESTNET_GENESIS, 417, "testnet-owner"),
+    ],
+)
+def test_owner_vote_follows_the_on_chain_owner_to_any_uid(
+    storage: Storage,
+    mock_validator_config: bt.Config,
+    network: str,
+    genesis: str,
+    netuid: int,
+    owner_hotkey: str,
+) -> None:
+    chain = ReplayChain(
+        storage, owner_uid=5, owner_hotkey=owner_hotkey, genesis=genesis, netuid=netuid
+    )
+    validator = replay_validator(storage, mock_validator_config, chain, network=network)
+    advance_past_startup_fence(validator, chain)
+    validator.set_weights()
+
+    assert chain.submissions == [((5,), (65535,), CURRENT_VERSION_KEY)]
+
+
+def test_testnet_owner_change_moves_the_vote_to_the_new_owner(
+    storage: Storage, mock_validator_config: bt.Config
+) -> None:
+    chain = ReplayChain(
+        storage,
+        owner_uid=5,
+        owner_hotkey="testnet-owner",
+        genesis=TESTNET_GENESIS,
+        netuid=417,
+    )
+    validator = replay_validator(storage, mock_validator_config, chain, network="test")
+    advance_past_startup_fence(validator, chain)
+    chain.owner_hotkey = chain.hotkeys[9] = "new-testnet-owner"
+    validator.metagraph.hotkeys[9] = "new-testnet-owner"
+    validator.set_weights()
+
+    assert chain.submissions == [((9,), (65535,), CURRENT_VERSION_KEY)]
+
+
+def test_mainnet_owner_mismatch_abstains_until_the_pinned_owner_returns(
+    storage: Storage, mock_validator_config: bt.Config
+) -> None:
+    mainnet = ReplayChain(storage)
+    validator = replay_validator(storage, mock_validator_config, mainnet)
+    advance_past_startup_fence(validator, mainnet)
+    mainnet.owner_hotkey = mainnet.hotkeys[9] = "replacement-owner"
+    validator.metagraph.hotkeys[9] = "replacement-owner"
+    validator.set_weights()
+
+    assert mainnet.submissions == []
+    assert validator._observed_emission_mode() == "abstain"
+    assert validator._emission_reason == "owner_hotkey_mismatch"
+    assert validator._consecutive_set_weights_failures == 0
+    assert storage.weight_emission_history(RISK_SCHEMA_ID) == []
+
+    # Restoring the pinned owner clears the block on the next attempt.
+    mainnet.owner_hotkey = SN30_OWNER_HOTKEY
+    validator.set_weights()
+    assert mainnet.submissions == [OWNER_VOTE_176]
+    assert validator._observed_emission_mode() == "owner_vote"
+
+
+@pytest.mark.parametrize(
+    ("change", "reason"),
+    [
+        ("unregistered", "owner_unregistered"),
+        ("stale-local-metagraph", "owner_snapshot_inconsistent"),
+        ("stale-snapshot-block", "owner_snapshot_inconsistent"),
+        ("wrong-chain", "owner_vote_chain_mismatch"),
+    ],
+)
+def test_unsafe_owner_state_abstains_with_its_reason(
+    storage: Storage, mock_validator_config: bt.Config, change: str, reason: str
+) -> None:
+    chain = ReplayChain(storage)
+    validator = replay_validator(storage, mock_validator_config, chain)
+    advance_past_startup_fence(validator, chain)
+    if change == "unregistered":
+        chain.hotkeys[176] = "replacement-miner"
+    elif change == "stale-local-metagraph":
+        validator.metagraph.hotkeys[176] = "stale-recipient"
+    elif change == "stale-snapshot-block":
+        original = chain.get_metagraph_info
+
+        def stale(netuid: int, *, block: int) -> SimpleNamespace:
+            snapshot = original(netuid, block=block)
+            snapshot.block = block - 1
+            return snapshot
+
+        chain.get_metagraph_info = stale
+    else:
+        chain.genesis = TESTNET_GENESIS
+    validator.set_weights()
+
+    assert chain.submissions == []
+    assert validator._observed_emission_mode() == "abstain"
+    assert validator._emission_reason == reason
+    assert not storage.has_open_weight_emission_confirmation(schema_id=RISK_SCHEMA_ID)
+
+
+@pytest.mark.parametrize("network", ["local", "mock"])
+def test_local_and_mock_networks_keep_abstaining(
+    storage: Storage, mock_validator_config: bt.Config, network: str
+) -> None:
+    chain = ReplayChain(storage)
+    validator = replay_validator(storage, mock_validator_config, chain, network=network)
+    if network == "mock":
+        validator.config.runtime.mode = "mock"
+    validator.set_weights()
+    validator.set_weights()
+
+    assert chain.submissions == []
+    assert validator._observed_emission_mode() == "abstain"
+    assert validator._emission_reason == "no_positive_scores"
+
+
+def test_local_network_still_emits_earned_weights_when_scored(
+    storage: Storage, mock_validator_config: bt.Config
+) -> None:
+    chain = ReplayChain(storage)
+    record_resolved_scores(storage, chain)
+    validator = replay_validator(storage, mock_validator_config, chain, network="local")
+    advance_past_startup_fence(validator, chain)
+    validator.set_weights()
+
+    assert chain.submissions == [EARNED]
+
+
+def test_ambiguous_owner_vote_survives_restart_without_duplicate_submission(
     storage: Storage, mock_validator_config: bt.Config
 ) -> None:
     chain = ReplayChain(storage)
@@ -317,11 +509,10 @@ def test_ambiguous_bootstrap_survives_restart_without_duplicate_submission(
     restarted = replay_validator(storage, mock_validator_config, chain)
     restarted.set_weights()
     assert len(chain.submissions) == 1
-    chain.confirm()
     chain.fail_after_submit = False
-    chain.block += chain.weights_rate_limit
+    chain.confirm_and_pace()
     restarted.set_weights()
-    assert chain.submissions == [((176,), (65535,), CURRENT_VERSION_KEY)] * 2
+    assert chain.submissions == [OWNER_VOTE_176] * 2
 
 
 @pytest.mark.parametrize("earned", [False, True])
@@ -344,27 +535,8 @@ def test_disable_set_weights_is_an_off_switch_for_both_modes(
     )
 
 
-@pytest.mark.parametrize("changed_identity", ["owner", "recipient", "cached-recipient"])
-def test_bootstrap_refuses_recipient_replacement(
-    storage: Storage, mock_validator_config: bt.Config, changed_identity: str
-) -> None:
-    chain = ReplayChain(storage)
-    validator = replay_validator(storage, mock_validator_config, chain)
-    advance_past_startup_fence(validator, chain)
-    if changed_identity == "owner":
-        chain.owner_hotkey = "replacement-owner"
-    elif changed_identity == "recipient":
-        chain.hotkeys[176] = "replacement-miner"
-    else:
-        validator.metagraph.hotkeys[176] = "stale-recipient"
-    with pytest.raises(BootstrapPolicyError):
-        validator.set_weights()
-    assert chain.submissions == []
-    assert not storage.has_open_weight_emission_confirmation(schema_id=RISK_SCHEMA_ID)
-
-
 @pytest.mark.parametrize("constraint", ["minimum", "maximum"])
-def test_bootstrap_obeys_permit_rate_boundary_and_rejects_constraint_changes(
+def test_owner_vote_obeys_permit_rate_boundary_and_rejects_constraint_changes(
     storage: Storage, mock_validator_config: bt.Config, constraint: str
 ) -> None:
     chain = ReplayChain(storage)
@@ -373,6 +545,7 @@ def test_bootstrap_obeys_permit_rate_boundary_and_rejects_constraint_changes(
     chain.permits[0] = False
     validator.set_weights()
     assert chain.submissions == []
+    assert validator._emission_reason == "no_validator_permit"
     chain.permits[0] = True
     chain.last_updates[0] = chain.block - chain.weights_rate_limit + 1
     validator.set_weights()
@@ -382,14 +555,15 @@ def test_bootstrap_obeys_permit_rate_boundary_and_rejects_constraint_changes(
         chain.minimum = 2
     else:
         chain.maximum = Decimal("0.5")
-    with pytest.raises(BootstrapPolicyError):
+    with pytest.raises(OwnerVoteBlocked):
         validator.set_weights()
     assert chain.submissions == []
     assert not storage.has_open_weight_emission_confirmation(schema_id=RISK_SCHEMA_ID)
+    assert validator._emission_reason == "owner_vote_vector_invalid"
     chain.minimum = 1
     chain.maximum = Decimal("1")
     validator.set_weights()
-    assert chain.submissions == [((176,), (65535,), CURRENT_VERSION_KEY)]
+    assert chain.submissions == [OWNER_VOTE_176]
 
 
 def test_prepared_before_send_restart_waits_for_expiry_then_recovers(
@@ -420,7 +594,7 @@ def test_prepared_before_send_restart_waits_for_expiry_then_recovers(
         schema_id=RISK_SCHEMA_ID,
         snapshot=WeightEmissionChainSnapshot(
             chain_identity=MAINNET_GENESIS_HASH,
-            netuid=30,
+            netuid=SN30_NETUID,
             validator_uid=0,
             validator_hotkey=chain.hotkeys[0],
             block=chain.block,
@@ -435,17 +609,24 @@ def test_prepared_before_send_restart_waits_for_expiry_then_recovers(
     )
     assert result.unconfirmed == 1
     restarted.set_weights()
-    assert chain.submissions == [((176,), (65535,), CURRENT_VERSION_KEY)]
+    assert chain.submissions == [OWNER_VOTE_176]
 
 
-def test_consistent_post_graduation_backup_preserves_empty_vector_abstention(
-    storage: Storage, mock_validator_config: bt.Config, tmp_path: Path
+@pytest.mark.parametrize(
+    ("archived", "expected"),
+    [(False, EARNED), (True, OWNER_VOTE_176)],
+)
+def test_restored_backup_reproduces_its_own_scoring_state(
+    storage: Storage,
+    mock_validator_config: bt.Config,
+    tmp_path: Path,
+    archived: bool,
+    expected: tuple[tuple[int, ...], tuple[int, ...], int],
 ) -> None:
     chain = ReplayChain(storage)
     record_resolved_scores(storage, chain)
-    storage.archive_assessment_ema_horizon(
-        RISK_SCHEMA_ID, HORIZON_5D_SECONDS, chain.hotkeys[1:3]
-    )
+    if archived:
+        archive_scored_miners(storage, chain)
     backup_path = tmp_path / "consistent-backup.sqlite"
     database_path = storage._engine.url.database
     assert database_path is not None
@@ -459,10 +640,8 @@ def test_consistent_post_graduation_backup_preserves_empty_vector_abstention(
     try:
         restored_chain = ReplayChain(restored)
         validator = replay_validator(restored, mock_validator_config, restored_chain)
-        assert not any(validator.scores)
+        advance_past_startup_fence(validator, restored_chain)
         validator.set_weights()
-        assert restored_chain.submissions == []
-        assert validator._has_positive_score_history
-        assert restored.weight_emission_history(RISK_SCHEMA_ID) == []
+        assert restored_chain.submissions == [expected]
     finally:
         restored.close()

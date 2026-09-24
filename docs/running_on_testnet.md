@@ -70,6 +70,11 @@ accepting submissions; `/live` is process liveness only and must not replace the
 operational `/health` check. Back up and restore-test the persistent database; restart
 behavior depends on retained durable state. See [validating](validating.md).
 
+With key `2042`, a served Alpha Risk validator on testnet submits the owner
+vote — its whole vote to the UID of the on-chain subnet owner hotkey — whenever
+no miner has a positive score, and earned weights as soon as one does. See the
+[owner-vote fallback](running_on_mainnet.md#weights-and-abstention).
+
 The Endure-operated testnet read API is
 `https://api.testnet.endure.network`, signed by validator hotkey
 `5E2bM6DXxyraVJCDjWBcixudbzYXToDnNcsDBB4hoJdCuwTi`. This is currently the

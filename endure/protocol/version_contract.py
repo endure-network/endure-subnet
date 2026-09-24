@@ -10,7 +10,7 @@ so constants cannot drift outside the contract again.
 from pathlib import Path
 
 ACTIVATED_VERSION_REGISTRY_DIGEST = (
-    "02c9a047eba24318538d5a58527e4a7fbc8ab16f309106439c902eaa421108d1"
+    "3ff0c2a839abdcf0746a5fd4aefdd08f26d09a69a435f986ee346c4483a3a53d"
 )
 ACTIVATED_VERSION_HISTORY_DIGEST = (
     "1cd6c2a53bbf4d4d11cbdaefada0327afb67640b10f1a04e7d18656c38c4ee32"
@@ -127,9 +127,11 @@ PREVIOUS_VERSION_DIGEST = (
 # behind the explicit --endure.serving_stage mainnet acknowledgement.
 # 2042: release-pinned mainnet admission, atomic reveal/snapshot closure,
 # immutable empty snapshots, and digest-covered Decimal emission processing.
-# Storage selection and the pinned SN30 bootstrap/earned-graduation policy
-# are included in the watched tree; one durable emitter serves both modes.
+# Storage selection, miner admission, deregistration confirmation, and the
+# standing owner-vote fallback (on-chain SubnetOwnerHotkey whenever no score is
+# positive; mainnet pinned to the SN30 owner) are in the watched tree; one
+# durable emitter serves both modes.
 CURRENT_VERSION_KEY = 2042
 CURRENT_VERSION_DIGEST = (
-    "4be32f79360668468c6405e7af56a4f6a02abae9adace8f51e391f2e102ee435"
+    "271d95c8bd68982ba1c3d3f018d3e798400d9bd00f34cb66379065cfad135ac9"
 )

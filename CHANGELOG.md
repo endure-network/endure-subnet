@@ -13,19 +13,27 @@ key-2041 images and chain parameters are not changed by this source update.
   overrides and unsafe axon-off emission.
 - Validate mainnet archive identity and historical timestamp/reserve availability
   before transport startup.
-- Digest-cover storage selection and pure Decimal score-to-u16 processing;
-  remove the unused `moving_average_alpha`/`update_scores` path.
-- Add unattended cold start for served Alpha Risk on mainnet SN30 only: maintain
-  the approved owner transition allocation until active-schema history records
-  a positive resolved score, then automatically use earned score-derived weights.
-  This is not earned reputation or evidence of model accuracy; no synthetic
-  scores/EMAs or earned-score audit provenance are created for bootstrap.
-- Reconstruct permanent bootstrap graduation from retained score history on
-  restart. Later zero/absent eligible scores abstain without clearing chain
-  weights or returning to bootstrap; other chains/netuids retain all-zero
-  abstention. Preserve mainnet SQLite/history and never copy testnet state;
-  a consistent post-graduation backup retains the decision, but an older backup
-  cannot recover later events. There is no automatic history repair.
+- Digest-cover storage selection, pure Decimal score-to-u16 processing, miner
+  axon admission (registered hotkey and stake floor), and two-resync
+  deregistration confirmation; remove the unused
+  `moving_average_alpha`/`update_scores` path.
+- Add a standing owner-vote fallback for served Alpha Risk on mainnet SN30 and
+  Bittensor testnet: whenever the score vector has no positive entry (cold
+  start, or after every scored miner is archived), submit the whole vote to the
+  UID of the on-chain `SubnetOwnerHotkey`, resolved in the same metagraph
+  snapshot; any positive score switches back to earned weights with no flag
+  change or restart. Mainnet additionally pins genesis, netuid `30`, and the
+  owner hotkey. Unsafe owner state abstains with a distinct `emission_reason`
+  and retries each epoch. This is a fallback allocation, not earned reputation
+  or evidence of model accuracy; no synthetic scores/EMAs or earned-score audit
+  provenance are created. Mock and local chains keep all-zero abstention.
+- Mode is a pure function of current scores and network, with no latch or
+  retained history decision. Scores are rebuilt from durable EMAs at startup and
+  a failed scoring tick keeps the previous vector, so neither reads as zero
+  scores; a consistent SQLite backup reproduces its own scoring state. Never
+  copy testnet state into mainnet.
+- Subtensor accepts a `version_key` at or above SN30's chain `weights_version`
+  (`2040`), so key-`2042` submissions need no `weights_version` change.
 - Replace the external-setter/restart cutover with one final emission-enabled
   Endure process, axon on and `disable_set_weights` omitted/default-false.
   An explicitly true flag remains an indefinite off switch for both modes.
@@ -37,7 +45,9 @@ key-2041 images and chain parameters are not changed by this source update.
   submissions can degrade readiness; intentional eligibility waits do not.
   Document scheduler/fence startup delay and activity-cutoff headroom.
 - Bound fatal startup teardown with the existing 60-second hard-exit fallback,
-  including archive workers that remain blocked after the probe times out.
+  including archive workers that remain blocked after the probe times out and a
+  construction-time `sys.exit` such as an unregistered hotkey, which previously
+  hung in SDK websocket finalization.
 
 No schema migration is added. See the [mainnet cutover procedure](docs/running_on_mainnet.md#coordinated-cutover)
 and [conditional determinism limits](docs/economic-limitations.md#conditional-determinism).

@@ -106,18 +106,47 @@ def _run_clean_shutdown() -> None:
     print("graceful shutdown completed", flush=True)
 
 
-@pytest.mark.parametrize("scenario", ["blocked_archive", "clean_shutdown"])
+def _run_construction_sys_exit() -> None:
+    from neurons import validator
+
+    def unregistered_validator() -> Never:
+        # BaseNeuron.check_registered() calls sys.exit(1) after the SDK has
+        # started transport threads that interpreter shutdown may never join.
+        forever = threading.Event()
+        worker = threading.Thread(target=forever.wait, name="sdk-websocket")
+        worker.start()
+        print(f"transport worker started; daemon={worker.daemon}", flush=True)
+        sys.exit(1)
+
+    with (
+        patch.object(validator, "Validator", side_effect=unregistered_validator),
+        patch.object(validator, "configure_log_shipping"),
+        patch.object(
+            validator, "_WATCHDOG_TEARDOWN_GRACE_SECONDS", _TEST_GRACE_SECONDS
+        ),
+    ):
+        try:
+            validator.main()
+        except SystemExit as error:
+            print(f"construction exit requested: {error.code}", flush=True)
+            raise
+
+
+_CHILDREN = {
+    "blocked_archive": "_run_blocked_archive_startup(sys.argv[1])",
+    "construction_sys_exit": "_run_construction_sys_exit()",
+    "clean_shutdown": "_run_clean_shutdown()",
+}
+
+
+@pytest.mark.parametrize("scenario", sorted(_CHILDREN))
 def test_main_process_exit_is_bounded_and_preserves_clean_shutdown(
     tmp_path: Path, scenario: str
 ) -> None:
     child = (
         "import sys; "
         "from tests.neurons.test_validator_startup_exit import "
-        "_run_blocked_archive_startup; "
-        "_run_blocked_archive_startup(sys.argv[1])"
-        if scenario == "blocked_archive"
-        else "from tests.neurons.test_validator_startup_exit import "
-        "_run_clean_shutdown; _run_clean_shutdown()"
+        f"{_CHILDREN[scenario].split('(')[0]}; {_CHILDREN[scenario]}"
     )
     with subprocess.Popen(
         [sys.executable, "-u", "-c", child, str(tmp_path)],
@@ -141,6 +170,10 @@ def test_main_process_exit_is_bounded_and_preserves_clean_shutdown(
         assert "archive worker entered; daemon=False" in output
         assert "validator failed: AlphaMarketDataUnavailable:" in output
         assert "startup exit requested: 1" in output
+    elif scenario == "construction_sys_exit":
+        assert process.returncode == 1, output
+        assert "transport worker started; daemon=False" in output
+        assert "construction exit requested: 1" in output
     else:
         assert process.returncode == 0, output
         assert "graceful shutdown completed" in output

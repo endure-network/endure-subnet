@@ -37,35 +37,35 @@ This acceptance does not establish that these requirements have been met.
 No consumer should interpret testnet emissions as evidence that modeling
 costs are economically rewarded at production scale.
 
-## SN30 cold-start allocation
+## SN30 owner-vote fallback
 
-The key-`2042` source candidate adds an approved owner transition allocation
-only for served Alpha Risk on mainnet SN30. With no miners or no positive
-resolved score history for the active schema, an emission-enabled validator
-maintains that allocation subject to recipient/owner identity, permit, chain
-constraints, rate limits, startup fencing, and durable finalized confirmation.
-This is neither earned miner reputation nor evidence of model accuracy, miner
-independence, or economic suitability. No synthetic score or EMA is written;
-bootstrap audit records have no earned-score or precap provenance.
+Key `2042` adds a standing owner-vote fallback for served Alpha Risk on mainnet
+SN30 and Bittensor testnet. Whenever a validator's score vector has no positive
+entry — at cold start, including with no miners, and again after every scored
+miner is archived — an emission-enabled validator submits its whole vote to the
+UID of the on-chain subnet owner hotkey, subject to owner identity, permit,
+chain constraints, rate limits, startup fencing, and durable finalized
+confirmation. This is a fallback allocation, neither earned miner reputation nor
+evidence of model accuracy, miner independence, or economic suitability. No
+synthetic score or EMA is written; owner-vote audit records have null
+earned-score and precap provenance.
 
-The first positive `round_score` or `ema_after` in the active schema's existing
-append-only score history permanently ends bootstrap for the retained database.
-The same process switches automatically to earned score-derived weights.
-Subsequent decay, deregistration, or absent eligible scores causes abstention,
-not a return to the owner allocation; abstention does not clear prior chain
-weights. Other chains/netuids retain all-zero abstention.
+As soon as any score is positive the same process switches to earned
+score-derived weights, and it returns to the owner vote if all scores later
+leave the scoring set; there is no latch. Mock and local chains abstain in the
+all-zero case; abstention does not clear prior chain weights.
 
-Durable graduation depends on preserving the mainnet database/history.
-A consistent post-graduation SQLite backup preserves that decision, including
-after EMA retirement. Deleting history or restoring a backup predating
-graduation loses the evidence; events newer than a backup cannot be recovered
-from it. There is no new migration or automatic repair, and testnet databases
-must not be copied into mainnet.
+Scores are rebuilt from durable EMAs at startup, so a restart does not reset
+the mode. A restored consistent SQLite backup reproduces its own scoring state:
+one with positive EMAs resumes earned weights, one without resumes the owner
+vote. Keep the mainnet database durable and never copy a testnet database into
+mainnet.
+
 The final unattended configuration keeps the axon on and
 `disable_set_weights` absent/default-false. An explicitly true off switch
 disables both modes indefinitely and is never auto-enabled by scores. Follow the
 [single-writer cutover](running_on_mainnet.md#coordinated-cutover), without an
-external transition setter or later flag-changing restart. This source change
+external weight setter or later flag-changing restart. This source change
 does not publish production images or alter the published key-`2041` release.
 
 ## Conditional determinism
@@ -78,13 +78,16 @@ The replay contract is narrower: with the same release policy, frozen round
 inputs and accepted-bundle snapshot, canonical realized targets, prior scoring
 state, and complete historical/active eligibility inputs, score transitions and
 hotkey-keyed candidate weights must agree. Emission-mode agreement additionally
-requires the same active-schema positive-score history and bootstrap identity
-inputs. Identical processed/u16 vectors also require the same ordered UID/hotkey
+requires the same current scores, network, and on-chain subnet owner state.
+Identical processed/u16 vectors also require the same ordered UID/hotkey
 mapping, metagraph size, and chain weight constraints. Submission timing, chain
 inclusion, and finalized confirmation remain separate; independent validators
-may graduate from bootstrap at different times.
+may enter or leave the owner vote at different times because their accepted
+submissions, resolution timing, and durable histories differ.
 
-Key `2042` pins mainnet admission settings, includes storage admission/selection
-semantics in the digest, and covers the pure score-to-u16 transformation.
-This prevents silent policy overrides and closes the reveal/snapshot race; it
-does not synchronize independent validators' databases or prove miner independence.
+Key `2042` pins mainnet admission settings and digest-covers storage
+admission/selection, miner axon admission (registered hotkey and stake floor),
+two-resync deregistration confirmation, and the pure score-to-u16
+transformation. This prevents silent policy overrides and closes the
+reveal/snapshot race; it does not synchronize independent validators' databases
+or prove miner independence.

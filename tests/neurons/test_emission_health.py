@@ -14,7 +14,7 @@ from endure.protocol.weight_intent import (
     WeightIntentPayload,
     canonical_weight_intent_hash,
 )
-from endure.scoring.emission_policy import BootstrapPolicyError
+from endure.scoring.emission_policy import OwnerVoteBlockReason
 from endure.storage.repository import Storage
 from neurons.validator import Validator
 
@@ -176,36 +176,64 @@ def test_startup_fence_and_following_epoch_precede_missing_progress_deadline(
     assert health["emission_submission_overdue"] is False
 
 
-def test_modes_follow_bootstrap_graduation_and_explicit_off(
-    validator: Validator,
+@pytest.mark.parametrize(
+    ("network", "endpoint"),
+    [
+        ("finney", "wss://entrypoint-finney.opentensor.ai:443"),
+        ("test", "wss://test.finney.opentensor.ai:443"),
+    ],
+)
+def test_modes_follow_scores_owner_vote_and_explicit_off(
+    validator: Validator, network: str, endpoint: str
 ) -> None:
     validator.config.runtime.mode = "live"
     validator.config.netuid = 30
-    validator.config.subtensor.network = "finney"
-    validator.config.subtensor.chain_endpoint = (
-        "wss://entrypoint-finney.opentensor.ai:443"
-    )
-    validator.scores = [Decimal(0)] * 177
-    assert validator.runtime_health()["emission_mode"] == "bootstrap"
-    validator._has_positive_score_history = False
-    validator._positive_score_history_id = 0
-    validator.scores = [Decimal(0)]
-    with pytest.raises(BootstrapPolicyError):
-        validator.set_weights()
-    assert (
-        validator.runtime_health()["emission_blocked_reason"]
-        == "bootstrap_vector_invalid"
-    )
-    validator.scores = [Decimal(0)] * 177
+    validator.config.subtensor.network = network
+    validator.config.subtensor.chain_endpoint = endpoint
+    validator.scores = [Decimal(0)] * 3
+    assert validator.runtime_health()["emission_mode"] == "owner_vote"
     validator.scores[1] = Decimal("0.5")
     assert validator.runtime_health()["emission_mode"] == "scored"
-    validator._has_positive_score_history = True
+    # Archival back to all-zero scores returns to the owner vote; no latch.
     validator.scores[1] = Decimal(0)
-    assert validator.runtime_health()["emission_mode"] == "abstain"
+    assert validator.runtime_health()["emission_mode"] == "owner_vote"
     validator.config.neuron.disable_set_weights = True
     validator.set_weights()
     assert validator.runtime_health()["emission_mode"] == "disabled"
     assert validator.subtensor.mock_calls == []
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "owner_hotkey_mismatch",
+        "owner_unregistered",
+        "owner_snapshot_inconsistent",
+        "owner_vote_chain_mismatch",
+    ],
+)
+def test_blocked_owner_vote_reports_a_distinct_abstain_reason(
+    validator: Validator,
+    monkeypatch: pytest.MonkeyPatch,
+    reason: OwnerVoteBlockReason,
+) -> None:
+    monkeypatch.setattr("neurons.validator.time.monotonic", lambda: 10000.0)
+    validator.config.runtime.mode = "live"
+    validator.config.subtensor.network = "finney"
+    validator.config.subtensor.chain_endpoint = (
+        "wss://entrypoint-finney.opentensor.ai:443"
+    )
+    validator.scores = [Decimal(0)]
+    validator._owner_vote_block_reason = reason
+    validator._mark_tick_progress()
+
+    response = _client(validator).get("/health")
+
+    assert response.status_code == 200
+    runtime = response.json()["runtime"]
+    assert runtime["emission_mode"] == "abstain"
+    assert runtime["emission_reason"] == reason
+    assert runtime["emission_expected"] is False
 
 
 def test_confirmation_deadline_still_degrades_while_emission_is_disabled(
