@@ -143,7 +143,11 @@ stays up and serves commits/reveals but sets no weights. There is no
 burn-to-owner mode; emission resumes automatically once a coordinate scores.
 
 Abstention does not clear previously submitted on-chain weights, even when the
-validator has cleared its local score cache.
+validator has cleared its local score cache. Those weights still stop counting
+once they are older than the subnet's `activity_cutoff`; on mainnet, run the
+validator with `--neuron.disable_set_weights` beside your existing weight
+setter until the cutover (see
+[the mainnet guide](running_on_mainnet.md#weights-and-abstention)).
 
 Abstention protects the all-zero case only. When at least one positive score
 exists, the ported SDK processing in

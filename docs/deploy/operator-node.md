@@ -74,6 +74,10 @@ docker run -d --name endure-validator --init --restart unless-stopped \
   --axon.port 8091 --axon.external_ip "$EXTERNAL_IP" --logging.info
 ```
 
+On mainnet before the weight cutover, append `--neuron.disable_set_weights`
+and keep your existing weight setter running on the same hotkey; see
+[the mainnet guide](../running_on_mainnet.md#weights-and-abstention).
+
 Check `docker logs endure-validator` and
 `curl --fail http://127.0.0.1:8714/health`. Publish the axon port as required by
 Bittensor; the read API is bound to localhost in this example. See

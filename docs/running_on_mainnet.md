@@ -79,3 +79,19 @@ positive score; otherwise it abstains and leaves previously submitted on-chain
 weights untouched ([validating.md](validating.md)). Resolution runs against
 the configured `MARKET_DATA_ENDPOINT`, which defaults to the mainnet archive
 node.
+
+Untouched weights still expire. Once a validator's last weight update is older
+than the subnet's `activity_cutoff` hyperparameter (5000 blocks, about 16.7
+hours, on SN30 at the time of writing), Yuma consensus stops counting its
+stake and its dividends decay. A validator's first positive score arrives five
+days after the reveal window of the first round in which it accepts a
+submission, so a new Endure validator abstains for at least that long, and
+indefinitely while no miner submits to it. Verify `activity_cutoff` with
+`btcli` before relying on these numbers.
+
+Until Endure announces the mainnet weight cutover, keep your existing SN30
+weight setter running on the validator hotkey and add
+`--neuron.disable_set_weights` to the Endure validator command, so exactly one
+process writes weights for that hotkey. Two weight writers on one hotkey
+overwrite each other. Remove the flag and stop the other setter only at the
+cutover.
