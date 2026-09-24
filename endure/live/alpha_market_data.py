@@ -47,6 +47,7 @@ from endure.scoring.market_sampling import (
     canonical_snapshot_blocks,
     first_block_at_or_after,
     last_block_at_or_before,
+    retry_exhausted_failure,
     snapshot_failure_is_outage,
 )
 from endure.scoring.risk.observables import BLOCK_SECONDS
@@ -718,10 +719,9 @@ class LiveAlphaPriceProvider:
                 # after max_attempts so a pruned node is refused promptly.
                 probing = self._probing and not _is_missing_history(error)
                 if not probing and attempt >= self._config.max_attempts:
-                    message = f"archive request failed: {safe_error(error)}"
-                    if isinstance(error, LookupError):
-                        raise LookupError(message) from None
-                    raise ConnectionError(message) from None
+                    raise retry_exhausted_failure(
+                        error, f"archive request failed: {safe_error(error)}"
+                    ) from None
                 backoff = self._config.request_pause_seconds * (
                     Decimal(2) ** (attempt - 1)
                 )

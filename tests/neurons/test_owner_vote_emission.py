@@ -182,6 +182,7 @@ def replay_validator(
     validator._owner_vote_recipient = None
     validator._emission_block = None
     validator._emission_block_since_block = None
+    validator._emission_block_seen_block = None
     validator._durable_scores_loaded = True
     validator._weight_emission_startup_fence_block = None
     validator._consecutive_provider_throttles = 0
@@ -747,3 +748,57 @@ def test_unreadable_durable_scores_defer_instead_of_emitting(
 
     assert chain.submissions == []
     assert validator._emission_reason == "score_state_unavailable"
+    assert validator._observed_emission_mode() == "abstain"
+    # Persisting across two epochs of attempts escalates like any other block.
+    assert not validator._emission_block_degraded()
+    chain.block += 2 * int(validator.config.neuron.epoch_length)
+    validator.set_weights()
+    assert validator._emission_block_degraded()
+
+
+def test_failed_resync_rebuild_never_reports_owner_vote(
+    storage: Storage,
+    mock_validator_config: bt.Config,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    chain = ReplayChain(storage)
+    record_resolved_scores(storage, chain)
+    validator = replay_validator(storage, mock_validator_config, chain)
+    monkeypatch.setattr(
+        BaseValidatorNeuron,
+        "resync_metagraph",
+        lambda self: _reregister_scored_miners(self, chain),
+    )
+
+    def unreadable() -> dict[str, Decimal]:
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(
+        validator,
+        "_vertical_runtime",
+        SimpleNamespace(
+            round_program=SimpleNamespace(weights=unreadable, blended_scores=dict)
+        ),
+    )
+    validator.resync_metagraph()
+
+    # The aligned vector is all zero, but durable positive EMAs exist.
+    assert not any(validator.scores)
+    assert validator._observed_emission_mode() == "abstain"
+    assert validator._emission_reason == "score_state_unavailable"
+
+
+def test_scored_weight_never_follows_a_uid_reregistered_on_chain(
+    storage: Storage, mock_validator_config: bt.Config
+) -> None:
+    chain = ReplayChain(storage)
+    record_resolved_scores(storage, chain)
+    validator = replay_validator(storage, mock_validator_config, chain)
+    advance_past_startup_fence(validator, chain)
+    # UID 1 changed hands on chain; the local metagraph has not resynced yet.
+    chain.hotkeys[1] = "new-registrant"
+
+    validator.set_weights()
+
+    assert chain.submissions == []
+    assert validator._emission_reason == "chain_snapshot_inconsistent"

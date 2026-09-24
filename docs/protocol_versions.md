@@ -179,7 +179,8 @@ axon admission (registered hotkey and stake floor, in
 [admission.py](../endure/protocol/admission.py)), deregistration confirmation
 over `DEREGISTRATION_CONFIRMATION_SYNCS = 2` metagraph resyncs (in
 [consensus_policy.py](../endure/protocol/consensus_policy.py), tracked by
-[eligibility.py](../endure/scoring/eligibility.py)), the complete Decimal
+[eligibility.py](../endure/scoring/eligibility.py), which also selects each
+tick's scoring set of expected miners and archived hotkeys), the complete Decimal
 score-to-u16 composition (abstain on no positive score, chain limits, u16
 encoding, in [weight_processing.py](../endure/scoring/weight_processing.py)),
 emission planning from one chain snapshot and its pre-submission recheck (in

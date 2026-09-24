@@ -125,16 +125,19 @@ PREVIOUS_VERSION_DIGEST = (
 # must deploy together. This shared release key clears the SN30 chain floor.
 # Includes the 15-netuid mainnet universe refresh; mainnet serving opens
 # behind the explicit --endure.serving_stage mainnet acknowledgement.
-# 2042: release-pinned mainnet admission, atomic reveal/snapshot closure and
-# immutable empty snapshots. Watched decisions: storage admission/selection;
-# miner axon admission; deregistration confirmation; genesis-based chain
-# classification, mainnet-policy applicability and the owner-vote network;
-# emission planning from one chain snapshot (identity, permit, strict rate
-# limit, on-chain SubnetOwnerHotkey recipient pinned to the SN30 owner on
-# mainnet) and its pre-submission recheck; the score-to-u16 composition; and
-# Alpha market-data sampling (canonical blocks, boundary searches, gap policy).
-# Unwatched runtime code performs the I/O (RPC reads, durable emission, CLI
-# plumbing) and non-consensus health reporting.
+# 2042: release-pinned mainnet admission (including axon-off emission),
+# atomic reveal/snapshot closure and immutable empty snapshots. Watched
+# decisions: storage admission/selection; miner axon admission; the scoring set
+# (expected miners, archival) and deregistration confirmation; genesis-based
+# chain classification, mainnet-policy applicability and the owner-vote
+# network; emission planning from one chain snapshot (identity, permit, strict
+# rate limit, scored UIDs matching the snapshot, the on-chain SubnetOwnerHotkey
+# recipient pinned to the SN30 owner on mainnet) and its pre-submission
+# recheck; the score-to-u16 composition; and Alpha market-data sampling
+# (canonical blocks, boundary searches, gap policy, archive failure
+# classification). Unwatched runtime code performs RPC/SQLite I/O, CLI
+# plumbing, process lifecycle and health reporting (non-consensus severity and
+# the startup-probe retry schedule).
 CURRENT_VERSION_KEY = 2042
 CURRENT_VERSION_DIGEST = (
     "d034606a8c26b9bf1a30a2f9d849f46f4b7807c48140cad6b2aa6f67f92ee273"

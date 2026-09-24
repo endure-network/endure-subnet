@@ -10,6 +10,7 @@ deregistration confirmation (fairness-deltas spec §1 decision 3).
 from __future__ import annotations
 
 from collections.abc import Callable, Collection, Iterable
+from dataclasses import dataclass
 
 from endure.protocol.consensus_policy import DEREGISTRATION_CONFIRMATION_SYNCS
 
@@ -68,3 +69,23 @@ class DeregistrationTracker:
         for hotkey in self.confirmed():
             if hotkey not in active_hotkeys and not has_unfinished_submission(hotkey):
                 self._missing_counts.pop(hotkey, None)
+
+
+@dataclass(frozen=True, slots=True)
+class ScoringSet:
+    """Who owes observations this tick, and whose EMA state is archived."""
+
+    expected_miners: tuple[str, ...]
+    archive_hotkeys: tuple[str, ...]
+
+
+def scoring_set(
+    registered_hotkeys: Iterable[str], tracker: DeregistrationTracker
+) -> ScoringSet:
+    """Every currently registered hotkey is expected; confirmed deregistrations
+    are archived. Historical eligibility (no absence before a hotkey's first
+    accepted reveal) is applied by the watched repository."""
+    return ScoringSet(
+        expected_miners=tuple(registered_hotkeys),
+        archive_hotkeys=tuple(tracker.confirmed()),
+    )

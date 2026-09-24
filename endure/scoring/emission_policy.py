@@ -37,6 +37,7 @@ EmissionBlockReason = Literal[
     "chain_snapshot_inconsistent",
     "validator_identity_invalid",
     "owner_vote_vector_invalid",
+    "score_state_unavailable",
 ]
 
 
@@ -106,6 +107,20 @@ def plan_emission(  # noqa: PLR0913 — one snapshot plus the attempt's identity
         )
     recipient: OwnerVoteRecipient | None = None
     weights = tuple(scores)
+    if mode == "scored":
+        # Earned weight follows a hotkey, never a UID: a slot re-registered on
+        # chain but not yet in the local metagraph must not receive it.
+        for uid, score in enumerate(scores):
+            if score > 0 and (
+                uid >= len(local_hotkeys)
+                or uid >= len(snapshot.hotkeys)
+                or local_hotkeys[uid] != snapshot.hotkeys[uid]
+            ):
+                raise EmissionBlocked(
+                    "chain_snapshot_inconsistent",
+                    "A scored UID's hotkey differs between the local metagraph "
+                    "and the chain snapshot",
+                )
     if mode == "owner_vote":
         if network is None:
             raise EmissionBlocked(

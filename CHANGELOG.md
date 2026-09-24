@@ -40,8 +40,9 @@ key-2041 images and chain parameters are not changed by this source update.
   owner hotkey, and refuses a testnet owner vote on the mainnet genesis. Unsafe
   chain or owner state abstains with a distinct `emission_reason` and
   `emission_blocked_reason` and retries each epoch; owner mismatch/unregistered
-  and chain-pin failures degrade `/health` immediately, snapshot and validator
-  identity inconsistencies after 2 epochs, because last weights age toward
+  and chain-pin failures degrade `/health` immediately; snapshot, validator
+  identity and unreadable-score-state blocks after 2 epochs of re-observation,
+  because last weights age toward
   SN30's 5000-block `activity_cutoff`. This is a fallback allocation, not earned
   reputation or evidence of model accuracy; no synthetic scores/EMAs or
   earned-score audit provenance are created. Mock and local chains keep
@@ -58,8 +59,10 @@ key-2041 images and chain parameters are not changed by this source update.
   retained history decision. Scores are rebuilt from durable EMAs at startup,
   after every metagraph resync, and at the start of every weight attempt, so a
   re-registered miner keeps its earned weight and a running validator agrees
-  with a restarted one; unreadable score state defers with
-  `score_state_unavailable`. A failed scoring tick keeps the previous vector,
+  with a restarted one; unreadable score state abstains as a
+  `score_state_unavailable` block and never reports `owner_vote`. Scored mode
+  refuses to send a UID's earned weight when its hotkey changed on chain but
+  not yet locally (`chain_snapshot_inconsistent`). A failed scoring tick keeps the previous vector,
   so neither reads as zero scores; a consistent SQLite backup reproduces its
   own scoring state. Never copy testnet state into mainnet.
 - Mark open weight batches from a previous validator identity `unconfirmed`

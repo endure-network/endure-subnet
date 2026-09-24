@@ -167,11 +167,13 @@ validator abstains without submitting: `emission_mode=abstain`,
 | `owner_hotkey_mismatch` | mainnet subnet owner is not the pinned hotkey | 503 immediately |
 | `owner_unregistered` | the subnet owner hotkey holds no UID | 503 immediately |
 | `owner_snapshot_inconsistent` | snapshot has no owner hotkey, owner at more than one UID, or local metagraph disagreeing with the chain UID | 503 after 2 epochs (200 blocks) |
-| `chain_snapshot_inconsistent` | no or stale chain snapshot, or incoherent rate data | 503 after 2 epochs (200 blocks) |
+| `chain_snapshot_inconsistent` | no or stale chain snapshot, incoherent rate data, or a scored UID whose hotkey differs between the local metagraph and the chain snapshot (the earned weight is never sent to the new registrant) | 503 after 2 epochs (200 blocks) |
 | `validator_identity_invalid` | the validator's own UID/hotkey is not valid in the snapshot | 503 after 2 epochs (200 blocks) |
+| `score_state_unavailable` | durable score state (EMAs) cannot be read, at an attempt or after a resync; no owner vote and no stale weights | 503 after 2 epochs (200 blocks) |
 
 Blocks are retried each epoch and clear automatically once chain state is safe
-again. While blocked, the validator's last weights age toward SN30's
+again. The 2-epoch escalation counts re-observations: a condition that clears
+before the next attempt re-observes it never pages. While blocked, the validator's last weights age toward SN30's
 `activity_cutoff` of 5000 blocks (~16.7 h), and an owner-hotkey rotation would
 block every key-`2042` validator at once, so these must page an operator.
 Container healthchecks use `/live`, so a 503 on `/health` pages without restart
@@ -195,8 +197,9 @@ failed scoring tick keeps the previous vector, so neither a restart nor a tick
 failure reads as zero scores: a validator restarted while scored resumes
 earned weights with no owner-vote flicker, a running validator agrees with a
 restarted one, and a miner that re-registered at a new UID keeps its earned
-weight. If the durable score state cannot be read, the attempt defers with
-`emission_reason=score_state_unavailable`: no owner vote and no stale weights.
+weight. If the durable score state cannot be read, emission abstains with the
+`score_state_unavailable` block above: no owner vote, no stale weights, and
+`/health` never claims `owner_vote` from a stale zeroed vector.
 Open weight batches recorded under a previous validator identity, for example
 after re-registration at a new UID or hotkey, are marked `unconfirmed` once
 their deadlines pass, so they no longer hold emission on

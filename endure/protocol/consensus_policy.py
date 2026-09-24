@@ -34,14 +34,20 @@ SN30_NETUID: Final = 30
 SN30_OWNER_HOTKEY: Final = "5HW12NvEZoGz8ZzcWMh4xyDUy6H1Af85m5LB8V1L11erK1S1"
 
 
-def require_canonical_mainnet_policy(
+def require_canonical_mainnet_policy(  # noqa: PLR0913 — every pinned setting
     *,
     min_miner_stake: Decimal,
     max_commits_per_round: int,
     max_reveals_per_round: int,
     epoch_length: int,
+    axon_off: bool,
+    disable_set_weights: bool,
 ) -> None:
-    """Reject effective overrides instead of silently changing admission."""
+    """Reject effective overrides instead of silently changing admission.
+
+    An emitting mainnet validator must serve its axon: without it, it scores
+    every miner absent while still setting weights.
+    """
     for option, actual, canonical in (
         ("endure.min_miner_stake", min_miner_stake, MIN_MINER_STAKE),
         ("endure.max_commits_per_round", max_commits_per_round, MAX_COMMITS_PER_ROUND),
@@ -52,6 +58,10 @@ def require_canonical_mainnet_policy(
             raise RuntimeError(
                 f"--{option} must be {canonical} under the mainnet consensus policy"
             )
+    if axon_off and not disable_set_weights:
+        raise RuntimeError(
+            "--neuron.axon_off on mainnet requires --neuron.disable_set_weights"
+        )
 
 
 # Chain classification decides who runs mainnet policy and who emits the owner

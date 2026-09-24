@@ -183,8 +183,10 @@ Unsafe chain or owner state also abstains: `emission_mode=abstain`,
 set to the block reason. `owner_hotkey_mismatch`, `owner_unregistered`, and
 `owner_vote_chain_mismatch` degrade `/health` (503) immediately;
 `owner_snapshot_inconsistent`, `chain_snapshot_inconsistent` (no or stale chain
-snapshot, or incoherent rate data), and `validator_identity_invalid` degrade it
-once they persist 2 epochs (200 blocks). Blocks are retried each epoch and clear
+snapshot, incoherent rate data, or a scored UID whose hotkey changed on chain),
+`validator_identity_invalid`, and `score_state_unavailable` degrade it once
+they have been re-observed for 2 epochs (200 blocks); a condition that clears
+before the next attempt never pages. Blocks are retried each epoch and clear
 automatically when chain state is safe. While blocked, the last weights age
 toward SN30's `activity_cutoff` of 5000 blocks (~16.7 h), and an owner-hotkey
 rotation would block every key-`2042` validator at once, so page on these.
@@ -206,8 +208,9 @@ metagraph resync, and at the start of every weight attempt, and a failed scoring
 tick keeps the previous vector, so a restart while scored resumes earned
 weights, a running validator agrees with a restarted one, and a miner that
 re-registered at a new UID keeps its earned weight. If durable score state
-cannot be read, the attempt defers with `score_state_unavailable` (no owner
-vote, no stale weights). Open weight batches recorded under a previous
+cannot be read, emission abstains with the `score_state_unavailable` block (no
+owner vote, no stale weights, and `/health` never reports `owner_vote` from a
+stale zeroed vector). Open weight batches recorded under a previous
 validator identity are marked `unconfirmed` once their deadlines pass, so they
 no longer hold emission on `confirmation_pending`.
 

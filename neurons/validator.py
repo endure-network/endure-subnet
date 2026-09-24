@@ -73,7 +73,7 @@ from endure.protocol.vertical import AssessmentRoundProgram, VerticalRuntime
 from endure.runtime.identity import runtime_identity
 from endure.runtime.resolve import resolve_runtime_provider
 from endure.scoring.assessment_orchestrator import ResolutionBudget
-from endure.scoring.eligibility import DeregistrationTracker
+from endure.scoring.eligibility import DeregistrationTracker, scoring_set
 from endure.scoring.emission_policy import (
     ChainSnapshot,
     EmissionBlocked,
@@ -239,6 +239,7 @@ class Validator(BaseValidatorNeuron):
         self._owner_vote_recipient: OwnerVoteRecipient | None = None
         self._emission_block: EmissionBlockReason | None = None
         self._emission_block_since_block: int | None = None
+        self._emission_block_seen_block: int | None = None
         self._emission_mode = (
             "disabled" if self.config.neuron.disable_set_weights else "abstain"
         )
@@ -343,7 +344,7 @@ class Validator(BaseValidatorNeuron):
             or fallback_overdue
             or unknown_block_open
             or submission_overdue
-            or self._emission_block_degraded(current_block)
+            or self._emission_block_degraded()
         )
         long_op_started = getattr(self, "_long_op_started_monotonic", None)
         return {
@@ -663,18 +664,21 @@ class Validator(BaseValidatorNeuron):
             self._emission_blocked_reason = None
         self._set_emission_observation(mode, reason)
 
-    def _emission_block_degraded(self, current_block: int | None) -> bool:
+    def _emission_block_degraded(self) -> bool:
         """Blocked emission lets weights age toward activity_cutoff; page early."""
         block = getattr(self, "_emission_block", None)
         if block is None or self.config.neuron.disable_set_weights:
             return False
         if block in _IMMEDIATE_EMISSION_BLOCKS:
             return True
+        # Transient reasons page only once the condition has been re-observed
+        # for two epochs; a stale first observation alone never pages.
         since = getattr(self, "_emission_block_since_block", None)
+        seen = getattr(self, "_emission_block_seen_block", None)
         return (
             since is not None
-            and current_block is not None
-            and current_block - since
+            and seen is not None
+            and seen - since
             >= _TRANSIENT_EMISSION_BLOCK_EPOCHS * int(self.config.neuron.epoch_length)
         )
 
@@ -793,7 +797,6 @@ class Validator(BaseValidatorNeuron):
             self._defer_emission("disabled")
             return
         if not self._refresh_scores_from_durable_state():
-            self._defer_emission("score_state_unavailable")
             return
         network = owner_vote_network(self.config)
         mode = select_emission_mode(self.scores, owner_vote_network=network)
@@ -831,17 +834,33 @@ class Validator(BaseValidatorNeuron):
         try:
             self._reconstruct_scores()
         except Exception as error:  # noqa: BLE001 — never emit from stale state
-            bt.logging.warning(
-                f"durable score state unavailable; deferring emission: "
-                f"{safe_error(error)}"
+            # A zeroed or stale vector must not read as owner_vote or scored;
+            # abstain visibly and escalate like any other persistent block.
+            self._block_emission(
+                EmissionBlocked(
+                    "score_state_unavailable",
+                    f"durable score state unavailable: {safe_error(error)}",
+                ),
+                self._chain_block_hint(),
             )
             return False
+        if getattr(self, "_emission_block", None) == "score_state_unavailable":
+            self._clear_emission_block()
         return True
 
-    def _block_emission(self, blocked: EmissionBlocked, block: int) -> None:
+    def _chain_block_hint(self) -> int | None:
+        block = self._safe_block()
+        if block is None:
+            block = _cached_block_number(vars(self.metagraph).get("block"))
+        return block
+
+    def _block_emission(self, blocked: EmissionBlocked, block: int | None) -> None:
         bt.logging.warning(f"weight emission abstains: {blocked.reason}: {blocked}")
         if getattr(self, "_emission_block", None) != blocked.reason:
             self._emission_block_since_block = block
+        # Severity is timed across observations: a condition that clears
+        # between attempts is never re-observed and never pages.
+        self._emission_block_seen_block = block
         self._emission_block = blocked.reason
         self._emission_blocked_reason = blocked.reason
         self._defer_emission(blocked.reason)
@@ -849,6 +868,7 @@ class Validator(BaseValidatorNeuron):
     def _clear_emission_block(self) -> None:
         self._emission_block = None
         self._emission_block_since_block = None
+        self._emission_block_seen_block = None
 
     def _weight_emission_ready(self, storage: Storage | None) -> bool:
         """Keep startup fencing and durable single-flight common to both modes."""
@@ -1310,10 +1330,13 @@ class Validator(BaseValidatorNeuron):
         """One round-service tick; updates scores when new resolutions land."""
         self._begin_long_op()
         try:
+            selected = scoring_set(
+                self.metagraph.hotkeys, self._deregistration_tracker()
+            )
             weights = await asyncio.to_thread(
                 self._service.tick,
-                expected_miners=list(self.metagraph.hotkeys),
-                archive_hotkeys=self._deregistration_tracker().confirmed(),
+                expected_miners=list(selected.expected_miners),
+                archive_hotkeys=list(selected.archive_hotkeys),
             )
             if weights is not None:
                 self._blended_snapshot = self._service.blended_snapshot()

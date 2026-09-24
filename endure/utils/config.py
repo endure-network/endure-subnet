@@ -154,11 +154,9 @@ def require_mainnet_validator_policy(config: "bt.Config") -> None:
         max_commits_per_round=int(config.endure.max_commits_per_round),
         max_reveals_per_round=int(config.endure.max_reveals_per_round),
         epoch_length=int(config.neuron.epoch_length),
+        axon_off=bool(config.neuron.axon_off),
+        disable_set_weights=bool(config.neuron.disable_set_weights),
     )
-    if config.neuron.axon_off and not config.neuron.disable_set_weights:
-        raise RuntimeError(
-            "--neuron.axon_off on mainnet requires --neuron.disable_set_weights"
-        )
 
 
 def requires_serving_stage_gate(

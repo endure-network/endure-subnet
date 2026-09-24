@@ -360,3 +360,34 @@ def test_missing_or_stale_snapshot_blocks_either_mode(
             scores=[Decimal(1)],
         )
     assert blocked.value.reason == "chain_snapshot_inconsistent"
+
+
+def test_scored_mode_refuses_a_scored_uid_that_changed_hands_on_chain() -> None:
+    snapshot = ChainSnapshot(
+        block=1000,
+        hotkeys=["validator", "new-registrant", "miner-2"],
+        owner_hotkey=SN30_OWNER_HOTKEY,
+        validator_permit=[True, False, False],
+        last_update=[0, 0, 0],
+        weights_rate_limit=180,
+    )
+
+    def plan(scores: list[Decimal]) -> None:
+        plan_emission(
+            mode="scored",
+            network="mainnet",
+            snapshot=snapshot,
+            block=1000,
+            chain_identity=MAINNET_GENESIS_HASH,
+            netuid=SN30_NETUID,
+            validator_uid=0,
+            validator_hotkey="validator",
+            local_hotkeys=["validator", "miner-1", "miner-2"],
+            scores=scores,
+        )
+
+    # A zero score on the changed UID sends it nothing and is fine.
+    plan([Decimal(0), Decimal(0), Decimal("0.5")])
+    with pytest.raises(EmissionBlocked) as blocked:
+        plan([Decimal(0), Decimal("0.5"), Decimal("0.5")])
+    assert blocked.value.reason == "chain_snapshot_inconsistent"

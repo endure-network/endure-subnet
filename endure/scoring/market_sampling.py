@@ -55,6 +55,19 @@ SNAPSHOT_FETCH_FAILURES: Final = (
 )
 
 
+def retry_exhausted_failure(error: BaseException, message: str) -> Exception:
+    """The failure an archive read raises once its attempts are exhausted.
+
+    Missing data (``LookupError``, e.g. an archive that returns no value) stays
+    a definitive gap; every other failure becomes an outage
+    (``ConnectionError``). ``snapshot_failure_is_outage`` then decides whether
+    the sample is skipped or the series is voided.
+    """
+    if isinstance(error, LookupError):
+        return LookupError(message)
+    return ConnectionError(message)
+
+
 def snapshot_failure_is_outage(error: BaseException) -> bool:
     """Outage voids and defers the series; otherwise it is a definitive gap.
 

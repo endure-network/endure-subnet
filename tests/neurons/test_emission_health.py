@@ -72,6 +72,7 @@ def validator(mock_validator_config: bt.Config, storage: Storage) -> Validator:
     result._durable_scores_loaded = True
     result._emission_block = None
     result._emission_block_since_block = None
+    result._emission_block_seen_block = None
     return result
 
 
@@ -215,6 +216,7 @@ def test_modes_follow_scores_owner_vote_and_explicit_off(
         ("owner_snapshot_inconsistent", 1200),
         ("chain_snapshot_inconsistent", 1200),
         ("validator_identity_invalid", 1200),
+        ("score_state_unavailable", 1200),
     ],
 )
 def test_blocked_emission_abstains_and_degrades_by_severity(
@@ -230,10 +232,11 @@ def test_blocked_emission_abstains_and_degrades_by_severity(
         "wss://entrypoint-finney.opentensor.ai:443"
     )
     validator.scores = [Decimal(0)]
-    validator._block_emission(EmissionBlocked(reason, "unsafe chain state"), 1000)
     validator._mark_tick_progress()
 
+    # Each paced attempt re-observes the same unsafe state.
     for block in (1000, 1199, 1200):
+        validator._block_emission(EmissionBlocked(reason, "unsafe chain state"), block)
         validator.metagraph.block = block
         response = _client(validator).get("/health")
         runtime = response.json()["runtime"]
@@ -242,6 +245,26 @@ def test_blocked_emission_abstains_and_degrades_by_severity(
         assert runtime["emission_blocked_reason"] == reason
         assert runtime["emission_expected"] is False
         assert response.status_code == (503 if block >= degraded_at_block else 200)
+
+
+def test_a_transient_block_that_is_not_reobserved_never_pages(
+    validator: Validator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("neurons.validator.time.monotonic", lambda: 10000.0)
+    validator.scores = [Decimal(0)]
+    validator._mark_tick_progress()
+    validator._block_emission(
+        EmissionBlocked("chain_snapshot_inconsistent", "stale snapshot"), 1000
+    )
+
+    # The condition cleared on chain; no later attempt has observed it again.
+    validator.metagraph.block = 1300
+    response = _client(validator).get("/health")
+
+    assert response.status_code == 200
+    assert response.json()["runtime"]["emission_blocked_reason"] == (
+        "chain_snapshot_inconsistent"
+    )
 
 
 def test_confirmation_deadline_still_degrades_while_emission_is_disabled(
