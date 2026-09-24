@@ -16,7 +16,15 @@ import time
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
-from typing import TYPE_CHECKING, Final, Literal, Protocol, Tuple, runtime_checkable
+from typing import (
+    TYPE_CHECKING,
+    ClassVar,
+    Final,
+    Literal,
+    Protocol,
+    Tuple,
+    runtime_checkable,
+)
 
 import bittensor as bt
 
@@ -172,6 +180,9 @@ def _require_hotkey(config: bt.Config) -> None:
 class Validator(BaseValidatorNeuron):
     """Schema-routed validator round loop."""
 
+    # Emission health bookkeeping is shared by the run loop and the API thread.
+    _emission_state_lock: ClassVar[threading.RLock] = threading.RLock()
+
     def __init__(self, config: bt.Config | None = None) -> None:
         resolved_config = copy.deepcopy(config or type(self).build_config())
         # Endpoint names cannot identify an operator's own Finney node behind
@@ -280,7 +291,15 @@ class Validator(BaseValidatorNeuron):
     def runtime_health(self) -> RuntimeHealth:
         """Stuck-loop observability, merged into /health. Tick fields are the
         validator's; universe-fetch fields come from the round service (a
-        failed open is swallowed there but must still surface as degraded)."""
+        failed open is swallowed there but must still surface as degraded).
+
+        The API thread and the run loop both touch emission bookkeeping; one
+        lock gives every response a consistent emission snapshot.
+        """
+        with self._emission_state_lock:
+            return self._runtime_health_snapshot()
+
+    def _runtime_health_snapshot(self) -> RuntimeHealth:
         gate = self.rpc_gate.snapshot()
         storage = getattr(self, "_storage", None)
         metagraph_block = vars(self.metagraph).get("block")
@@ -646,23 +665,25 @@ class Validator(BaseValidatorNeuron):
         return mode
 
     def _set_emission_observation(self, mode: str, reason: str) -> None:
-        if (mode, reason) != (
-            getattr(self, "_emission_mode", None),
-            getattr(self, "_emission_reason", None),
-        ):
-            bt.logging.info(f"weight emission mode={mode} reason={reason}")
-        self._emission_mode = mode
-        self._emission_reason = reason
+        with self._emission_state_lock:
+            if (mode, reason) != (
+                getattr(self, "_emission_mode", None),
+                getattr(self, "_emission_reason", None),
+            ):
+                bt.logging.info(f"weight emission mode={mode} reason={reason}")
+            self._emission_mode = mode
+            self._emission_reason = reason
 
     def _defer_emission(self, reason: str) -> None:
-        self._emission_expected_since = None
-        self._emission_deadline = None
-        mode = self._observed_emission_mode()
-        if mode == "disabled" or (
-            mode == "abstain" and getattr(self, "_emission_block", None) is None
-        ):
-            self._emission_blocked_reason = None
-        self._set_emission_observation(mode, reason)
+        with self._emission_state_lock:
+            self._emission_expected_since = None
+            self._emission_deadline = None
+            mode = self._observed_emission_mode()
+            if mode == "disabled" or (
+                mode == "abstain" and getattr(self, "_emission_block", None) is None
+            ):
+                self._emission_blocked_reason = None
+            self._set_emission_observation(mode, reason)
 
     def _emission_block_degraded(self) -> bool:
         """Blocked emission lets weights age toward activity_cutoff; page early."""
@@ -685,34 +706,35 @@ class Validator(BaseValidatorNeuron):
     def _refresh_emission_health(
         self, current_block: int | None, *, open_confirmation: bool
     ) -> None:
-        mode = self._observed_emission_mode()
-        if mode != getattr(self, "_emission_mode", None):
-            self._emission_blocked_reason = None
-            self._emission_expected_since = None
-            self._emission_deadline = None
-        self._emission_next_eligible_block = None
-        reason = self._emission_wait_reason(mode, current_block, open_confirmation)
-        if reason is not None:
-            self._defer_emission(reason)
-            return
-        now = time.monotonic()
-        if getattr(self, "_emission_expected_since", None) is None:
-            self._emission_expected_since = now
-            self._emission_deadline = max(
-                now + int(self.config.endure.health_tick_max_duration_seconds),
-                self._started_monotonic
-                + int(self.config.endure.health_startup_grace_seconds),
+        with self._emission_state_lock:
+            mode = self._observed_emission_mode()
+            if mode != getattr(self, "_emission_mode", None):
+                self._emission_blocked_reason = None
+                self._emission_expected_since = None
+                self._emission_deadline = None
+            self._emission_next_eligible_block = None
+            reason = self._emission_wait_reason(mode, current_block, open_confirmation)
+            if reason is not None:
+                self._defer_emission(reason)
+                return
+            now = time.monotonic()
+            if getattr(self, "_emission_expected_since", None) is None:
+                self._emission_expected_since = now
+                self._emission_deadline = max(
+                    now + int(self.config.endure.health_tick_max_duration_seconds),
+                    self._started_monotonic
+                    + int(self.config.endure.health_startup_grace_seconds),
+                )
+            reason = getattr(self, "_emission_blocked_reason", None) or (
+                "ready" if self.rpc_gate.ready() else "rpc_deferred"
             )
-        reason = getattr(self, "_emission_blocked_reason", None) or (
-            "ready" if self.rpc_gate.ready() else "rpc_deferred"
-        )
-        if (
-            reason == "ready"
-            and self._emission_deadline is not None
-            and now > self._emission_deadline
-        ):
-            reason = "submission_overdue"
-        self._set_emission_observation(mode, reason)
+            if (
+                reason == "ready"
+                and self._emission_deadline is not None
+                and now > self._emission_deadline
+            ):
+                reason = "submission_overdue"
+            self._set_emission_observation(mode, reason)
 
     def _emission_wait_reason(  # noqa: PLR0911 — explicit, ordered eligibility gates.
         self, mode: str, block: int | None, open_confirmation: bool
@@ -814,7 +836,8 @@ class Validator(BaseValidatorNeuron):
         plan = self._plan_emission(mode, network)
         if plan is None:
             return
-        self._emission_blocked_reason = None
+        with self._emission_state_lock:
+            self._emission_blocked_reason = None
         self._owner_vote_recipient = plan.recipient
         try:
             self._emit_weight_candidate(plan.weights)
@@ -823,10 +846,11 @@ class Validator(BaseValidatorNeuron):
             # already counted the failed attempt. Returning lets sync() advance
             # the attempt block, so the retry waits for the next epoch.
             bt.logging.warning(f"weight emission refused: {blocked.reason}: {blocked}")
-            self._emission_blocked_reason = blocked.reason
-            self._set_emission_observation(
-                self._observed_emission_mode(), blocked.reason
-            )
+            with self._emission_state_lock:
+                self._emission_blocked_reason = blocked.reason
+                self._set_emission_observation(
+                    self._observed_emission_mode(), blocked.reason
+                )
         finally:
             self._owner_vote_recipient = None
 
@@ -856,19 +880,24 @@ class Validator(BaseValidatorNeuron):
 
     def _block_emission(self, blocked: EmissionBlocked, block: int | None) -> None:
         bt.logging.warning(f"weight emission abstains: {blocked.reason}: {blocked}")
-        if getattr(self, "_emission_block", None) != blocked.reason:
-            self._emission_block_since_block = block
-        # Severity is timed across observations: a condition that clears
-        # between attempts is never re-observed and never pages.
-        self._emission_block_seen_block = block
-        self._emission_block = blocked.reason
-        self._emission_blocked_reason = blocked.reason
-        self._defer_emission(blocked.reason)
+        with self._emission_state_lock:
+            # One clock per continuous blocked streak, whatever the reason: a
+            # reason flapping between snapshot faults must still page. Severity
+            # is timed across observations, so a condition that clears before
+            # the next attempt is never re-observed and never pages.
+            if getattr(self, "_emission_block_since_block", None) is None:
+                self._emission_block_since_block = block
+            self._emission_block_seen_block = block
+            self._emission_block = blocked.reason
+            self._emission_blocked_reason = blocked.reason
+            self._defer_emission(blocked.reason)
 
     def _clear_emission_block(self) -> None:
-        self._emission_block = None
-        self._emission_block_since_block = None
-        self._emission_block_seen_block = None
+        """End the blocked streak: the condition resolved at an attempt/resync."""
+        with self._emission_state_lock:
+            self._emission_block = None
+            self._emission_block_since_block = None
+            self._emission_block_seen_block = None
 
     def _weight_emission_ready(self, storage: Storage | None) -> bool:
         """Keep startup fencing and durable single-flight common to both modes."""
@@ -956,10 +985,11 @@ class Validator(BaseValidatorNeuron):
         except EmissionBlocked as blocked:
             self._block_emission(blocked, block)
             return None
-        self._clear_emission_block()
-        self._emission_chain_due_block = plan.next_eligible_block
-        self._emission_snapshot_permit = plan.permit
-        self._emission_snapshot_block = block
+        with self._emission_state_lock:
+            self._clear_emission_block()
+            self._emission_chain_due_block = plan.next_eligible_block
+            self._emission_snapshot_permit = plan.permit
+            self._emission_snapshot_block = block
         if not plan.due:
             self._defer_emission(
                 "no_validator_permit" if not plan.permit else "chain_rate_limit"
@@ -1068,11 +1098,13 @@ class Validator(BaseValidatorNeuron):
         if attempt.status == "submitted":
             self._defer_emission("confirmation_pending")
         else:
-            reason = (
-                getattr(self, "_emission_blocked_reason", None) or "submission_failed"
-            )
-            self._emission_blocked_reason = reason
-            self._set_emission_observation(self._observed_emission_mode(), reason)
+            with self._emission_state_lock:
+                reason = (
+                    getattr(self, "_emission_blocked_reason", None)
+                    or "submission_failed"
+                )
+                self._emission_blocked_reason = reason
+                self._set_emission_observation(self._observed_emission_mode(), reason)
         storage = getattr(self, "_storage", None)
         if storage is None:
             return
@@ -1227,8 +1259,9 @@ class Validator(BaseValidatorNeuron):
             return
         self._consecutive_set_weights_failures = 0
         self._last_set_weights_ok = _utc_now().isoformat()
-        self._emission_blocked_reason = None
-        self._defer_emission("confirmed")
+        with self._emission_state_lock:
+            self._emission_blocked_reason = None
+            self._defer_emission("confirmed")
         bt.logging.info(
             f"confirmed {confirmed} weight emission batch(es) "
             f"at finalized block {finalized_block}"

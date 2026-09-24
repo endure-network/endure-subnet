@@ -41,7 +41,8 @@ key-2041 images and chain parameters are not changed by this source update.
   chain or owner state abstains with a distinct `emission_reason` and
   `emission_blocked_reason` and retries each epoch; owner mismatch/unregistered
   and chain-pin failures degrade `/health` immediately; snapshot, validator
-  identity and unreadable-score-state blocks after 2 epochs of re-observation,
+  identity and unreadable-score-state blocks after a continuous blocked streak
+  (across reasons) has been re-observed for 2 epochs,
   because last weights age toward
   SN30's 5000-block `activity_cutoff`. This is a fallback allocation, not earned
   reputation or evidence of model accuracy; no synthetic scores/EMAs or

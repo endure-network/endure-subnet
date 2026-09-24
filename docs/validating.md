@@ -185,8 +185,8 @@ set to the block reason. `owner_hotkey_mismatch`, `owner_unregistered`, and
 `owner_snapshot_inconsistent`, `chain_snapshot_inconsistent` (no or stale chain
 snapshot, incoherent rate data, or a scored UID whose hotkey changed on chain),
 `validator_identity_invalid`, and `score_state_unavailable` degrade it once
-they have been re-observed for 2 epochs (200 blocks); a condition that clears
-before the next attempt never pages. Blocks are retried each epoch and clear
+a continuous blocked streak (across reasons) has been re-observed for 2 epochs
+(200 blocks); a condition that clears before the next attempt never pages. Blocks are retried each epoch and clear
 automatically when chain state is safe. While blocked, the last weights age
 toward SN30's `activity_cutoff` of 5000 blocks (~16.7 h), and an owner-hotkey
 rotation would block every key-`2042` validator at once, so page on these.

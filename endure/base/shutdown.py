@@ -88,7 +88,12 @@ def terminate_process(code: int, *, grace_seconds: float) -> NoReturn:
     timer = threading.Timer(grace_seconds, os._exit, args=(code,))
     timer.daemon = True
     timer.start()
-    atexit._run_exitfuncs()  # noqa: SLF001 — os._exit skips registered drains
+    # os._exit skips registered drains, so run them first. The hook is private
+    # CPython API: if a toolchain drops it, exit without the drain rather than
+    # turning a clean exit into a traceback.
+    run_exitfuncs = getattr(atexit, "_run_exitfuncs", None)
+    if callable(run_exitfuncs):
+        run_exitfuncs()
     for stream in (sys.stdout, sys.stderr):
         try:
             stream.flush()

@@ -172,8 +172,10 @@ validator abstains without submitting: `emission_mode=abstain`,
 | `score_state_unavailable` | durable score state (EMAs) cannot be read, at an attempt or after a resync; no owner vote and no stale weights | 503 after 2 epochs (200 blocks) |
 
 Blocks are retried each epoch and clear automatically once chain state is safe
-again. The 2-epoch escalation counts re-observations: a condition that clears
-before the next attempt re-observes it never pages. While blocked, the validator's last weights age toward SN30's
+again. The 2-epoch escalation runs on one clock per continuous blocked streak,
+across reasons (a fault flapping between snapshot reasons still pages), and
+counts re-observations: a condition that clears before the next attempt
+re-observes it never pages. While blocked, the validator's last weights age toward SN30's
 `activity_cutoff` of 5000 blocks (~16.7 h), and an owner-hotkey rotation would
 block every key-`2042` validator at once, so these must page an operator.
 Container healthchecks use `/live`, so a 503 on `/health` pages without restart

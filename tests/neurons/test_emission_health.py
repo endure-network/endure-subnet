@@ -267,6 +267,36 @@ def test_a_transient_block_that_is_not_reobserved_never_pages(
     )
 
 
+def test_one_clock_covers_a_blocked_streak_across_flapping_reasons(
+    validator: Validator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("neurons.validator.time.monotonic", lambda: 10000.0)
+    validator.scores = [Decimal(0)]
+    validator._mark_tick_progress()
+    reasons: tuple[EmissionBlockReason, ...] = (
+        "owner_snapshot_inconsistent",
+        "chain_snapshot_inconsistent",
+        "owner_snapshot_inconsistent",
+    )
+
+    statuses = []
+    for block, reason in zip((1000, 1100, 1200), reasons, strict=True):
+        validator._block_emission(EmissionBlocked(reason, "flapping"), block)
+        validator.metagraph.block = block
+        statuses.append(_client(validator).get("/health").status_code)
+
+    # Nothing was emitted for two epochs: the streak pages although no single
+    # reason persisted that long.
+    assert statuses == [200, 200, 503]
+    # Resolution ends the streak; a new block starts a fresh clock.
+    validator._clear_emission_block()
+    validator._block_emission(
+        EmissionBlocked("chain_snapshot_inconsistent", "again"), 1300
+    )
+    validator.metagraph.block = 1300
+    assert _client(validator).get("/health").status_code == 200
+
+
 def test_confirmation_deadline_still_degrades_while_emission_is_disabled(
     validator: Validator,
     monkeypatch: pytest.MonkeyPatch,

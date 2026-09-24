@@ -304,3 +304,69 @@ def test_shutdown_signal_during_wedged_construction_exits(
 
     assert process.returncode == 1, "".join(seen) + output
     assert "shutdown requested during startup" in output
+
+
+def _run_wedged_real_construction(tmp_dir: str) -> None:
+    from endure.runtime.live import LiveRuntimeProvider
+    from neurons import validator
+
+    config = _base_config(Path(tmp_dir), ["validator"], runtime_mode="live")
+    config.netuid = 30
+    config.subtensor.network = "test"
+    config.subtensor.chain_endpoint = ""
+    config.endure.active_schema = RISK_SCHEMA_ID
+    config.endure.serving_stage = "testnet"
+
+    def wedged_create_base(_self: object, _config: object) -> Never:
+        # The real Validator() construction path reaches the SDK connect and
+        # never returns; only the startup guard can notice SIGTERM/SIGINT.
+        _leave_unclosed_sdk_client()
+        print("construction wedged", flush=True)
+        forever = threading.Event()
+        while True:
+            forever.wait()
+
+    with (
+        patch.object(validator.Validator, "build_config", return_value=config),
+        patch.object(validator, "configure_log_shipping"),
+        patch.object(LiveRuntimeProvider, "create_base", wedged_create_base),
+        patch.object(validator, "_STARTUP_SHUTDOWN_GRACE_SECONDS", 0.5),
+    ):
+        _entrypoint(validator.main)
+
+
+@pytest.mark.parametrize("signum", [signal.SIGTERM, signal.SIGINT])
+def test_signal_while_real_construction_wedges_in_create_base_exits(
+    tmp_path: Path, signum: signal.Signals
+) -> None:
+    child = (
+        "import sys; from tests.neurons.test_validator_startup_exit import "
+        "_run_wedged_real_construction; _run_wedged_real_construction(sys.argv[1])"
+    )
+    with subprocess.Popen(
+        [sys.executable, "-u", "-c", child, str(tmp_path)],
+        cwd=Path(__file__).resolve().parents[2],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    ) as process:
+        assert process.stdout is not None
+        try:
+            seen: list[str] = []
+            deadline = time.monotonic() + 60
+            while "construction wedged\n" not in seen:
+                ready, _, _ = select.select([process.stdout], [], [], 1.0)
+                assert time.monotonic() < deadline, "".join(seen)
+                if ready:
+                    line = process.stdout.readline()
+                    assert line, "".join(seen)
+                    seen.append(line)
+            process.send_signal(signum)
+            output, _ = process.communicate(timeout=_CHILD_TIMEOUT_SECONDS)
+        finally:
+            if process.poll() is None:
+                process.kill()
+            process.communicate()
+
+    assert process.returncode == 1, "".join(seen) + output
+    assert "shutdown requested during startup" in output
