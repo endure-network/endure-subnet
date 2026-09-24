@@ -202,13 +202,13 @@ No schema migration is introduced; scoring coefficients and the target universe
 are unchanged. This remains one unserved `2042` lease, not another key bump.
 
 Its watched-tree digest is
-`271d95c8bd68982ba1c3d3f018d3e798400d9bd00f34cb66379065cfad135ac9`.
+`d034606a8c26b9bf1a30a2f9d849f46f4b7807c48140cad6b2aa6f67f92ee273`.
 The public lease authority receipt uses
 `PREVIOUS_RECEIPT=27e8f797e62ce76333067470e18a32bdccdd80a385235b4d700d21513880c2b1`,
 `CURRENT_VERSION_KEY=2042`, and
-`CURRENT_VERSION_DIGEST=271d95c8bd68982ba1c3d3f018d3e798400d9bd00f34cb66379065cfad135ac9`
+`CURRENT_VERSION_DIGEST=d034606a8c26b9bf1a30a2f9d849f46f4b7807c48140cad6b2aa6f67f92ee273`
 under the `LEASE_AUTHORITY` format above, producing
-`64c15ebe281a8cc181c346d2f428f1a3a398d2d20a379aa09f1b02891f96e93f`.
+`81668fc052aa999cddeb7e5d1f55a8af609739a934068d3c8d78a7eeec49aa62`.
 
 Miners and validators must upgrade together. This source update does not publish
 production images, deploy services, or raise the chain's weight-version floor.
