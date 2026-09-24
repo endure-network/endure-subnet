@@ -90,6 +90,7 @@ def _run_blocked_archive_startup(tmp_dir: str) -> None:
     with (
         patch.object(validator.Validator, "build_config", return_value=config),
         patch.object(validator, "configure_log_shipping"),
+        patch.object(validator, "_require_hotkey"),
         patch.object(validator.bt.logging, "error", side_effect=print),
         patch(
             "endure.live.alpha_market_data."

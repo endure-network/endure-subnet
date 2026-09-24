@@ -13,19 +13,23 @@ key-2041 images and chain parameters are not changed by this source update.
   overrides and unsafe axon-off emission.
 - Validate mainnet archive identity and historical timestamp/reserve availability
   before transport startup; transient transport failures such as an HTTP 429
-  cooldown are retried until the probe's 120-second deadline.
+  cooldown are retried until the probe's 120-second deadline, while missing
+  history (including a pruned node's discarded-state RPC error) fails promptly.
+  The SQLite URL/path and mainnet hotkey file are checked offline first.
 - Classify a live chain whose endpoint is not a named mainnet/testnet alias by
   its genesis hash before any gate runs, so an operator's own Finney node on
   loopback, a tunnel or `--subtensor.network local` gets the mainnet gates,
-  live market data and the owner vote instead of dev-only fixtures. Refuse
-  mainnet time compression before the archive probe.
+  live market data and the owner vote instead of dev-only fixtures. The
+  genesis is read on every start (never taken from a config file) and compared
+  as normalized hex. Refuse mainnet time compression before the archive probe.
 - Digest-cover storage selection, the score-to-chain composition (abstain on no
   positive score, chain limits, u16 encoding), miner axon admission (registered
   hotkey and stake floor), two-resync deregistration confirmation, emission
   planning and its pre-submission recheck (`emission_policy.py`), and Alpha
   market-data sampling decisions (canonical sample blocks, timestamp-to-block
-  boundary searches, series gap policy), moved unchanged into
-  `market_sampling.py` (old-vs-new differential: 4,500 cases, 0 mismatches);
+  boundary searches, series gap policy, gap-versus-outage classification of
+  archive failures), moved unchanged into `market_sampling.py` (old-vs-new
+  differentials: 4,500 and 4,000 cases, 0 mismatches);
   remove the unused `moving_average_alpha`/`update_scores` path.
 - Add a standing owner-vote fallback for served Alpha Risk on mainnet SN30 and
   Bittensor testnet: whenever the score vector has no positive entry (cold
@@ -73,7 +77,8 @@ key-2041 images and chain parameters are not changed by this source update.
   confirmation deadlines on existing health/log surfaces. Missing first
   submissions can degrade readiness; intentional eligibility waits do not.
   Document scheduler/fence startup delay and activity-cutoff headroom.
-- End validator and miner processes with an explicit exit after log drains,
+- End validator and miner processes (including the forced restart after chain
+  RPC abandonment) with an explicit exit after log drains,
   bypassing interpreter finalization: archive workers blocked after the probe
   times out, or an unclosed SDK websocket after a construction-time `sys.exit`
   such as an unregistered hotkey, previously hung the process indefinitely.

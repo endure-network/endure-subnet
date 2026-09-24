@@ -95,14 +95,6 @@ def test_testnet_accepts_any_owner_hotkey_chain_and_netuid() -> None:
         ),
         (
             "mainnet",
-            MAINNET_GENESIS_HASH.upper(),
-            SN30_NETUID,
-            [SN30_OWNER_HOTKEY],
-            SN30_OWNER_HOTKEY,
-            "owner_vote_chain_mismatch",
-        ),
-        (
-            "mainnet",
             MAINNET_GENESIS_HASH,
             31,
             [SN30_OWNER_HOTKEY],

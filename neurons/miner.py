@@ -28,6 +28,7 @@ from endure.base.shutdown import (
     install_shutdown_handlers,
     join_thread_or_raise,
     run_entrypoint,
+    terminate_process,
 )
 from endure.live.alpha_market_data import (
     LiveAlphaPriceProvider,
@@ -455,7 +456,9 @@ def _force_restart_if_rpc_abandoned(miner: Miner) -> None:
     bt.logging.error(
         "miner forcing process restart after chain RPC abandonment capacity was reached"
     )
-    os._exit(1)
+    # Drain the log queues first: the abandoned non-daemon RPC workers would
+    # hang a normal interpreter shutdown, and a raw os._exit loses this line.
+    terminate_process(1, grace_seconds=_WATCHDOG_TEARDOWN_GRACE_SECONDS)
 
 
 _WATCHDOG_TEARDOWN_GRACE_SECONDS = 60

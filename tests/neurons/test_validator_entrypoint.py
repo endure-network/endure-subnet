@@ -781,13 +781,15 @@ def test_main_hard_exits_when_rpc_abandonment_capacity_is_reached() -> None:
             return_value=threading.Event(),
         ),
         patch("neurons.validator.Validator", return_value=context),
-        patch("neurons.validator.os._exit", side_effect=SystemExit(1)) as hard_exit,
+        patch(
+            "neurons.validator.terminate_process", side_effect=SystemExit(1)
+        ) as hard_exit,
         pytest.raises(SystemExit) as exit_info,
     ):
         main()
 
     assert exit_info.value.code == 1
-    hard_exit.assert_called_with(1)
+    hard_exit.assert_called_with(1, grace_seconds=60)
 
 
 def test_main_hard_exits_when_watchdog_races_rpc_abandonment() -> None:
@@ -810,14 +812,16 @@ def test_main_hard_exits_when_watchdog_races_rpc_abandonment() -> None:
             return_value=threading.Event(),
         ),
         patch("neurons.validator.Validator", return_value=context),
-        patch("neurons.validator.os._exit", side_effect=SystemExit(1)) as hard_exit,
+        patch(
+            "neurons.validator.terminate_process", side_effect=SystemExit(1)
+        ) as hard_exit,
         pytest.raises(SystemExit) as exit_info,
     ):
         main()
 
     # Then: the watchdog path still restarts hard instead of exiting normally.
     assert exit_info.value.code == 1
-    hard_exit.assert_called_with(1)
+    hard_exit.assert_called_with(1, grace_seconds=60)
 
 
 def test_main_hard_exits_when_shutdown_signal_races_rpc_abandonment() -> None:
@@ -835,14 +839,16 @@ def test_main_hard_exits_when_shutdown_signal_races_rpc_abandonment() -> None:
             return_value=already_stopped,
         ),
         patch("neurons.validator.Validator", return_value=context),
-        patch("neurons.validator.os._exit", side_effect=SystemExit(1)) as hard_exit,
+        patch(
+            "neurons.validator.terminate_process", side_effect=SystemExit(1)
+        ) as hard_exit,
         pytest.raises(SystemExit) as exit_info,
     ):
         main()
 
     # Then: the process still restarts hard instead of exiting normally.
     assert exit_info.value.code == 1
-    hard_exit.assert_called_with(1)
+    hard_exit.assert_called_with(1, grace_seconds=60)
 
 
 def test_main_hard_exits_when_rpc_abandonment_races_lifecycle_teardown() -> None:
@@ -868,14 +874,16 @@ def test_main_hard_exits_when_rpc_abandonment_races_lifecycle_teardown() -> None
             return_value=already_stopped,
         ),
         patch("neurons.validator.Validator", return_value=context),
-        patch("neurons.validator.os._exit", side_effect=SystemExit(1)) as hard_exit,
+        patch(
+            "neurons.validator.terminate_process", side_effect=SystemExit(1)
+        ) as hard_exit,
         pytest.raises(SystemExit) as exit_info,
     ):
         main()
 
     # Then: the post-teardown recheck still restarts hard.
     assert exit_info.value.code == 1
-    hard_exit.assert_called_with(1)
+    hard_exit.assert_called_with(1, grace_seconds=60)
 
 
 def test_main_hard_exits_when_latching_teardown_also_raises() -> None:
@@ -901,14 +909,16 @@ def test_main_hard_exits_when_latching_teardown_also_raises() -> None:
             return_value=already_stopped,
         ),
         patch("neurons.validator.Validator", return_value=context),
-        patch("neurons.validator.os._exit", side_effect=SystemExit(1)) as hard_exit,
+        patch(
+            "neurons.validator.terminate_process", side_effect=SystemExit(1)
+        ) as hard_exit,
         pytest.raises(SystemExit) as exit_info,
     ):
         main()
 
     # Then: the teardown exception cannot bypass the hard restart.
     assert exit_info.value.code == 1
-    hard_exit.assert_called_with(1)
+    hard_exit.assert_called_with(1, grace_seconds=60)
 
 
 def test_main_redacts_runtime_endpoint_credentials() -> None:
@@ -1124,6 +1134,7 @@ def test_operator_loopback_mainnet_node_runs_mainnet_gates_before_transport(
         ),
         patch("neurons.validator.validate_mainnet_archive", probe),
         patch("neurons.validator.resolve_runtime_provider", transport),
+        patch("neurons.validator._require_hotkey"),
     ):
         with pytest.raises(RuntimeError, match="min_miner_stake"):
             Validator(config=cfg)
@@ -1152,6 +1163,28 @@ def test_mainnet_compression_is_refused_before_the_archive_probe(
     with (
         patch("neurons.validator.validate_mainnet_archive", probe),
         pytest.raises(DevOnlyConfigError),
+    ):
+        Validator(config=cfg)
+
+    probe.assert_not_called()
+
+
+def test_missing_mainnet_hotkey_fails_offline_before_the_archive_probe(
+    production_validator_config: bt.Config, tmp_path: Path
+) -> None:
+    from neurons.validator import Validator
+
+    cfg = production_validator_config
+    cfg.netuid = 30
+    cfg.subtensor.network = "finney"
+    cfg.subtensor.chain_endpoint = ""
+    cfg.endure.serving_stage = "mainnet"
+    cfg.wallet.path = str(tmp_path / "no-wallets")
+    probe = MagicMock()
+
+    with (
+        patch("neurons.validator.validate_mainnet_archive", probe),
+        pytest.raises(bt.KeyFileError, match="Failed to get hotkey"),
     ):
         Validator(config=cfg)
 

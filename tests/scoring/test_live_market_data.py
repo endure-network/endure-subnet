@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import pytest
 from async_substrate_interface.errors import (
     MaxRetriesExceeded,
+    StateDiscardedError,
     SubstrateRequestException,
 )
 from websockets.datastructures import Headers
@@ -333,6 +334,51 @@ def test_archive_readiness_rejects_unavailable_historical_reserves(
     assert "secret" not in str(caught.value)
     assert "private-key" not in str(caught.value)
     assert caught.value.__suppress_context__
+
+
+@pytest.mark.parametrize(
+    ("error", "prompt"),
+    [
+        (
+            SubstrateRequestException(
+                {
+                    "code": 4003,
+                    "message": "Client error: UnknownBlock: State already "
+                    "discarded for 0x4f1e5d3c8a",
+                }
+            ),
+            True,
+        ),
+        (StateDiscardedError("0x4f1e5d3c8a"), True),
+        (LookupError("historical state discarded"), True),
+        (TimeoutError("archive timed out"), False),
+    ],
+)
+def test_archive_probe_refuses_a_pruned_node_promptly(
+    error: Exception, prompt: bool
+) -> None:
+    # Given: a pruned node's real discarded-state RPC error versus an outage.
+    clock = [0.0]
+
+    def sleep(seconds: Decimal) -> None:
+        clock[0] += float(seconds)
+
+    fetcher = _archive_probe_fetcher()
+    fetcher.failed_blocks = frozenset({70})
+    fetcher.failure_error = error
+    provider = LiveAlphaPriceProvider(
+        config=LiveAlphaPriceProviderConfig(endpoint="mock://archive"),
+        fetcher=fetcher,
+        sleep=sleep,
+        now_fn=lambda: clock[0],
+    )
+
+    # When / Then: missing history fails within the normal retry ladder, while
+    # a transport outage is retried until the probe deadline.
+    with pytest.raises(AlphaMarketDataUnavailable):
+        provider.validate_archive(netuid=30)
+    assert (clock[0] < 10.0) is prompt
+    assert (clock[0] >= 120.0) is not prompt
 
 
 def test_archive_readiness_enforces_probe_deadline() -> None:

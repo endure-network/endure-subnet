@@ -12,12 +12,62 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Final
 
+from async_substrate_interface.errors import SubstrateRequestException
+
 from endure.scoring.market_data import (
+    AlphaMarketDataError,
     AlphaMarketDataUnavailable,
     AlphaPriceSnapshot,
     ResolutionWindow,
 )
 from endure.scoring.risk.observables import CANONICAL_ALPHA_SNAPSHOT_CADENCE_BLOCKS
+
+# The SDK's own retry substrate surfaces exhaustion as MaxRetriesExceeded
+# (a SubstrateRequestException, plain Exception subclass) — observed live on
+# 2026-07-07 when a transient DNS outage escaped the stdlib exception tuple
+# and crashed resolution. Any failure at this boundary must mean "snapshot
+# unavailable" (gap-skip / void downstream), never a crashed validator tick.
+ARCHIVE_FETCH_FAILURES: Final = (
+    ConnectionError,
+    LookupError,
+    OSError,
+    RuntimeError,
+    TimeoutError,
+    SubstrateRequestException,
+)
+
+# A missing block is a legitimate gap, but these failures mean the archive
+# connection itself is unavailable and can trigger the series outage breaker.
+ARCHIVE_CONNECTION_FAILURES: Final = (
+    ConnectionError,
+    OSError,
+    RuntimeError,
+    TimeoutError,
+    SubstrateRequestException,
+)
+
+
+# Snapshot fetch failures the series gap policy classifies (see below).
+SNAPSHOT_FETCH_FAILURES: Final = (
+    *ARCHIVE_CONNECTION_FAILURES,
+    AlphaMarketDataError,
+    LookupError,
+)
+
+
+def snapshot_failure_is_outage(error: BaseException) -> bool:
+    """Outage voids and defers the series; otherwise it is a definitive gap.
+
+    A connection/SDK failure or an unavailable verdict is an archive outage. A
+    missing pool (``LookupError``) or unusable reserves (``AlphaMarketDataError``)
+    is a definitive gap that skips only that sample.
+    """
+    if isinstance(error, ARCHIVE_CONNECTION_FAILURES):
+        return True
+    if isinstance(error, AlphaMarketDataUnavailable):
+        return True
+    return False
+
 
 # Consecutive archive-unavailable snapshots that abandon a series early.
 MAX_CONSECUTIVE_ARCHIVE_GAPS: Final = 2

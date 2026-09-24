@@ -83,6 +83,12 @@ MAINNET_HOSTS: Final = frozenset(
 MAINNET_NETWORKS: Final = frozenset({"finney", "archive", "latent-lite"})
 
 
+def normalize_genesis_hash(value: str) -> str:
+    """Compare genesis hashes as lowercase ``0x``-prefixed hex."""
+    text = value.strip().lower()
+    return text if text.startswith("0x") else f"0x{text}"
+
+
 def endpoint_host(endpoint: str) -> str:
     endpoint = endpoint.strip()
     if not endpoint:
@@ -115,6 +121,8 @@ def classify_chain(
     """
     if mock:
         return "dev"
+    if genesis is not None:
+        genesis = normalize_genesis_hash(genesis)
     if genesis == MAINNET_GENESIS_HASH:
         return "mainnet"
     if genesis == TESTNET_GENESIS_HASH:

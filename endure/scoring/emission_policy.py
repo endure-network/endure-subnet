@@ -24,6 +24,7 @@ from endure.protocol.consensus_policy import (
     SN30_NETUID,
     SN30_OWNER_HOTKEY,
     OwnerVoteNetwork,
+    normalize_genesis_hash,
 )
 from endure.scoring.weight_processing import U16_MAX
 
@@ -158,6 +159,7 @@ def resolve_owner_vote_uid(
     owner_hotkey: str | None,
 ) -> int:
     """Resolve the on-chain subnet owner to its UID in one metagraph snapshot."""
+    chain_identity = normalize_genesis_hash(chain_identity) if chain_identity else ""
     if network == "mainnet":
         if chain_identity != MAINNET_GENESIS_HASH or netuid != SN30_NETUID:
             raise EmissionBlocked(

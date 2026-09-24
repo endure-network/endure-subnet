@@ -43,6 +43,7 @@ from endure.protocol.consensus_policy import (
     chain_owner_vote_network,
     classify_chain,
     mainnet_policy_applies,
+    normalize_genesis_hash,
     require_canonical_mainnet_policy,
 )
 
@@ -98,6 +99,9 @@ def resolve_chain_identity(
     the watched ``classify_chain`` uses the recorded genesis instead.
     """
     endpoint, network = _effective_chain(config)
+    # Always overwrite: a value carried in from an operator config file must
+    # never classify a chain this process did not read.
+    config.endure.chain_genesis_hash = None
     if not chain_needs_genesis(
         mock=_is_mock_runtime(config), endpoint=endpoint, network=network
     ):
@@ -107,7 +111,7 @@ def resolve_chain_identity(
         raise RuntimeError(
             f"cannot identify the chain at {safe_endpoint_label(endpoint)}"
         )
-    config.endure.chain_genesis_hash = genesis
+    config.endure.chain_genesis_hash = normalize_genesis_hash(genesis)
 
 
 def chain_class(config: "bt.Config") -> ChainClass:

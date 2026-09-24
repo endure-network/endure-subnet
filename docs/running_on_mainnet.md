@@ -65,9 +65,12 @@ genesis identity, deep finalized timestamp history used by boundary search, and
 positive Alpha/TAO reserves for subnet 30 at least 30 days before the finalized
 head. A reachable non-archive endpoint is insufficient. Transient transport
 failures, including an HTTP 429 cooldown during a coordinated restart, are
-retried until the probe's 120-second deadline; missing historical data fails
-promptly. Failure refuses startup; successful probing is not a guarantee of
-future archive availability.
+retried until the probe's 120-second deadline; missing historical data,
+including a pruned node's `UnknownBlock: State already discarded` error, fails
+promptly. The SQLite database URL/path and the mainnet hotkey file are checked
+offline before the probe. Failure refuses startup; successful probing is not a
+guarantee of future archive availability. Chain identity is read on every start
+and never taken from an operator config file.
 Validator and miner processes end with an explicit process exit after log
 drains flush, never through interpreter finalization, so an abandoned archive
 worker or an unclosed SDK websocket cannot keep a failed process alive and

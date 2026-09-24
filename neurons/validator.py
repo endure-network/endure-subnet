@@ -42,6 +42,7 @@ from endure.base.shutdown import (
     install_shutdown_handlers,
     join_thread_or_raise,
     run_entrypoint,
+    terminate_process,
 )
 from endure.base.validator import (
     WEIGHT_EMISSION_FINALITY_MARGIN_BLOCKS,
@@ -162,6 +163,12 @@ def _run_migrations(database_url: str) -> None:
     alembic_command.upgrade(config, "head")
 
 
+def _require_hotkey(config: bt.Config) -> None:
+    hotkey = bt.Wallet(config=config).hotkey.ss58_address
+    if not hotkey:
+        raise RuntimeError("the configured validator hotkey has no address")
+
+
 class Validator(BaseValidatorNeuron):
     """Schema-routed validator round loop."""
 
@@ -214,7 +221,11 @@ class Validator(BaseValidatorNeuron):
                 "endure.health_tick_max_duration_seconds; a budget at or above "
                 "the watchdog window cannot prevent stale-tick restarts"
             )
+        # Local inputs fail offline, before the network-bound archive probe:
+        # the SQLite URL/path (and schema), then the mainnet hotkey file.
+        _run_migrations(resolved_config.endure.database_url)
         if uses_mainnet_consensus_policy(resolved_config):
+            _require_hotkey(resolved_config)
             validate_mainnet_archive(
                 str(resolved_config.endure.market_data_endpoint), netuid=30
             )
@@ -223,7 +234,6 @@ class Validator(BaseValidatorNeuron):
             runtime_provider=resolve_runtime_provider(resolved_config),
         )
         self._schema_id = active_runtime_schema_id(self.config)
-        _run_migrations(self.config.endure.database_url)
         self._storage = Storage.from_url(self.config.endure.database_url)
         self._weight_emission_startup_fence_block: int | None = None
         self._owner_vote_recipient: OwnerVoteRecipient | None = None
@@ -1447,7 +1457,9 @@ def _force_restart_if_rpc_abandoned(validator: Validator) -> None:
         "validator forcing process restart after chain RPC "
         "abandonment capacity was reached"
     )
-    os._exit(1)
+    # Drain the log queues first: the abandoned non-daemon RPC workers would
+    # hang a normal interpreter shutdown, and a raw os._exit loses this line.
+    terminate_process(1, grace_seconds=_WATCHDOG_TEARDOWN_GRACE_SECONDS)
 
 
 _WATCHDOG_TEARDOWN_GRACE_SECONDS = 60

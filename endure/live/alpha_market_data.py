@@ -21,7 +21,10 @@ from threading import Condition
 from typing import Final, Protocol
 
 import bittensor as bt
-from async_substrate_interface.errors import SubstrateRequestException
+from async_substrate_interface.errors import (
+    StateDiscardedError,
+    SubstrateRequestException,
+)
 from async_substrate_interface.sync_substrate import SubstrateInterface
 
 from endure.live.sleeping import sleep_decimal
@@ -38,10 +41,13 @@ from endure.scoring.market_data import (
     alpha_snapshot_from_reserves,
 )
 from endure.scoring.market_sampling import (
+    ARCHIVE_FETCH_FAILURES,
+    SNAPSHOT_FETCH_FAILURES,
     SeriesSampling,
     canonical_snapshot_blocks,
     first_block_at_or_after,
     last_block_at_or_before,
+    snapshot_failure_is_outage,
 )
 from endure.scoring.risk.observables import BLOCK_SECONDS
 from endure.utils.logging import safe_error
@@ -63,31 +69,6 @@ LIVE_MARKET_DATA_ARCHIVE_PROBE_TIMEOUT_SECONDS: Final = 120.0
 # first attempt after the cooldown lands soon after it ends.
 LIVE_MARKET_DATA_ARCHIVE_PROBE_MAX_BACKOFF_SECONDS: Final = Decimal("5")
 LIVE_MARKET_DATA_ARCHIVE_LOOKBACK: Final = timedelta(days=30)
-
-# The SDK's own retry substrate surfaces exhaustion as MaxRetriesExceeded
-# (a SubstrateRequestException, plain Exception subclass) — observed live on
-# 2026-07-07 when a transient DNS outage escaped the stdlib exception tuple
-# and crashed resolution. Any failure at this boundary must mean "snapshot
-# unavailable" (gap-skip / void downstream), never a crashed validator tick.
-ARCHIVE_FETCH_FAILURES: Final = (
-    ConnectionError,
-    LookupError,
-    OSError,
-    RuntimeError,
-    TimeoutError,
-    SubstrateRequestException,
-)
-
-# A missing block is a legitimate gap, but these failures mean the archive
-# connection itself is unavailable and can trigger the series outage breaker.
-ARCHIVE_CONNECTION_FAILURES: Final = (
-    ConnectionError,
-    OSError,
-    RuntimeError,
-    TimeoutError,
-    SubstrateRequestException,
-)
-
 
 _HTTP_TOO_MANY_REQUESTS: Final = 429
 _JSONRPC_RATE_LIMIT_CODE: Final = -32029
@@ -120,6 +101,22 @@ def _is_archive_request_rate_limited(error: BaseException) -> bool:
             ):
                 return True
     return "rate limit" in str(error).lower()
+
+
+# A pruned node reports discarded historical state through the RPC error, not
+# a LookupError. Only the startup probe reads it as missing history; scoring
+# keeps treating it as an archive outage that defers the target.
+_MISSING_HISTORY_MARKERS: Final = ("UnknownBlock", "State already discarded")
+
+
+def _is_missing_history(error: BaseException) -> bool:
+    # The SDK's retry substrate raises StateDiscardedError; a raw substrate
+    # surfaces the node's "UnknownBlock: State already discarded" RPC error.
+    if isinstance(error, LookupError | StateDiscardedError):
+        return True
+    return isinstance(error, SubstrateRequestException) and any(
+        marker in str(error) for marker in _MISSING_HISTORY_MARKERS
+    )
 
 
 class SupportsInt(Protocol):
@@ -690,14 +687,11 @@ class LiveAlphaPriceProvider:
                 ),
                 connection_available=True,
             )
-        except ARCHIVE_CONNECTION_FAILURES:
-            return _SnapshotFetchResult(snapshot=None, connection_available=False)
-        except AlphaMarketDataUnavailable:
-            return _SnapshotFetchResult(snapshot=None, connection_available=False)
-        except LookupError:
-            return _SnapshotFetchResult(snapshot=None, connection_available=True)
-        except AlphaMarketDataError:
-            return _SnapshotFetchResult(snapshot=None, connection_available=True)
+        except SNAPSHOT_FETCH_FAILURES as error:
+            return _SnapshotFetchResult(
+                snapshot=None,
+                connection_available=not snapshot_failure_is_outage(error),
+            )
 
     def _with_retry[T](self, operation: Callable[[], T]) -> T:
         # Attempt-level progress marks keep the watchdog honest: each attempt
@@ -720,9 +714,9 @@ class LiveAlphaPriceProvider:
                 return operation()
             except ARCHIVE_FETCH_FAILURES as error:
                 # The startup probe outlasts transient transport failures (a
-                # 429 cooldown) until its deadline; missing data still fails
+                # 429 cooldown) until its deadline; missing history still fails
                 # after max_attempts so a pruned node is refused promptly.
-                probing = self._probing and not isinstance(error, LookupError)
+                probing = self._probing and not _is_missing_history(error)
                 if not probing and attempt >= self._config.max_attempts:
                     message = f"archive request failed: {safe_error(error)}"
                     if isinstance(error, LookupError):

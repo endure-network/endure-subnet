@@ -908,3 +908,30 @@ class TestChainIdentityByGenesis:
 
         with pytest.raises(RuntimeError, match="cannot identify the chain"):
             resolve_chain_identity(cfg, read_genesis=self._reader(None))
+
+    def test_preseeded_genesis_never_overrides_a_named_endpoint(
+        self, production_validator_config: bt.Config
+    ) -> None:
+        cfg = production_validator_config
+        cfg.subtensor.network = "finney"
+        cfg.subtensor.chain_endpoint = ""
+        # e.g. carried in through a YAML --config file.
+        cfg.endure.chain_genesis_hash = TESTNET_GENESIS_HASH
+
+        resolve_chain_identity(cfg, read_genesis=self._reader(None))
+
+        assert owner_vote_network(cfg) == "mainnet"
+        assert uses_mainnet_consensus_policy(cfg)
+
+    def test_genesis_hex_is_normalized_before_comparison(
+        self, production_validator_config: bt.Config
+    ) -> None:
+        cfg = production_validator_config
+        cfg.subtensor.network = "local"
+        cfg.subtensor.chain_endpoint = ""
+
+        resolve_chain_identity(
+            cfg, read_genesis=self._reader(MAINNET_GENESIS_HASH[2:].upper())
+        )
+
+        assert owner_vote_network(cfg) == "mainnet"

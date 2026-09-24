@@ -48,13 +48,15 @@ def test_main_hard_exits_when_rpc_abandonment_capacity_is_reached() -> None:
             return_value=threading.Event(),
         ),
         patch("neurons.miner.Miner", return_value=context),
-        patch("neurons.miner.os._exit", side_effect=SystemExit(1)) as hard_exit,
+        patch(
+            "neurons.miner.terminate_process", side_effect=SystemExit(1)
+        ) as hard_exit,
         pytest.raises(SystemExit) as exit_info,
     ):
         main()
 
     assert exit_info.value.code == 1
-    hard_exit.assert_called_with(1)
+    hard_exit.assert_called_with(1, grace_seconds=60)
 
 
 def test_main_hard_exits_when_watchdog_races_rpc_abandonment() -> None:
@@ -74,14 +76,16 @@ def test_main_hard_exits_when_watchdog_races_rpc_abandonment() -> None:
             return_value=threading.Event(),
         ),
         patch("neurons.miner.Miner", return_value=context),
-        patch("neurons.miner.os._exit", side_effect=SystemExit(1)) as hard_exit,
+        patch(
+            "neurons.miner.terminate_process", side_effect=SystemExit(1)
+        ) as hard_exit,
         pytest.raises(SystemExit) as exit_info,
     ):
         main()
 
     # Then: the watchdog path still restarts hard instead of exiting normally.
     assert exit_info.value.code == 1
-    hard_exit.assert_called_with(1)
+    hard_exit.assert_called_with(1, grace_seconds=60)
 
 
 def test_main_arms_forced_exit_when_miner_loop_thread_dies() -> None:
@@ -147,14 +151,16 @@ def test_main_hard_exits_when_shutdown_signal_races_rpc_abandonment() -> None:
             return_value=already_stopped,
         ),
         patch("neurons.miner.Miner", return_value=context),
-        patch("neurons.miner.os._exit", side_effect=SystemExit(1)) as hard_exit,
+        patch(
+            "neurons.miner.terminate_process", side_effect=SystemExit(1)
+        ) as hard_exit,
         pytest.raises(SystemExit) as exit_info,
     ):
         main()
 
     # Then: the process still restarts hard instead of exiting normally.
     assert exit_info.value.code == 1
-    hard_exit.assert_called_with(1)
+    hard_exit.assert_called_with(1, grace_seconds=60)
 
 
 def test_main_hard_exits_when_rpc_abandonment_races_lifecycle_teardown() -> None:
@@ -181,14 +187,16 @@ def test_main_hard_exits_when_rpc_abandonment_races_lifecycle_teardown() -> None
             return_value=already_stopped,
         ),
         patch("neurons.miner.Miner", return_value=context),
-        patch("neurons.miner.os._exit", side_effect=SystemExit(1)) as hard_exit,
+        patch(
+            "neurons.miner.terminate_process", side_effect=SystemExit(1)
+        ) as hard_exit,
         pytest.raises(SystemExit) as exit_info,
     ):
         main()
 
     # Then: the post-teardown recheck still restarts hard.
     assert exit_info.value.code == 1
-    hard_exit.assert_called_with(1)
+    hard_exit.assert_called_with(1, grace_seconds=60)
 
 
 def test_main_hard_exits_when_latching_teardown_also_raises() -> None:
@@ -215,14 +223,16 @@ def test_main_hard_exits_when_latching_teardown_also_raises() -> None:
             return_value=already_stopped,
         ),
         patch("neurons.miner.Miner", return_value=context),
-        patch("neurons.miner.os._exit", side_effect=SystemExit(1)) as hard_exit,
+        patch(
+            "neurons.miner.terminate_process", side_effect=SystemExit(1)
+        ) as hard_exit,
         pytest.raises(SystemExit) as exit_info,
     ):
         main()
 
     # Then: the teardown exception cannot bypass the hard restart.
     assert exit_info.value.code == 1
-    hard_exit.assert_called_with(1)
+    hard_exit.assert_called_with(1, grace_seconds=60)
 
 
 def test_miner_bootstraps_in_mock_mode(
