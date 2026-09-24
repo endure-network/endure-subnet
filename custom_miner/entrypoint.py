@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import bittensor as bt
@@ -20,7 +20,7 @@ from endure.protocol.risk_runtime import (
     build_risk_devnet_runtime,
     compression_enabled,
 )
-from endure.protocol.schedulers import scheduler_for_schema
+from endure.protocol.schedulers import RoundScheduler, scheduler_for_schema
 from endure.scoring.market_data import (
     FixtureAlphaPriceProvider,
     recorded_mainnet_fixture_provider,
@@ -30,9 +30,16 @@ from endure.utils.config import (
     require_compression_runtime_allowed,
 )
 
+HISTORY_COMMIT_SAFETY_MARGIN = timedelta(minutes=45)
+
 
 def _utc_now() -> datetime:
     return datetime.now(UTC)
+
+
+def _history_deadline_exceeded(scheduler: RoundScheduler, now: datetime) -> bool:
+    window = scheduler.active_window(now)
+    return window is None or now >= window.commit_close - HISTORY_COMMIT_SAFETY_MARGIN
 
 
 class AdaptiveMiner(upstream_miner.Miner):
@@ -57,6 +64,11 @@ class AdaptiveMiner(upstream_miner.Miner):
                     config=LiveAlphaPriceProviderConfig(
                         endpoint=str(self.config.endure.market_data_endpoint)
                     )
+                )
+                # Preserve enough time to assemble a full baseline and send its
+                # commit even when a cold archive backfill runs late.
+                provider.history_deadline_exceeded_fn = lambda: (
+                    _history_deadline_exceeded(scheduler, _utc_now())
                 )
 
         recent_price_series = (

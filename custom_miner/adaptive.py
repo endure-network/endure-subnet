@@ -33,6 +33,7 @@ from endure.protocol.risk_miner import (
     LatestPoolObservation,
     LatestPoolObservationProvider,
 )
+from endure.scoring.assessment_orchestrator import ResolutionDeadlineExceeded
 from endure.scoring.market_data import (
     AlphaMarketDataError,
     AlphaPriceSeries,
@@ -218,13 +219,24 @@ def adaptive_risk_bundle(
     for netuid in sorted(set(netuids)):
         try:
             series = recent_price_series(netuid, HORIZON_30D_SECONDS)
-        except AlphaMarketDataError:
+        except (
+            AlphaMarketDataError,
+            ResolutionDeadlineExceeded,
+            ConnectionError,
+            LookupError,
+        ):
             series = None
-        observation = (
-            series.latest_pool_observation()
-            if series is not None
-            else latest_observation(netuid)
-        )
+        try:
+            observation = latest_observation(netuid)
+        except (
+            AlphaMarketDataError,
+            ResolutionDeadlineExceeded,
+            ConnectionError,
+            LookupError,
+        ):
+            observation = None
+        if observation is None and series is not None:
+            observation = series.latest_pool_observation()
         if observation is None:
             continue
 
