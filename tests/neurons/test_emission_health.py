@@ -14,7 +14,7 @@ from endure.protocol.weight_intent import (
     WeightIntentPayload,
     canonical_weight_intent_hash,
 )
-from endure.scoring.emission_policy import OwnerVoteBlockReason
+from endure.scoring.emission_policy import EmissionBlocked, EmissionBlockReason
 from endure.storage.repository import Storage
 from neurons.validator import Validator
 
@@ -69,6 +69,9 @@ def validator(mock_validator_config: bt.Config, storage: Storage) -> Validator:
     result.subtensor = MagicMock()
     result.subtensor.get_current_block.return_value = 1000
     result.gated_subtensor = MagicMock()
+    result._durable_scores_loaded = True
+    result._emission_block = None
+    result._emission_block_since_block = None
     return result
 
 
@@ -204,18 +207,21 @@ def test_modes_follow_scores_owner_vote_and_explicit_off(
 
 
 @pytest.mark.parametrize(
-    "reason",
+    ("reason", "degraded_at_block"),
     [
-        "owner_hotkey_mismatch",
-        "owner_unregistered",
-        "owner_snapshot_inconsistent",
-        "owner_vote_chain_mismatch",
+        ("owner_hotkey_mismatch", 1000),
+        ("owner_unregistered", 1000),
+        ("owner_vote_chain_mismatch", 1000),
+        ("owner_snapshot_inconsistent", 1200),
+        ("chain_snapshot_inconsistent", 1200),
+        ("validator_identity_invalid", 1200),
     ],
 )
-def test_blocked_owner_vote_reports_a_distinct_abstain_reason(
+def test_blocked_emission_abstains_and_degrades_by_severity(
     validator: Validator,
     monkeypatch: pytest.MonkeyPatch,
-    reason: OwnerVoteBlockReason,
+    reason: EmissionBlockReason,
+    degraded_at_block: int,
 ) -> None:
     monkeypatch.setattr("neurons.validator.time.monotonic", lambda: 10000.0)
     validator.config.runtime.mode = "live"
@@ -224,16 +230,18 @@ def test_blocked_owner_vote_reports_a_distinct_abstain_reason(
         "wss://entrypoint-finney.opentensor.ai:443"
     )
     validator.scores = [Decimal(0)]
-    validator._owner_vote_block_reason = reason
+    validator._block_emission(EmissionBlocked(reason, "unsafe chain state"), 1000)
     validator._mark_tick_progress()
 
-    response = _client(validator).get("/health")
-
-    assert response.status_code == 200
-    runtime = response.json()["runtime"]
-    assert runtime["emission_mode"] == "abstain"
-    assert runtime["emission_reason"] == reason
-    assert runtime["emission_expected"] is False
+    for block in (1000, 1199, 1200):
+        validator.metagraph.block = block
+        response = _client(validator).get("/health")
+        runtime = response.json()["runtime"]
+        assert runtime["emission_mode"] == "abstain"
+        assert runtime["emission_reason"] == reason
+        assert runtime["emission_blocked_reason"] == reason
+        assert runtime["emission_expected"] is False
+        assert response.status_code == (503 if block >= degraded_at_block else 200)
 
 
 def test_confirmation_deadline_still_degrades_while_emission_is_disabled(

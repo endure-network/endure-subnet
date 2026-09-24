@@ -2478,6 +2478,24 @@ class Storage:
                     or batch._mapping["validator_uid"] != snapshot.validator_uid
                     or batch._mapping["validator_hotkey"] != snapshot.validator_hotkey
                 ):
+                    # This identity can never confirm a batch prepared under
+                    # another one (e.g. re-registration at a new UID); once its
+                    # deadlines pass, stop counting it as open or emission
+                    # would wait on confirmation_pending forever.
+                    deadlines = [
+                        value
+                        for value in (deadline, reveal_deadline)
+                        if isinstance(value, int)
+                    ]
+                    if deadlines and snapshot.block > max(deadlines):
+                        _newly_confirmed, newly_unconfirmed = _apply_weight_resolution(
+                            connection,
+                            batch_id=batch_id,
+                            confirmation_state=confirmation_state,
+                            decision=WeightResolutionDecision(unconfirm=True),
+                            confirmed_at_iso=confirmed_at_iso,
+                        )
+                        unconfirmed += newly_unconfirmed
                     continue
                 if not isinstance(submission_block, int) or not isinstance(
                     baseline_block, int

@@ -37,10 +37,13 @@ from endure.scoring.market_data import (
     ResolutionWindow,
     alpha_snapshot_from_reserves,
 )
-from endure.scoring.risk.observables import (
-    BLOCK_SECONDS,
-    CANONICAL_ALPHA_SNAPSHOT_CADENCE_BLOCKS,
+from endure.scoring.market_sampling import (
+    SeriesSampling,
+    canonical_snapshot_blocks,
+    first_block_at_or_after,
+    last_block_at_or_before,
 )
+from endure.scoring.risk.observables import BLOCK_SECONDS
 from endure.utils.logging import safe_error
 
 MAINNET_ARCHIVE_ENDPOINT: Final = "wss://archive.chain.opentensor.ai:443"
@@ -49,7 +52,6 @@ LIVE_MARKET_DATA_REQUEST_PAUSE_SECONDS: Final = Decimal("0.25")
 LIVE_MARKET_DATA_REQUEST_TIMEOUT_SECONDS: Final = 10.0
 LIVE_MARKET_DATA_TIMEOUT_WORKERS: Final = 1
 LIVE_MARKET_DATA_MAX_ABANDONED_WORKERS: Final = 3
-LIVE_MARKET_DATA_MAX_CONSECUTIVE_ARCHIVE_FAILURES: Final = 2
 LIVE_MARKET_DATA_RATE_LIMIT_COOLDOWN_SECONDS: Final = 60.0
 LIVE_MARKET_DATA_MIN_REQUEST_INTERVAL_SECONDS: Final = 0.5
 LIVE_MARKET_DATA_HEAD_CACHE_TTL_SECONDS: Final = 30.0
@@ -551,26 +553,13 @@ class LiveAlphaPriceProvider:
         if cached is not None:
             return cached
 
-        finalized_block = self._with_retry(self._fetcher.finalized_block)
-        finalized_timestamp = self._timestamp_at_block(finalized_block)
-        if finalized_timestamp < timestamp_ms:
-            raise AlphaMarketDataUnavailable(
-                "timestamp is not yet covered by the finalized archive head"
-            )
-        if finalized_timestamp == timestamp_ms:
-            self._first_timestamp_blocks[timestamp_ms] = finalized_block
-            return finalized_block
-
-        lower_block = 0
-        upper_block = finalized_block
-        while lower_block < upper_block:
-            midpoint = lower_block + (upper_block - lower_block) // 2
-            if self._timestamp_at_block(midpoint) >= timestamp_ms:
-                upper_block = midpoint
-            else:
-                lower_block = midpoint + 1
-        self._first_timestamp_blocks[timestamp_ms] = lower_block
-        return lower_block
+        block = first_block_at_or_after(
+            timestamp_ms,
+            finalized_block=self._with_retry(self._fetcher.finalized_block),
+            timestamp_at=self._timestamp_at_block,
+        )
+        self._first_timestamp_blocks[timestamp_ms] = block
+        return block
 
     def last_finalized_block_at_or_before(
         self, timestamp: datetime, *, now: datetime
@@ -582,31 +571,13 @@ class LiveAlphaPriceProvider:
         if cached is not None:
             return cached
 
-        finalized_block = self._with_retry(self._fetcher.finalized_block)
-        finalized_timestamp = self._timestamp_at_block(finalized_block)
-        if finalized_timestamp < timestamp_ms:
-            raise AlphaMarketDataUnavailable(
-                "timestamp is not yet covered by the finalized archive head"
-            )
-        if finalized_timestamp == timestamp_ms:
-            self._last_timestamp_blocks[timestamp_ms] = finalized_block
-            return finalized_block
-
-        lower_block = 0
-        upper_block = finalized_block
-        while lower_block < upper_block:
-            midpoint = lower_block + (upper_block - lower_block) // 2
-            if self._timestamp_at_block(midpoint) > timestamp_ms:
-                upper_block = midpoint
-            else:
-                lower_block = midpoint + 1
-        last_block = lower_block - 1
-        if last_block < 0:
-            raise AlphaMarketDataUnavailable(
-                "timestamp precedes the finalized archive history"
-            )
-        self._last_timestamp_blocks[timestamp_ms] = last_block
-        return last_block
+        block = last_block_at_or_before(
+            timestamp_ms,
+            finalized_block=self._with_retry(self._fetcher.finalized_block),
+            timestamp_at=self._timestamp_at_block,
+        )
+        self._last_timestamp_blocks[timestamp_ms] = block
+        return block
 
     def price_series(
         self, netuid: int, *, window: ResolutionWindow
@@ -616,11 +587,8 @@ class LiveAlphaPriceProvider:
         if cached is not None:
             return cached
 
-        snapshots: list[AlphaPriceSnapshot] = []
-        skipped_future_block = False
-        consecutive_archive_failures = 0
-        archive_unavailable = False
-        for block in _canonical_blocks(window):
+        sampling = SeriesSampling()
+        for block in canonical_snapshot_blocks(window):
             if self._deadline_exceeded_fn is not None and self._deadline_exceeded_fn():
                 # A 30d series is thousands of paced RPCs; the tick budget can
                 # expire mid-series. Fetched snapshots stay in _snapshots, so
@@ -631,7 +599,7 @@ class LiveAlphaPriceProvider:
                     f"resolution budget exhausted mid-series netuid={netuid}"
                 )
             if block > current_block:
-                skipped_future_block = True
+                sampling.future_block()
             result = self._snapshot_at(
                 netuid=netuid, block=block, current_block=current_block
             )
@@ -640,27 +608,11 @@ class LiveAlphaPriceProvider:
                 bt.logging.warning(
                     f"Alpha market-data snapshot skipped: netuid={netuid} block={block}"
                 )
-                if result.connection_available:
-                    consecutive_archive_failures = 0
-                else:
-                    archive_unavailable = True
-                    consecutive_archive_failures += 1
-                    if (
-                        consecutive_archive_failures
-                        >= LIVE_MARKET_DATA_MAX_CONSECUTIVE_ARCHIVE_FAILURES
-                    ):
-                        break
+                if sampling.gap(connection_available=result.connection_available):
+                    break
                 continue
-            consecutive_archive_failures = 0
-            snapshots.append(snapshot)
-        if archive_unavailable:
-            raise AlphaMarketDataUnavailable(
-                f"archive data unavailable for netuid={netuid} window={window}"
-            )
-        if skipped_future_block:
-            raise AlphaMarketDataUnavailable(
-                f"archive head has not finalized netuid={netuid} window={window}"
-            )
+            sampling.sampled(snapshot)
+        snapshots = sampling.finish(netuid=netuid, window=window)
         if not snapshots:
             return None
         series = AlphaPriceSeries(
@@ -669,7 +621,7 @@ class LiveAlphaPriceProvider:
                 f"_live_{snapshots[0].block}_{snapshots[-1].block}"
             ),
             netuid=netuid,
-            snapshots=tuple(snapshots),
+            snapshots=snapshots,
         )
         self._prune_snapshot_cache(retain_from_block=window.start_block)
         self._series[key] = series
@@ -832,17 +784,6 @@ def read_chain_genesis(endpoint: str) -> str | None:
         return fetcher.genesis_hash()
     finally:
         fetcher.close()
-
-
-def _canonical_blocks(window: ResolutionWindow) -> tuple[int, ...]:
-    first_block = window.start_block + CANONICAL_ALPHA_SNAPSHOT_CADENCE_BLOCKS
-    return tuple(
-        range(
-            first_block,
-            window.end_block + 1,
-            CANONICAL_ALPHA_SNAPSHOT_CADENCE_BLOCKS,
-        )
-    )
 
 
 def _utc_timestamp_milliseconds(value: datetime) -> int:

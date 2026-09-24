@@ -24,7 +24,10 @@ from endure.assessment.schemas.subnet_alpha_risk import (
     RiskOutput,
     RiskSubmissionBundle,
 )
-from endure.base.validator import WEIGHT_EMISSION_FINALITY_MARGIN_BLOCKS
+from endure.base.validator import (
+    WEIGHT_EMISSION_FINALITY_MARGIN_BLOCKS,
+    BaseValidatorNeuron,
+)
 from endure.protocol.consensus_policy import (
     MAINNET_GENESIS_HASH,
     SN30_NETUID,
@@ -34,7 +37,6 @@ from endure.protocol.round_engine import DEFAULT_OFFSETS, compute_fixed_utc_wind
 from endure.protocol.schedulers import FixedUtcScheduler
 from endure.protocol.version_contract import CURRENT_VERSION_KEY
 from endure.protocol.vertical import AssessmentRoundProgram, VerticalRuntime
-from endure.scoring.emission_policy import OwnerVoteBlocked
 from endure.scoring.market_data import recorded_mainnet_fixture_provider
 from endure.scoring.risk.orchestrator import RiskScoringOrchestrator, risk_coordinate
 from endure.scoring.weights import ema_update
@@ -178,7 +180,9 @@ def replay_validator(
     validator._storage = storage
     validator._schema_id = RISK_SCHEMA_ID
     validator._owner_vote_recipient = None
-    validator._owner_vote_block_reason = None
+    validator._emission_block = None
+    validator._emission_block_since_block = None
+    validator._durable_scores_loaded = True
     validator._weight_emission_startup_fence_block = None
     validator._consecutive_provider_throttles = 0
     validator._consecutive_set_weights_failures = 0
@@ -433,7 +437,7 @@ def test_mainnet_owner_mismatch_abstains_until_the_pinned_owner_returns(
     [
         ("unregistered", "owner_unregistered"),
         ("stale-local-metagraph", "owner_snapshot_inconsistent"),
-        ("stale-snapshot-block", "owner_snapshot_inconsistent"),
+        ("stale-snapshot-block", "chain_snapshot_inconsistent"),
         ("wrong-chain", "owner_vote_chain_mismatch"),
     ],
 )
@@ -536,7 +540,7 @@ def test_disable_set_weights_is_an_off_switch_for_both_modes(
 
 
 @pytest.mark.parametrize("constraint", ["minimum", "maximum"])
-def test_owner_vote_obeys_permit_rate_boundary_and_rejects_constraint_changes(
+def test_owner_vote_obeys_permit_strict_rate_limit_and_rejects_constraint_changes(
     storage: Storage, mock_validator_config: bt.Config, constraint: str
 ) -> None:
     chain = ReplayChain(storage)
@@ -547,19 +551,25 @@ def test_owner_vote_obeys_permit_rate_boundary_and_rejects_constraint_changes(
     assert chain.submissions == []
     assert validator._emission_reason == "no_validator_permit"
     chain.permits[0] = True
-    chain.last_updates[0] = chain.block - chain.weights_rate_limit + 1
+    # Subtensor's limit is strict: at exactly last_update + limit the SDK
+    # refuses, so the attempt must defer instead of recording a failure.
+    chain.last_updates[0] = chain.block - chain.weights_rate_limit
     validator.set_weights()
     assert chain.submissions == []
+    assert validator._emission_reason == "chain_rate_limit"
+    assert validator._consecutive_set_weights_failures == 0
     chain.block += 1
     if constraint == "minimum":
         chain.minimum = 2
     else:
         chain.maximum = Decimal("0.5")
-    with pytest.raises(OwnerVoteBlocked):
-        validator.set_weights()
+    # A refused recheck counts one failed attempt and returns to sync(), which
+    # advances the attempt block: no hot retry loop.
+    validator.set_weights()
     assert chain.submissions == []
     assert not storage.has_open_weight_emission_confirmation(schema_id=RISK_SCHEMA_ID)
     assert validator._emission_reason == "owner_vote_vector_invalid"
+    assert validator._consecutive_set_weights_failures == 1
     chain.minimum = 1
     chain.maximum = Decimal("1")
     validator.set_weights()
@@ -645,3 +655,95 @@ def test_restored_backup_reproduces_its_own_scoring_state(
         assert restored_chain.submissions == [expected]
     finally:
         restored.close()
+
+
+def test_scored_mode_defers_at_the_strict_chain_rate_limit(
+    storage: Storage, mock_validator_config: bt.Config
+) -> None:
+    chain = ReplayChain(storage)
+    record_resolved_scores(storage, chain)
+    validator = replay_validator(storage, mock_validator_config, chain)
+    advance_past_startup_fence(validator, chain)
+    chain.last_updates[0] = chain.block - chain.weights_rate_limit
+
+    validator.set_weights()
+
+    assert chain.submissions == []
+    assert validator._emission_reason == "chain_rate_limit"
+    assert validator._consecutive_set_weights_failures == 0
+    assert storage.weight_emission_history(RISK_SCHEMA_ID) == []
+    chain.block += 1
+    validator.set_weights()
+    assert chain.submissions == [EARNED]
+
+
+def _reregister_scored_miners(validator: ReplayValidator, chain: ReplayChain) -> None:
+    """Miners 1 and 2 re-register at UIDs 3 and 4, as a resync would align it."""
+    moved = {3: chain.hotkeys[1], 4: chain.hotkeys[2]}
+    chain.hotkeys[1], chain.hotkeys[2] = "newcomer-1", "newcomer-2"
+    for uid, hotkey in moved.items():
+        chain.hotkeys[uid] = hotkey
+    validator.metagraph.hotkeys = list(chain.hotkeys)
+    validator.scores = [Decimal(0)] * len(chain.hotkeys)
+
+
+def test_resync_after_reregistration_keeps_earned_weights(
+    storage: Storage,
+    mock_validator_config: bt.Config,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    chain = ReplayChain(storage)
+    record_resolved_scores(storage, chain)
+    validator = replay_validator(storage, mock_validator_config, chain)
+    advance_past_startup_fence(validator, chain)
+    monkeypatch.setattr(
+        BaseValidatorNeuron,
+        "resync_metagraph",
+        lambda self: _reregister_scored_miners(self, chain),
+    )
+
+    validator.resync_metagraph()
+
+    assert validator._observed_emission_mode() == "scored"
+    validator.set_weights()
+    assert chain.submissions == [((3, 4), (65535, 8192), CURRENT_VERSION_KEY)]
+
+
+def test_set_weights_rebuilds_a_zeroed_vector_from_durable_state(
+    storage: Storage, mock_validator_config: bt.Config
+) -> None:
+    chain = ReplayChain(storage)
+    record_resolved_scores(storage, chain)
+    validator = replay_validator(storage, mock_validator_config, chain)
+    advance_past_startup_fence(validator, chain)
+    _reregister_scored_miners(validator, chain)
+
+    validator.set_weights()
+
+    assert chain.submissions == [((3, 4), (65535, 8192), CURRENT_VERSION_KEY)]
+
+
+def test_unreadable_durable_scores_defer_instead_of_emitting(
+    storage: Storage,
+    mock_validator_config: bt.Config,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    chain = ReplayChain(storage)
+    record_resolved_scores(storage, chain)
+    validator = replay_validator(storage, mock_validator_config, chain)
+    advance_past_startup_fence(validator, chain)
+
+    def unreadable() -> dict[str, Decimal]:
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(
+        validator,
+        "_vertical_runtime",
+        SimpleNamespace(
+            round_program=SimpleNamespace(weights=unreadable, blended_scores=dict)
+        ),
+    )
+    validator.set_weights()
+
+    assert chain.submissions == []
+    assert validator._emission_reason == "score_state_unavailable"

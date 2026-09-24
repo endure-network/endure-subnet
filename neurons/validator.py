@@ -13,11 +13,10 @@ import copy
 import os
 import threading
 import time
-from collections.abc import Sequence
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
-from typing import TYPE_CHECKING, Final, Protocol, Tuple, runtime_checkable
+from typing import TYPE_CHECKING, Final, Literal, Protocol, Tuple, runtime_checkable
 
 import bittensor as bt
 
@@ -75,14 +74,14 @@ from endure.runtime.resolve import resolve_runtime_provider
 from endure.scoring.assessment_orchestrator import ResolutionBudget
 from endure.scoring.eligibility import DeregistrationTracker
 from endure.scoring.emission_policy import (
-    OwnerVoteBlocked,
-    OwnerVoteBlockReason,
+    ChainSnapshot,
+    EmissionBlocked,
+    EmissionBlockReason,
+    EmissionPlan,
     OwnerVoteRecipient,
-    owner_vote_submission_due,
-    owner_vote_weights,
-    resolve_owner_vote_uid,
+    plan_emission,
+    recheck_owner_vote,
     select_emission_mode,
-    validate_owner_vote_vector,
 )
 from endure.scoring.market_data import recorded_mainnet_fixture_provider
 from endure.scoring.policy import DEFAULT_PAYOUT_HALF_LIFE_ROUNDS
@@ -113,6 +112,13 @@ from endure.utils.logging import safe_endpoint_label, safe_error
 
 _RECORDED_FIXTURE_NETUIDS: Final = (8, 44)
 ZERO = Decimal("0")
+# Owner-state failures that no retry fixes on its own degrade /health at once;
+# snapshot/identity glitches only after they persist for a couple of epochs.
+# Blocked emission lets weights age toward activity_cutoff (5000 blocks on SN30).
+_IMMEDIATE_EMISSION_BLOCKS: Final = frozenset(
+    {"owner_hotkey_mismatch", "owner_unregistered", "owner_vote_chain_mismatch"}
+)
+_TRANSIENT_EMISSION_BLOCK_EPOCHS: Final = 2
 
 
 def _cr4_reveal_scan_batch_budget(epoch_length: int) -> int:
@@ -221,7 +227,8 @@ class Validator(BaseValidatorNeuron):
         self._storage = Storage.from_url(self.config.endure.database_url)
         self._weight_emission_startup_fence_block: int | None = None
         self._owner_vote_recipient: OwnerVoteRecipient | None = None
-        self._owner_vote_block_reason: OwnerVoteBlockReason | None = None
+        self._emission_block: EmissionBlockReason | None = None
+        self._emission_block_since_block: int | None = None
         self._emission_mode = (
             "disabled" if self.config.neuron.disable_set_weights else "abstain"
         )
@@ -242,6 +249,7 @@ class Validator(BaseValidatorNeuron):
         self._vertical_runtime: VerticalRuntime
         self._service = self._build_service()
         self._reconstruct_scores()
+        self._durable_scores_loaded = True
         self._seed_deregistration_tracker()
         self._tick_failures = 0
         self._last_tick_ok: str | None = None
@@ -325,6 +333,7 @@ class Validator(BaseValidatorNeuron):
             or fallback_overdue
             or unknown_block_open
             or submission_overdue
+            or self._emission_block_degraded(current_block)
         )
         long_op_started = getattr(self, "_long_op_started_monotonic", None)
         return {
@@ -370,7 +379,10 @@ class Validator(BaseValidatorNeuron):
             "weight_emission_degraded": weight_emission_degraded,
             "emission_mode": self._emission_mode,
             "emission_reason": self._emission_reason,
-            "emission_blocked_reason": getattr(self, "_emission_blocked_reason", None),
+            "emission_blocked_reason": (
+                getattr(self, "_emission_blocked_reason", None)
+                or getattr(self, "_emission_block", None)
+            ),
             "emission_expected": self._emission_expected_since is not None,
             "emission_next_eligible_block": self._emission_next_eligible_block,
             "emission_expected_seconds": (
@@ -618,10 +630,7 @@ class Validator(BaseValidatorNeuron):
             getattr(self, "scores", ()),
             owner_vote_network=owner_vote_network(self.config),
         )
-        if (
-            mode == "owner_vote"
-            and getattr(self, "_owner_vote_block_reason", None) is not None
-        ):
+        if mode != "abstain" and getattr(self, "_emission_block", None) is not None:
             return "abstain"
         return mode
 
@@ -637,9 +646,27 @@ class Validator(BaseValidatorNeuron):
     def _defer_emission(self, reason: str) -> None:
         self._emission_expected_since = None
         self._emission_deadline = None
-        if self._observed_emission_mode() in {"disabled", "abstain"}:
+        mode = self._observed_emission_mode()
+        if mode == "disabled" or (
+            mode == "abstain" and getattr(self, "_emission_block", None) is None
+        ):
             self._emission_blocked_reason = None
-        self._set_emission_observation(self._observed_emission_mode(), reason)
+        self._set_emission_observation(mode, reason)
+
+    def _emission_block_degraded(self, current_block: int | None) -> bool:
+        """Blocked emission lets weights age toward activity_cutoff; page early."""
+        block = getattr(self, "_emission_block", None)
+        if block is None or self.config.neuron.disable_set_weights:
+            return False
+        if block in _IMMEDIATE_EMISSION_BLOCKS:
+            return True
+        since = getattr(self, "_emission_block_since_block", None)
+        return (
+            since is not None
+            and current_block is not None
+            and current_block - since
+            >= _TRANSIENT_EMISSION_BLOCK_EPOCHS * int(self.config.neuron.epoch_length)
+        )
 
     def _refresh_emission_health(
         self, current_block: int | None, *, open_confirmation: bool
@@ -679,9 +706,7 @@ class Validator(BaseValidatorNeuron):
         if mode == "disabled":
             return "disabled"
         if mode == "abstain":
-            return getattr(self, "_owner_vote_block_reason", None) or (
-                "no_positive_scores"
-            )
+            return getattr(self, "_emission_block", None) or "no_positive_scores"
         if open_confirmation:
             return "confirmation_pending"
         if block is None:
@@ -730,6 +755,10 @@ class Validator(BaseValidatorNeuron):
         return None
 
     def should_set_weights(self) -> bool:
+        # The base constructor's first sync runs before durable scores exist;
+        # planning or reporting a mode then would describe zero scores.
+        if not getattr(self, "_durable_scores_loaded", False):
+            return False
         due = super().should_set_weights()
         storage = getattr(self, "_storage", None)
         self._refresh_emission_health(
@@ -746,17 +775,20 @@ class Validator(BaseValidatorNeuron):
     def set_weights(self) -> None:
         """Emit earned weights, or the owner vote whenever no score is positive.
 
-        Scores come from durable EMAs, so a restart or failed tick never reads
-        as zero scores. The owner allocation never enters scores or EMAs.
+        The score vector is rebuilt from durable EMAs first, so a restart, a
+        failed tick or a metagraph resync never reads as zero scores. The
+        owner allocation never enters scores or EMAs.
         """
         if self.config.neuron.disable_set_weights:
             self._defer_emission("disabled")
             return
+        if not self._refresh_scores_from_durable_state():
+            self._defer_emission("score_state_unavailable")
+            return
         network = owner_vote_network(self.config)
         mode = select_emission_mode(self.scores, owner_vote_network=network)
-        if mode == "scored":
-            self._owner_vote_block_reason = None
         if mode == "abstain":
+            self._clear_emission_block()
             self._defer_emission("no_positive_scores")
             return
         self._set_emission_observation(
@@ -766,24 +798,47 @@ class Validator(BaseValidatorNeuron):
         storage = getattr(self, "_storage", None)
         if not self._weight_emission_ready(storage):
             return
-        weights: Sequence[Decimal] = self.scores
-        recipient: OwnerVoteRecipient | None = None
-        if mode == "owner_vote" and network is not None:
-            resolved = self._owner_vote_if_due(network)
-            if resolved is None:
-                return
-            recipient, weights = resolved
+        plan = self._plan_emission(mode, network)
+        if plan is None:
+            return
         self._emission_blocked_reason = None
-        self._owner_vote_recipient = recipient
+        self._owner_vote_recipient = plan.recipient
         try:
-            self._emit_weight_candidate(weights)
+            self._emit_weight_candidate(plan.weights)
+        except EmissionBlocked as blocked:
+            # The prepared-vector recheck refused before sending; the emitter
+            # already counted the failed attempt. Returning lets sync() advance
+            # the attempt block, so the retry waits for the next epoch.
+            bt.logging.warning(f"weight emission refused: {blocked.reason}: {blocked}")
+            self._emission_blocked_reason = blocked.reason
+            self._set_emission_observation(
+                self._observed_emission_mode(), blocked.reason
+            )
         finally:
             self._owner_vote_recipient = None
 
-    def _block_owner_vote(self, blocked: OwnerVoteBlocked) -> None:
-        bt.logging.warning(f"owner vote abstains: {blocked.reason}: {blocked}")
-        self._owner_vote_block_reason = blocked.reason
+    def _refresh_scores_from_durable_state(self) -> bool:
+        try:
+            self._reconstruct_scores()
+        except Exception as error:  # noqa: BLE001 — never emit from stale state
+            bt.logging.warning(
+                f"durable score state unavailable; deferring emission: "
+                f"{safe_error(error)}"
+            )
+            return False
+        return True
+
+    def _block_emission(self, blocked: EmissionBlocked, block: int) -> None:
+        bt.logging.warning(f"weight emission abstains: {blocked.reason}: {blocked}")
+        if getattr(self, "_emission_block", None) != blocked.reason:
+            self._emission_block_since_block = block
+        self._emission_block = blocked.reason
+        self._emission_blocked_reason = blocked.reason
         self._defer_emission(blocked.reason)
+
+    def _clear_emission_block(self) -> None:
+        self._emission_block = None
+        self._emission_block_since_block = None
 
     def _weight_emission_ready(self, storage: Storage | None) -> bool:
         """Keep startup fencing and durable single-flight common to both modes."""
@@ -834,63 +889,53 @@ class Validator(BaseValidatorNeuron):
             return False
         return True
 
-    def _owner_vote_if_due(
-        self, network: OwnerVoteNetwork
-    ) -> tuple[OwnerVoteRecipient, tuple[Decimal, ...]] | None:
-        """Resolve the on-chain owner, validator permit and pacing in one snapshot."""
+    def _plan_emission(
+        self,
+        mode: Literal["scored", "owner_vote"],
+        network: OwnerVoteNetwork | None,
+    ) -> EmissionPlan | None:
+        """Plan identity, permit, strict rate limit and recipient in one snapshot."""
         netuid = int(self.config.netuid)
         block = int(self.subtensor.get_current_block())
-        snapshot = self.subtensor.get_metagraph_info(netuid=netuid, block=block)
+        info = self.subtensor.get_metagraph_info(netuid=netuid, block=block)
+        snapshot = (
+            None
+            if info is None
+            else ChainSnapshot(
+                block=info.block,
+                hotkeys=info.hotkeys,
+                owner_hotkey=info.owner_hotkey,
+                validator_permit=info.validator_permit,
+                last_update=info.last_update,
+                weights_rate_limit=info.weights_rate_limit,
+            )
+        )
         try:
-            if snapshot is None or snapshot.block != block:
-                raise OwnerVoteBlocked(
-                    "owner_snapshot_inconsistent", "No chain snapshot at this block"
-                )
-            owner_uid = resolve_owner_vote_uid(
+            plan = plan_emission(
+                mode=mode,
                 network=network,
+                snapshot=snapshot,
+                block=block,
                 chain_identity=self.gated_subtensor.get_block_hash(0),
                 netuid=netuid,
-                hotkeys=snapshot.hotkeys,
-                owner_hotkey=snapshot.owner_hotkey,
-            )
-            due = owner_vote_submission_due(
                 validator_uid=int(self.uid),
                 validator_hotkey=str(self.wallet.hotkey.ss58_address),
-                hotkeys=snapshot.hotkeys,
-                validator_permits=snapshot.validator_permit,
-                last_updates=snapshot.last_update,
-                block=block,
-                weights_rate_limit=snapshot.weights_rate_limit,
+                local_hotkeys=self.metagraph.hotkeys,
+                scores=self.scores,
             )
-            # The emitter indexes the local metagraph; it must place the owner
-            # at the same UID as the chain snapshot or the vote goes elsewhere.
-            local_hotkeys = self.metagraph.hotkeys
-            if (
-                owner_uid >= len(local_hotkeys)
-                or local_hotkeys[owner_uid] != snapshot.owner_hotkey
-            ):
-                raise OwnerVoteBlocked(
-                    "owner_snapshot_inconsistent",
-                    "Local metagraph disagrees with the chain owner UID",
-                )
-            weights = owner_vote_weights(len(local_hotkeys), owner_uid)
-        except OwnerVoteBlocked as blocked:
-            self._block_owner_vote(blocked)
+        except EmissionBlocked as blocked:
+            self._block_emission(blocked, block)
             return None
-        self._owner_vote_block_reason = None
-        self._emission_chain_due_block = (
-            snapshot.last_update[self.uid] + snapshot.weights_rate_limit
-        )
-        self._emission_snapshot_permit = bool(snapshot.validator_permit[self.uid])
+        self._clear_emission_block()
+        self._emission_chain_due_block = plan.next_eligible_block
+        self._emission_snapshot_permit = plan.permit
         self._emission_snapshot_block = block
-        if not due:
+        if not plan.due:
             self._defer_emission(
-                "no_validator_permit"
-                if not snapshot.validator_permit[self.uid]
-                else "chain_rate_limit"
+                "no_validator_permit" if not plan.permit else "chain_rate_limit"
             )
             return None
-        return OwnerVoteRecipient(network, local_hotkeys[owner_uid], owner_uid), weights
+        return plan
 
     def _emission_blended_snapshot(self) -> dict[str, Decimal]:
         cached: dict[str, Decimal] = getattr(self, "_blended_snapshot", {})
@@ -946,32 +991,16 @@ class Validator(BaseValidatorNeuron):
         if recipient is not None:
             # Pre-submission recheck against the exact metagraph, chain
             # identity and constraints that produced this prepared vector.
-            try:
-                owner_uid = resolve_owner_vote_uid(
-                    network=recipient.network,
-                    chain_identity=attempt.chain_identity or "",
-                    netuid=attempt.netuid if attempt.netuid is not None else -1,
-                    hotkeys=attempt.hotkeys,
-                    owner_hotkey=recipient.hotkey,
-                )
-                validate_owner_vote_vector(
-                    owner_uid=recipient.uid,
-                    uids=attempt.uint_uids,
-                    weights=attempt.uint_weights,
-                    min_allowed_weights=attempt.min_allowed_weights,
-                    max_weight_limit=attempt.max_weight_limit,
-                )
-                if owner_uid != recipient.uid:
-                    raise OwnerVoteBlocked(
-                        "owner_snapshot_inconsistent",
-                        "Owner UID moved between selection and submission",
-                    )
-            except OwnerVoteBlocked as blocked:
-                self._emission_blocked_reason = blocked.reason
-                self._set_emission_observation(
-                    self._observed_emission_mode(), blocked.reason
-                )
-                raise
+            recheck_owner_vote(
+                recipient,
+                chain_identity=attempt.chain_identity or "",
+                netuid=attempt.netuid if attempt.netuid is not None else -1,
+                hotkeys=attempt.hotkeys,
+                uint_uids=attempt.uint_uids,
+                uint_weights=attempt.uint_weights,
+                min_allowed_weights=attempt.min_allowed_weights,
+                max_weight_limit=attempt.max_weight_limit,
+            )
         self._set_emission_observation(self._observed_emission_mode(), "prepared")
         storage = getattr(self, "_storage", None)
         if storage is None:
@@ -1229,6 +1258,11 @@ class Validator(BaseValidatorNeuron):
         """Advance the deregistration tracker once per metagraph refresh."""
         super().resync_metagraph()
         self._deregistration_tracker().advance(self.metagraph.hotkeys)
+        if getattr(self, "_durable_scores_loaded", False):
+            # Resync alignment zeroes UIDs whose hotkey changed; rebuild from
+            # durable EMAs so a miner that re-registered at a new UID keeps its
+            # earned weight instead of reading as all-zero scores.
+            self._refresh_scores_from_durable_state()
 
     def _deregistration_tracker(self) -> DeregistrationTracker:
         # The base constructor's first sync can resync before __init__ seeds.

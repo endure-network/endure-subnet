@@ -133,43 +133,71 @@ accuracy. It writes no synthetic scores/EMAs, and its audit rows have null
 earned-score and precap provenance.
 
 The recipient is the on-chain `SubnetOwnerHotkey`, resolved to its UID in the
-same metagraph snapshot used for the attempt, both at selection and at the
-pre-submission recheck; no UID is fixed. On mainnet the owner vote additionally
-requires the mainnet genesis identity, netuid `30`, and owner hotkey
-`5HW12NvEZoGz8ZzcWMh4xyDUy6H1Af85m5LB8V1L11erK1S1`. Testnet has no hotkey or
-netuid pin. Validator permit, chain weight constraints, rate limits, startup
-fencing, and one-in-flight submission still apply. Endure uses its normal
-key-`2042` durable prepare/submit/confirm pipeline; a submission is not an
-immediate finalized confirmation. The
+same metagraph snapshot used for the attempt; no UID is fixed. On mainnet the
+owner vote additionally requires the mainnet genesis identity, netuid `30`, and
+owner hotkey `5HW12NvEZoGz8ZzcWMh4xyDUy6H1Af85m5LB8V1L11erK1S1`. Testnet has no
+hotkey or netuid pin; as defense in depth, a testnet owner vote is refused on
+the mainnet genesis (`owner_vote_chain_mismatch`). Validator permit, chain
+weight constraints, rate limits, startup fencing, and one-in-flight submission
+still apply. Endure uses its normal key-`2042` durable prepare/submit/confirm
+pipeline; a submission is not an immediate finalized confirmation. The
 [reference setter](https://github.com/endure-network/bittensor-validator-repo/blob/main/validator.py)
 is context for the owner, permit, and rate checks, not a second writer to run
 alongside Endure.
 
-Unsafe owner state never authorizes a replacement recipient. The validator
-abstains without submitting; `/health` stays 200 with `emission_mode=abstain`,
-`emission_expected=false`, and one of these `emission_reason` values:
+Both modes, `scored` and `owner_vote`, plan each attempt from one chain
+snapshot: validator identity, validator permit, and Subtensor's strict weights
+rate limit (`block - last_update > weights_rate_limit`). SN30's limit is 180
+blocks while the mainnet epoch is 100, so an epoch attempt can come due before
+the chain would accept it. A not-yet-due attempt defers with `emission_reason`
+`chain_rate_limit` (or `no_validator_permit`) and is not recorded as a failed
+submission.
 
-| `emission_reason` | Cause |
-| --- | --- |
-| `owner_vote_chain_mismatch` | mainnet genesis or netuid `30` pin fails |
-| `owner_hotkey_mismatch` | mainnet subnet owner is not the pinned hotkey |
-| `owner_unregistered` | the subnet owner hotkey holds no UID |
-| `owner_snapshot_inconsistent` | no or stale snapshot, owner at more than one UID, or local metagraph disagreeing with the chain UID |
-| `validator_identity_invalid` | the validator's own UID/hotkey is not valid in the snapshot |
+Unsafe chain or owner state never authorizes a replacement recipient. The
+validator abstains without submitting: `emission_mode=abstain`,
+`emission_expected=false`, and both `emission_reason` and
+`emission_blocked_reason` carry the block reason:
 
-These are retried each epoch and clear automatically once chain state is safe
-again. A pre-submission recheck failure, `owner_vote_vector_invalid` (chain
-`min_allowed_weights` or `max_weight_limit` is not `1`, or the owner UID
-moved), aborts before sending, counts as a failed `set_weights` attempt so
-health degrades, and shows in `emission_blocked_reason`. The plain all-zero case
-on mock/local chains reports `abstain` / `no_positive_scores`. Abstention leaves
+| `emission_reason` | Cause | `/health` |
+| --- | --- | --- |
+| `owner_vote_chain_mismatch` | mainnet genesis or netuid `30` pin fails, or a testnet owner vote on the mainnet genesis | 503 immediately |
+| `owner_hotkey_mismatch` | mainnet subnet owner is not the pinned hotkey | 503 immediately |
+| `owner_unregistered` | the subnet owner hotkey holds no UID | 503 immediately |
+| `owner_snapshot_inconsistent` | snapshot has no owner hotkey, owner at more than one UID, or local metagraph disagreeing with the chain UID | 503 after 2 epochs (200 blocks) |
+| `chain_snapshot_inconsistent` | no or stale chain snapshot, or incoherent rate data | 503 after 2 epochs (200 blocks) |
+| `validator_identity_invalid` | the validator's own UID/hotkey is not valid in the snapshot | 503 after 2 epochs (200 blocks) |
+
+Blocks are retried each epoch and clear automatically once chain state is safe
+again. While blocked, the validator's last weights age toward SN30's
+`activity_cutoff` of 5000 blocks (~16.7 h), and an owner-hotkey rotation would
+block every key-`2042` validator at once, so these must page an operator.
+Container healthchecks use `/live`, so a 503 on `/health` pages without restart
+loops.
+
+Before sending, a pre-submission recheck re-resolves the snapshot's owner
+hotkey against the exact metagraph, chain identity, and chain constraints the
+vector was prepared from; it does not re-read the on-chain owner. A recheck
+failure, `owner_vote_vector_invalid` (chain `min_allowed_weights` or
+`max_weight_limit` is not `1`) or `owner_snapshot_inconsistent` (the owner UID
+moved), aborts before sending, counts as one failed `set_weights` attempt so
+health degrades through the failure counter, sets `emission_blocked_reason`,
+and is retried at the next epoch, not in a hot loop. The plain all-zero case on
+mock/local chains reports `abstain` / `no_positive_scores`. Abstention leaves
 previously submitted on-chain weights untouched.
 
 Mode is a pure function of current scores and network; there is no latch and
 no retained history decision. Scores are rebuilt from durable EMAs at startup,
-and a failed scoring tick keeps the previous vector, so neither a restart nor a
-tick failure reads as zero scores: a validator restarted while scored resumes
-earned weights with no owner-vote flicker.
+after every metagraph resync, and at the start of every weight attempt, and a
+failed scoring tick keeps the previous vector, so neither a restart nor a tick
+failure reads as zero scores: a validator restarted while scored resumes
+earned weights with no owner-vote flicker, a running validator agrees with a
+restarted one, and a miner that re-registered at a new UID keeps its earned
+weight. If the durable score state cannot be read, the attempt defers with
+`emission_reason=score_state_unavailable`: no owner vote and no stale weights.
+Open weight batches recorded under a previous validator identity, for example
+after re-registration at a new UID or hotkey, are marked `unconfirmed` once
+their deadlines pass, so they no longer hold emission on
+`confirmation_pending`.
 
 Resolution runs against the configured `MARKET_DATA_ENDPOINT`, which defaults
 to the mainnet archive node. Independent validators may enter or leave the

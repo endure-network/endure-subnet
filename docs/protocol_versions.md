@@ -182,7 +182,14 @@ over `DEREGISTRATION_CONFIRMATION_SYNCS = 2` metagraph resyncs (in
 [eligibility.py](../endure/scoring/eligibility.py)), the complete Decimal
 score-to-u16 composition (abstain on no positive score, chain limits, u16
 encoding, in [weight_processing.py](../endure/scoring/weight_processing.py)),
-the mainnet/testnet genesis identities, and the owner-vote fallback policy are
+emission planning from one chain snapshot and its pre-submission recheck (in
+[emission_policy.py](../endure/scoring/emission_policy.py)), Alpha
+market-data sampling decisions (canonical sample blocks, timestamp-to-block
+boundary searches, and the series gap policy, in
+[market_sampling.py](../endure/scoring/market_sampling.py), moved unchanged
+from `endure/live/alpha_market_data.py`; an old-vs-new differential over 4,500
+cases found 0 mismatches), the mainnet/testnet genesis identities, and the
+owner-vote fallback policy are
 digest-covered. On mainnet
 SN30 and Bittensor testnet, one emission-enabled process submits its whole vote
 to the UID of the on-chain subnet owner hotkey whenever no score is positive,

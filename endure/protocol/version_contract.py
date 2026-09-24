@@ -125,12 +125,16 @@ PREVIOUS_VERSION_DIGEST = (
 # must deploy together. This shared release key clears the SN30 chain floor.
 # Includes the 15-netuid mainnet universe refresh; mainnet serving opens
 # behind the explicit --endure.serving_stage mainnet acknowledgement.
-# 2042: release-pinned mainnet admission, atomic reveal/snapshot closure,
-# immutable empty snapshots, and digest-covered Decimal emission processing.
-# Storage selection, miner admission, deregistration confirmation, and the
-# standing owner-vote fallback (on-chain SubnetOwnerHotkey whenever no score is
-# positive; mainnet pinned to the SN30 owner) are in the watched tree; one
-# durable emitter serves both modes.
+# 2042: release-pinned mainnet admission, atomic reveal/snapshot closure and
+# immutable empty snapshots. Watched decisions: storage admission/selection;
+# miner axon admission; deregistration confirmation; genesis-based chain
+# classification, mainnet-policy applicability and the owner-vote network;
+# emission planning from one chain snapshot (identity, permit, strict rate
+# limit, on-chain SubnetOwnerHotkey recipient pinned to the SN30 owner on
+# mainnet) and its pre-submission recheck; the score-to-u16 composition; and
+# Alpha market-data sampling (canonical blocks, boundary searches, gap policy).
+# Unwatched runtime code performs the I/O (RPC reads, durable emission, CLI
+# plumbing) and non-consensus health reporting.
 CURRENT_VERSION_KEY = 2042
 CURRENT_VERSION_DIGEST = (
     "271d95c8bd68982ba1c3d3f018d3e798400d9bd00f34cb66379065cfad135ac9"

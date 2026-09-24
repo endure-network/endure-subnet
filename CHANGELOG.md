@@ -21,23 +21,46 @@ key-2041 images and chain parameters are not changed by this source update.
   mainnet time compression before the archive probe.
 - Digest-cover storage selection, the score-to-chain composition (abstain on no
   positive score, chain limits, u16 encoding), miner axon admission (registered
-  hotkey and stake floor), and two-resync deregistration confirmation; remove
-  the unused `moving_average_alpha`/`update_scores` path.
+  hotkey and stake floor), two-resync deregistration confirmation, emission
+  planning and its pre-submission recheck (`emission_policy.py`), and Alpha
+  market-data sampling decisions (canonical sample blocks, timestamp-to-block
+  boundary searches, series gap policy), moved unchanged into
+  `market_sampling.py` (old-vs-new differential: 4,500 cases, 0 mismatches);
+  remove the unused `moving_average_alpha`/`update_scores` path.
 - Add a standing owner-vote fallback for served Alpha Risk on mainnet SN30 and
   Bittensor testnet: whenever the score vector has no positive entry (cold
   start, or after every scored miner is archived), submit the whole vote to the
   UID of the on-chain `SubnetOwnerHotkey`, resolved in the same metagraph
   snapshot; any positive score switches back to earned weights with no flag
   change or restart. Mainnet additionally pins genesis, netuid `30`, and the
-  owner hotkey. Unsafe owner state abstains with a distinct `emission_reason`
-  and retries each epoch. This is a fallback allocation, not earned reputation
-  or evidence of model accuracy; no synthetic scores/EMAs or earned-score audit
-  provenance are created. Mock and local chains keep all-zero abstention.
+  owner hotkey, and refuses a testnet owner vote on the mainnet genesis. Unsafe
+  chain or owner state abstains with a distinct `emission_reason` and
+  `emission_blocked_reason` and retries each epoch; owner mismatch/unregistered
+  and chain-pin failures degrade `/health` immediately, snapshot and validator
+  identity inconsistencies after 2 epochs, because last weights age toward
+  SN30's 5000-block `activity_cutoff`. This is a fallback allocation, not earned
+  reputation or evidence of model accuracy; no synthetic scores/EMAs or
+  earned-score audit provenance are created. Mock and local chains keep
+  all-zero abstention.
+- Plan both emission modes from one chain snapshot: validator identity, permit,
+  and Subtensor's strict weights rate limit (SN30: 180 blocks vs a 100-block
+  epoch). A not-yet-due attempt defers with `chain_rate_limit` (or
+  `no_validator_permit`) instead of recording a failed submission.
+- The pre-submission recheck re-resolves the snapshot's owner against the exact
+  metagraph, chain identity, and constraints the vector was prepared from; a
+  failure aborts before sending, counts as one failed attempt, and retries at
+  the next epoch, not in a hot loop.
 - Mode is a pure function of current scores and network, with no latch or
-  retained history decision. Scores are rebuilt from durable EMAs at startup and
-  a failed scoring tick keeps the previous vector, so neither reads as zero
-  scores; a consistent SQLite backup reproduces its own scoring state. Never
-  copy testnet state into mainnet.
+  retained history decision. Scores are rebuilt from durable EMAs at startup,
+  after every metagraph resync, and at the start of every weight attempt, so a
+  re-registered miner keeps its earned weight and a running validator agrees
+  with a restarted one; unreadable score state defers with
+  `score_state_unavailable`. A failed scoring tick keeps the previous vector,
+  so neither reads as zero scores; a consistent SQLite backup reproduces its
+  own scoring state. Never copy testnet state into mainnet.
+- Mark open weight batches from a previous validator identity `unconfirmed`
+  once their deadlines pass, so they no longer hold emission on
+  `confirmation_pending`.
 - Subtensor accepts a `version_key` at or above SN30's chain `weights_version`
   (`2040`), so key-`2042` submissions need no `weights_version` change.
 - Replace the external-setter/restart cutover with one final emission-enabled
@@ -55,6 +78,10 @@ key-2041 images and chain parameters are not changed by this source update.
   times out, or an unclosed SDK websocket after a construction-time `sys.exit`
   such as an unregistered hotkey, previously hung the process indefinitely.
   Watchdog teardown keeps the 60-second hard-exit fallback.
+- SIGTERM/SIGINT during a wedged neuron construction now exits after a
+  10-second grace instead of hanging.
+- The startup log shows the endpoint the SDK actually dials, with credentials
+  redacted.
 
 No schema migration is added. See the [mainnet cutover procedure](docs/running_on_mainnet.md#coordinated-cutover)
 and [conditional determinism limits](docs/economic-limitations.md#conditional-determinism).
