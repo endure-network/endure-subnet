@@ -37,7 +37,11 @@ from endure.assessment.schemas.subnet_alpha_risk import (
 )
 from endure.assessment.subnet_alpha_universe import StaticAlphaRiskUniverseProvider
 from endure.base.axon import authenticated_hotkey
-from endure.base.shutdown import install_shutdown_handlers, join_thread_or_raise
+from endure.base.shutdown import (
+    install_shutdown_handlers,
+    join_thread_or_raise,
+    run_entrypoint,
+)
 from endure.base.validator import (
     WEIGHT_EMISSION_FINALITY_MARGIN_BLOCKS,
     WEIGHT_EMISSION_PERIOD_BLOCKS,
@@ -1406,10 +1410,10 @@ _WATCHDOG_TEARDOWN_GRACE_SECONDS = 60
 
 
 def _schedule_forced_exit_after_grace() -> threading.Timer:
-    # SystemExit only terminates the process once every non-daemon thread
-    # unwinds — and a wedged startup archive or watchdog tick worker may never
-    # return. A daemon timer guarantees the supervisor gets a dead process to
-    # restart while still giving graceful teardown a bounded head start.
+    # SystemExit only reaches the finalization-free entrypoint boundary after
+    # `with validator` teardown joins its workers — and a wedged tick worker may
+    # never return. A daemon timer bounds that teardown while it still runs
+    # with threads alive.
     timer = threading.Timer(_WATCHDOG_TEARDOWN_GRACE_SECONDS, os._exit, args=(1,))
     timer.daemon = True
     timer.start()
@@ -1427,14 +1431,7 @@ def main() -> None:
             f"protocol_version_key={CURRENT_VERSION_KEY}"
         )
         stop = install_shutdown_handlers()
-        try:
-            validator = Validator()
-        except (SystemExit, KeyboardInterrupt):
-            # BaseNeuron exits via sys.exit (e.g. an unregistered hotkey), which
-            # bypasses the Exception handler below; interpreter finalization can
-            # then block forever in SDK websocket teardown.
-            _schedule_forced_exit_after_grace()
-            raise
+        validator = Validator()
         try:
             with validator:
                 while not stop.is_set():
@@ -1462,9 +1459,6 @@ def main() -> None:
         bt.logging.error(f"validator refused to start: {safe_error(error)}")
         raise SystemExit(1) from None
     except Exception as error:  # noqa: BLE001 - CLI boundary must redact SDK errors.
-        # Construction can fail after abandoning a non-daemon archive worker,
-        # before a Validator exists to run the normal teardown/watchdog path.
-        _schedule_forced_exit_after_grace()
         bt.logging.error(
             f"validator failed: {type(error).__name__}: {safe_error(error)}"
         )
@@ -1472,4 +1466,6 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    # Construction can exit (sys.exit for an unregistered hotkey) or fail after
+    # abandoning a non-daemon archive worker; the boundary never finalizes.
+    run_entrypoint(main, grace_seconds=_WATCHDOG_TEARDOWN_GRACE_SECONDS)

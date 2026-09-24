@@ -1,7 +1,9 @@
+"""Every neuron exit path terminates, including hangs in interpreter finalization."""
+
 import subprocess
 import sys
 import threading
-import time
+from collections.abc import Callable
 from functools import partial
 from pathlib import Path
 from typing import Never
@@ -10,6 +12,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from endure.assessment.schemas.subnet_alpha_risk import RISK_SCHEMA_ID
+from endure.base.shutdown import run_entrypoint
 from endure.live.alpha_market_data import (
     BittensorSubnetInfoFetcher,
     LiveAlphaPriceProviderConfig,
@@ -24,6 +27,25 @@ from tests.scoring.test_live_market_data import (
 _ENDPOINT = "wss://archive-user:archive-password@example.org/private-key?token=secret"
 _CHILD_TIMEOUT_SECONDS = 15
 _TEST_GRACE_SECONDS = 0.2
+
+
+class _StuckOnFinalize:
+    """Stands in for a SyncSubstrate whose ``__del__`` joins a dead websocket."""
+
+    def __del__(self) -> None:
+        threading.Event().wait()
+
+
+def _leave_unclosed_sdk_client() -> None:
+    # A module global is only released during interpreter finalization, after
+    # daemon threads (and so any forced-exit timer) can no longer run.
+    import __main__
+
+    vars(__main__)["unclosed_sdk_client"] = _StuckOnFinalize()
+
+
+def _entrypoint(main: Callable[[], None]) -> Never:
+    run_entrypoint(main, grace_seconds=_TEST_GRACE_SECONDS)
 
 
 def _run_blocked_archive_startup(tmp_dir: str) -> None:
@@ -65,9 +87,6 @@ def _run_blocked_archive_startup(tmp_dir: str) -> None:
     with (
         patch.object(validator.Validator, "build_config", return_value=config),
         patch.object(validator, "configure_log_shipping"),
-        patch.object(
-            validator, "_WATCHDOG_TEARDOWN_GRACE_SECONDS", _TEST_GRACE_SECONDS
-        ),
         patch.object(validator.bt.logging, "error", side_effect=print),
         patch("bittensor.Subtensor", side_effect=blocked_subtensor),
         patch("endure.live.alpha_market_data.BittensorSubnetInfoFetcher", make_fetcher),
@@ -76,77 +95,108 @@ def _run_blocked_archive_startup(tmp_dir: str) -> None:
             partial(LiveAlphaPriceProviderConfig, max_attempts=1),
         ),
     ):
-        try:
-            validator.main()
-        except SystemExit as error:
-            # Reaching SystemExit alone is insufficient: CPython still joins the
-            # abandoned executor thread. The parent must observe actual exit.
-            print(f"startup exit requested: {error.code}", flush=True)
-            raise
+        _entrypoint(validator.main)
 
 
-def _run_clean_shutdown() -> None:
-    from neurons import validator
-
-    stop = threading.Event()
-    stop.set()
-    context = MagicMock()
-    with (
-        patch.object(validator, "Validator", return_value=context),
-        patch.object(validator, "configure_log_shipping"),
-        patch.object(validator, "install_shutdown_handlers", return_value=stop),
-        patch.object(
-            validator, "_WATCHDOG_TEARDOWN_GRACE_SECONDS", _TEST_GRACE_SECONDS
-        ),
-    ):
-        validator.main()
-        # A mistakenly armed timer would kill this otherwise healthy process.
-        time.sleep(_TEST_GRACE_SECONDS * 3)
-    assert context.__exit__.call_count == 1
-    print("graceful shutdown completed", flush=True)
-
-
-def _run_construction_sys_exit() -> None:
+def _run_validator_unregistered_exit() -> None:
     from neurons import validator
 
     def unregistered_validator() -> Never:
-        # BaseNeuron.check_registered() calls sys.exit(1) after the SDK has
-        # started transport threads that interpreter shutdown may never join.
-        forever = threading.Event()
-        worker = threading.Thread(target=forever.wait, name="sdk-websocket")
-        worker.start()
-        print(f"transport worker started; daemon={worker.daemon}", flush=True)
+        # BaseNeuron.check_registered() calls sys.exit(1) with the SDK
+        # subtensor still open; its __del__ runs during finalization.
+        _leave_unclosed_sdk_client()
+        print("hotkey not registered; exiting", flush=True)
         sys.exit(1)
 
     with (
         patch.object(validator, "Validator", side_effect=unregistered_validator),
         patch.object(validator, "configure_log_shipping"),
-        patch.object(
-            validator, "_WATCHDOG_TEARDOWN_GRACE_SECONDS", _TEST_GRACE_SECONDS
-        ),
     ):
-        try:
-            validator.main()
-        except SystemExit as error:
-            print(f"construction exit requested: {error.code}", flush=True)
-            raise
+        _entrypoint(validator.main)
+
+
+def _run_miner_unregistered_exit() -> None:
+    from neurons import miner
+
+    def unregistered_miner() -> Never:
+        _leave_unclosed_sdk_client()
+        print("hotkey not registered; exiting", flush=True)
+        sys.exit(1)
+
+    with (
+        patch.object(miner, "Miner", side_effect=unregistered_miner),
+        patch.object(miner, "configure_log_shipping"),
+    ):
+        _entrypoint(miner.main)
+
+
+def _watchdog_context() -> MagicMock:
+    context = MagicMock()
+    context.chain_rpc_restart_required.return_value = False
+    context.watchdog_exit_reason.return_value = "validator loop thread exited"
+    return context
+
+
+def _run_validator_watchdog_exit() -> None:
+    from neurons import validator
+
+    _leave_unclosed_sdk_client()
+    with (
+        patch.object(validator, "Validator", return_value=_watchdog_context()),
+        patch.object(validator, "configure_log_shipping"),
+        patch.object(
+            validator, "install_shutdown_handlers", return_value=threading.Event()
+        ),
+        patch.object(validator.bt.logging, "error", side_effect=print),
+    ):
+        _entrypoint(validator.main)
+
+
+def _run_validator_clean_shutdown() -> None:
+    from neurons import validator
+
+    _leave_unclosed_sdk_client()
+    stop = threading.Event()
+    stop.set()
+    context = MagicMock()
+    context.chain_rpc_restart_required.return_value = False
+    context.__exit__.side_effect = lambda *_: print("teardown ran", flush=True)
+    with (
+        patch.object(validator, "Validator", return_value=context),
+        patch.object(validator, "configure_log_shipping"),
+        patch.object(validator, "install_shutdown_handlers", return_value=stop),
+    ):
+        _entrypoint(validator.main)
 
 
 _CHILDREN = {
-    "blocked_archive": "_run_blocked_archive_startup(sys.argv[1])",
-    "construction_sys_exit": "_run_construction_sys_exit()",
-    "clean_shutdown": "_run_clean_shutdown()",
+    "blocked_archive": ("_run_blocked_archive_startup(sys.argv[1])", 1),
+    "validator_unregistered": ("_run_validator_unregistered_exit()", 1),
+    "miner_unregistered": ("_run_miner_unregistered_exit()", 1),
+    "validator_watchdog": ("_run_validator_watchdog_exit()", 1),
+    "validator_clean_shutdown": ("_run_validator_clean_shutdown()", 0),
+}
+_MARKERS = {
+    "blocked_archive": (
+        "archive worker entered; daemon=False",
+        "validator failed: AlphaMarketDataUnavailable:",
+    ),
+    "validator_unregistered": ("hotkey not registered; exiting",),
+    "miner_unregistered": ("hotkey not registered; exiting",),
+    "validator_watchdog": ("validator watchdog exiting: validator loop thread",),
+    "validator_clean_shutdown": ("teardown ran",),
 }
 
 
 @pytest.mark.parametrize("scenario", sorted(_CHILDREN))
-def test_main_process_exit_is_bounded_and_preserves_clean_shutdown(
+def test_process_exits_without_waiting_on_workers_or_finalization(
     tmp_path: Path, scenario: str
 ) -> None:
+    call, expected_code = _CHILDREN[scenario]
     child = (
         "import sys; "
-        "from tests.neurons.test_validator_startup_exit import "
-        f"{_CHILDREN[scenario].split('(')[0]}; {_CHILDREN[scenario]}"
+        f"from tests.neurons.test_validator_startup_exit import {call.split('(')[0]}; "
+        f"{call}"
     )
     with subprocess.Popen(
         [sys.executable, "-u", "-c", child, str(tmp_path)],
@@ -162,18 +212,9 @@ def test_main_process_exit_is_bounded_and_preserves_clean_shutdown(
                 process.kill()
             process.communicate()
 
+    assert process.returncode == expected_code, output
+    for marker in _MARKERS[scenario]:
+        assert marker in output, output
     assert "archive-password" not in output
     assert "private-key" not in output
     assert "secret" not in output
-    if scenario == "blocked_archive":
-        assert process.returncode == 1, output
-        assert "archive worker entered; daemon=False" in output
-        assert "validator failed: AlphaMarketDataUnavailable:" in output
-        assert "startup exit requested: 1" in output
-    elif scenario == "construction_sys_exit":
-        assert process.returncode == 1, output
-        assert "transport worker started; daemon=False" in output
-        assert "construction exit requested: 1" in output
-    else:
-        assert process.returncode == 0, output
-        assert "graceful shutdown completed" in output

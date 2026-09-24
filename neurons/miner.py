@@ -23,7 +23,11 @@ from endure.assessment.schemas.forge_lending import FORGE_LENDING_SCHEMA_ID
 from endure.assessment.schemas.subnet_alpha_risk import RISK_SCHEMA_ID
 from endure.assessment.subnet_alpha_universe import ALPHA_RISK_WHITELISTED_NETUIDS
 from endure.base.miner import BaseMinerNeuron
-from endure.base.shutdown import install_shutdown_handlers, join_thread_or_raise
+from endure.base.shutdown import (
+    install_shutdown_handlers,
+    join_thread_or_raise,
+    run_entrypoint,
+)
 from endure.live.alpha_market_data import (
     LiveAlphaPriceProvider,
     LiveAlphaPriceProviderConfig,
@@ -452,10 +456,10 @@ _WATCHDOG_TEARDOWN_GRACE_SECONDS = 60
 
 
 def _schedule_forced_exit_after_grace() -> threading.Timer:
-    # SystemExit only terminates the process once every non-daemon thread
-    # unwinds — and whatever killed the miner loop thread may have left one
-    # wedged. A daemon timer guarantees the supervisor gets a dead process to
-    # restart while still giving graceful teardown a bounded head start.
+    # SystemExit only reaches the finalization-free entrypoint boundary after
+    # `with Miner()` teardown joins its workers — and whatever killed the miner
+    # loop thread may have left one wedged. A daemon timer bounds that teardown
+    # while it still runs with threads alive.
     timer = threading.Timer(_WATCHDOG_TEARDOWN_GRACE_SECONDS, os._exit, args=(1,))
     timer.daemon = True
     timer.start()
@@ -506,4 +510,6 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    # Startup can exit (sys.exit for an unregistered hotkey) or leave SDK
+    # websocket teardown for finalization; the boundary never finalizes.
+    run_entrypoint(main, grace_seconds=_WATCHDOG_TEARDOWN_GRACE_SECONDS)

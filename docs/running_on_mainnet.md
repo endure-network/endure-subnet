@@ -61,9 +61,12 @@ genesis identity, deep finalized timestamp history used by boundary search, and
 positive Alpha/TAO reserves for subnet 30 at least 30 days before the finalized
 head. A reachable non-archive endpoint is insufficient. Failure refuses startup;
 successful probing is not a guarantee of future archive availability.
-Fatal startup exceptions arm a 60-second hard-exit fallback so an abandoned
-archive worker cannot indefinitely prevent supervisor restart. This grace starts
-at the CLI exception handler, after the probe's own timeout, not at process launch.
+Validator and miner processes end with an explicit process exit after log
+drains flush, never through interpreter finalization, so an abandoned archive
+worker or an unclosed SDK websocket cannot keep a failed process alive and
+block supervisor restart; startup failures, including an unregistered hotkey,
+exit promptly with status 1. Watchdog teardown keeps its 60-second hard-exit
+fallback.
 
 
 ## Register and stake

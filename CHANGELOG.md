@@ -44,10 +44,11 @@ key-2041 images and chain parameters are not changed by this source update.
   confirmation deadlines on existing health/log surfaces. Missing first
   submissions can degrade readiness; intentional eligibility waits do not.
   Document scheduler/fence startup delay and activity-cutoff headroom.
-- Bound fatal startup teardown with the existing 60-second hard-exit fallback,
-  including archive workers that remain blocked after the probe times out and a
-  construction-time `sys.exit` such as an unregistered hotkey, which previously
-  hung in SDK websocket finalization.
+- End validator and miner processes with an explicit exit after log drains,
+  bypassing interpreter finalization: archive workers blocked after the probe
+  times out, or an unclosed SDK websocket after a construction-time `sys.exit`
+  such as an unregistered hotkey, previously hung the process indefinitely.
+  Watchdog teardown keeps the 60-second hard-exit fallback.
 
 No schema migration is added. See the [mainnet cutover procedure](docs/running_on_mainnet.md#coordinated-cutover)
 and [conditional determinism limits](docs/economic-limitations.md#conditional-determinism).

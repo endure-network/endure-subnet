@@ -2,9 +2,15 @@
 
 from __future__ import annotations
 
+import atexit
+import os
 import signal
+import sys
 import threading
+import traceback
+from collections.abc import Callable
 from types import FrameType
+from typing import NoReturn
 
 SHUTDOWN_SIGNALS: tuple[signal.Signals, ...] = (signal.SIGINT, signal.SIGTERM)
 # Dendrite submissions legitimately wait up to twelve seconds. Leave enough
@@ -42,3 +48,45 @@ def install_shutdown_handlers() -> threading.Event:
     for signum in SHUTDOWN_SIGNALS:
         signal.signal(signum, _request_stop)
     return stop
+
+
+def _exit_status(code: object) -> int:
+    """Mirror the interpreter's SystemExit status conversion."""
+    if code is None:
+        return 0
+    if isinstance(code, int):
+        return code
+    print(code, file=sys.stderr)
+    return 1
+
+
+def run_entrypoint(main: Callable[[], None], *, grace_seconds: float) -> NoReturn:
+    """Run a neuron's main, then end the process without interpreter finalization.
+
+    Finalization joins non-daemon threads and runs SDK ``__del__`` teardown: an
+    abandoned archive worker, or an unclosed SyncSubstrate whose ``__del__``
+    joins its websocket thread, can block there forever. Once finalization has
+    started, daemon threads can no longer run, so no timer can rescue it; and
+    the kernel drops default-action signals such as SIGALRM sent to a PID
+    namespace's init, which Python is in a container started without an init.
+    Exit callbacks, which drain the log queues, run first while threads are
+    still alive; a daemon timer bounds them.
+    """
+    try:
+        main()
+        code = 0
+    except SystemExit as error:
+        code = _exit_status(error.code)
+    except BaseException:  # noqa: BLE001 — the process boundary must still exit
+        traceback.print_exc()
+        code = 1
+    timer = threading.Timer(grace_seconds, os._exit, args=(code,))
+    timer.daemon = True
+    timer.start()
+    atexit._run_exitfuncs()  # noqa: SLF001 — os._exit skips registered drains
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.flush()
+        except (OSError, ValueError):
+            pass
+    os._exit(code)
