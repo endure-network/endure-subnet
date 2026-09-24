@@ -31,6 +31,7 @@ from endure.base.shutdown import (
 from endure.live.alpha_market_data import (
     LiveAlphaPriceProvider,
     LiveAlphaPriceProviderConfig,
+    read_chain_genesis,
 )
 from endure.protocol.miner_service import MinerRoundService
 from endure.protocol.risk_miner import RiskBaselineAssembler
@@ -50,6 +51,7 @@ from endure.utils.config import (
     require_compression_runtime_allowed,
     require_explicit_netuid,
     require_serving_stage_allowed,
+    resolve_chain_identity,
 )
 from endure.utils.log_shipping import configure_log_shipping
 from endure.utils.logging import safe_error, safe_remote_text
@@ -124,6 +126,9 @@ class Miner(BaseMinerNeuron):
 
     def __init__(self, config: bt.Config | None = None) -> None:
         resolved_config = copy.deepcopy(config or type(self).build_config())
+        # Endpoint names cannot identify an operator's own Finney node behind
+        # loopback or a tunnel; genesis does, before any policy gate runs.
+        resolve_chain_identity(resolved_config, read_genesis=read_chain_genesis)
         if not permits_dev_only_runtime(resolved_config):
             resolved_config.blacklist.force_validator_permit = True
             resolved_config.blacklist.allow_non_registered = False

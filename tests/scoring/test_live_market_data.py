@@ -232,13 +232,22 @@ def _archive_probe_fetcher() -> FakeSubnetFetcher:
 
 
 def _archive_probe_provider(fetcher: FakeSubnetFetcher) -> LiveAlphaPriceProvider:
+    # Backoff sleeps advance a virtual clock, so deadline-bounded probe retries
+    # finish instantly instead of spinning for the real 120-second budget.
+    clock = [0.0]
+
+    def sleep(seconds: Decimal) -> None:
+        clock[0] += float(seconds)
+
     return LiveAlphaPriceProvider(
         config=LiveAlphaPriceProviderConfig(
             endpoint="wss://archive.example/private-key?token=secret",
-            request_pause_seconds=Decimal("0"),
+            request_pause_seconds=Decimal("1"),
             max_attempts=1,
         ),
         fetcher=fetcher,
+        sleep=sleep,
+        now_fn=lambda: clock[0],
     )
 
 
@@ -393,6 +402,52 @@ def test_archive_probe_releases_scoped_clients(
     assert substrate.closed
     assert subtensor.closed is (failure is None)
     assert subtensor.calls == ([(30, 70)] if failure is None else [])
+
+
+def test_archive_probe_waits_out_a_handshake_rate_limit_within_its_deadline() -> None:
+    # Given: a coordinated restart whose first archive handshake is throttled
+    # (HTTP 429 arms the 60-second cooldown) and a healthy archive afterwards.
+    clock = [0.0]
+    source = _archive_probe_fetcher()
+    substrate = FakeArchiveSubstrate(
+        finalized=source.finalized,
+        timestamps_by_block=source.timestamps_by_block,
+        genesis=MAINNET_GENESIS_HASH,
+    )
+    handshakes: list[float] = []
+
+    def handshake() -> FakeArchiveSubstrate:
+        handshakes.append(clock[0])
+        if len(handshakes) == 1:
+            raise InvalidStatus(Response(429, "Too Many Requests", Headers()))
+        return substrate
+
+    fetcher = BittensorSubnetInfoFetcher(
+        "mock://archive",
+        subtensor=BlockingSubtensor(),
+        now_fn=lambda: clock[0],
+        min_request_interval_seconds=0.0,
+    )
+    fetcher._make_substrate = handshake
+
+    def sleep(seconds: Decimal) -> None:
+        clock[0] += float(seconds)
+
+    provider = LiveAlphaPriceProvider(
+        config=LiveAlphaPriceProviderConfig(endpoint="mock://archive"),
+        fetcher=fetcher,
+        sleep=sleep,
+        now_fn=lambda: clock[0],
+    )
+
+    # When: the startup probe runs.
+    provider.validate_archive(netuid=30)
+
+    # Then: it retried past max_attempts, waited out the cooldown, and passed
+    # well inside the 120-second probe deadline.
+    assert len(handshakes) == 2
+    assert 60.0 <= handshakes[1] < 70.0
+    fetcher.close()
 
 
 def test_live_provider_uses_first_block_at_or_after_reveal_close() -> None:

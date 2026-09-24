@@ -56,6 +56,10 @@ LIVE_MARKET_DATA_HEAD_CACHE_TTL_SECONDS: Final = 30.0
 LIVE_MARKET_DATA_MAX_SERIES_CACHE_ENTRIES: Final = 64
 LIVE_MARKET_DATA_SNAPSHOT_RETENTION_BLOCKS: Final = 30 * 24 * 60 * 60 // BLOCK_SECONDS
 LIVE_MARKET_DATA_ARCHIVE_PROBE_TIMEOUT_SECONDS: Final = 120.0
+# The startup probe retries until its deadline instead of max_attempts, so a
+# 429 cooldown at a coordinated restart is waited out; cap each backoff so the
+# first attempt after the cooldown lands soon after it ends.
+LIVE_MARKET_DATA_ARCHIVE_PROBE_MAX_BACKOFF_SECONDS: Final = Decimal("5")
 LIVE_MARKET_DATA_ARCHIVE_LOOKBACK: Final = timedelta(days=30)
 
 # The SDK's own retry substrate surfaces exhaustion as MaxRetriesExceeded
@@ -469,6 +473,7 @@ class LiveAlphaPriceProvider:
         self._head_cache: tuple[float, int] | None = None
         self._first_timestamp_blocks: dict[int, int] = {}
         self._last_timestamp_blocks: dict[int, int] = {}
+        self._probing = False
 
     @property
     def endpoint(self) -> str:
@@ -488,6 +493,7 @@ class LiveAlphaPriceProvider:
             self._now_fn() >= deadline
             or (previous_deadline is not None and previous_deadline())
         )
+        self._probing = True
         try:
             self._validate_archive(netuid=netuid)
         except Exception:  # noqa: BLE001 — fail closed without endpoint credentials
@@ -497,6 +503,7 @@ class LiveAlphaPriceProvider:
             ) from None
         finally:
             self._deadline_exceeded_fn = previous_deadline
+            self._probing = False
 
     def _validate_archive(self, *, netuid: int) -> None:
         if netuid <= 0:
@@ -748,7 +755,9 @@ class LiveAlphaPriceProvider:
         # with up to a ~68s retry ladder each, so a degraded archive could
         # otherwise hold one tick far past the watchdog window before
         # price_series ever runs.
-        for attempt in range(1, self._config.max_attempts + 1):
+        attempt = 0
+        while True:
+            attempt += 1
             if self._deadline_exceeded_fn is not None and self._deadline_exceeded_fn():
                 raise ResolutionDeadlineExceeded(
                     "resolution budget exhausted during archive operation"
@@ -758,19 +767,28 @@ class LiveAlphaPriceProvider:
             try:
                 return operation()
             except ARCHIVE_FETCH_FAILURES as error:
-                if attempt == self._config.max_attempts:
+                # The startup probe outlasts transient transport failures (a
+                # 429 cooldown) until its deadline; missing data still fails
+                # after max_attempts so a pruned node is refused promptly.
+                probing = self._probing and not isinstance(error, LookupError)
+                if not probing and attempt >= self._config.max_attempts:
                     message = f"archive request failed: {safe_error(error)}"
                     if isinstance(error, LookupError):
                         raise LookupError(message) from None
                     raise ConnectionError(message) from None
+                backoff = self._config.request_pause_seconds * (
+                    Decimal(2) ** (attempt - 1)
+                )
+                if probing:
+                    backoff = min(
+                        backoff, LIVE_MARKET_DATA_ARCHIVE_PROBE_MAX_BACKOFF_SECONDS
+                    )
+                limit = "until probe deadline" if probing else self._config.max_attempts
                 bt.logging.warning(
-                    f"archive attempt {attempt}/{self._config.max_attempts} "
-                    f"failed; retrying: {safe_error(error)}"
+                    f"archive attempt {attempt}/{limit} failed; retrying: "
+                    f"{safe_error(error)}"
                 )
-                self._sleep(
-                    self._config.request_pause_seconds * (Decimal(2) ** (attempt - 1))
-                )
-        raise AlphaMarketDataError("unreachable retry exhaustion")
+                self._sleep(backoff)
 
     def _timestamp_at_block(self, block: int) -> int:
         return self._with_retry(lambda: self._fetcher.timestamp_at_block(block))
@@ -803,6 +821,15 @@ def validate_mainnet_archive(endpoint: str, *, netuid: int) -> None:
             config=LiveAlphaPriceProviderConfig(endpoint=endpoint),
             fetcher=fetcher,
         ).validate_archive(netuid=netuid)
+    finally:
+        fetcher.close()
+
+
+def read_chain_genesis(endpoint: str) -> str | None:
+    """Read-only startup chain identity; release its SDK client before returning."""
+    fetcher = BittensorSubnetInfoFetcher(endpoint)
+    try:
+        return fetcher.genesis_hash()
     finally:
         fetcher.close()
 

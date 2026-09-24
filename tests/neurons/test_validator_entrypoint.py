@@ -1105,3 +1105,58 @@ def test_validator_forward_throttles_on_successful_tick(
 
     tick_seconds = int(mock_validator_config.endure.tick_seconds)
     assert recorded == [tick_seconds]
+
+
+def test_operator_loopback_mainnet_node_runs_mainnet_gates_before_transport(
+    production_validator_config: bt.Config,
+) -> None:
+    from endure.protocol.consensus_policy import MAINNET_GENESIS_HASH
+    from neurons.validator import Validator
+
+    cfg = production_validator_config
+    cfg.netuid = 30
+    cfg.subtensor.network = "local"
+    cfg.subtensor.chain_endpoint = ""
+    cfg.endure.serving_stage = "mainnet"
+    cfg.endure.min_miner_stake = Decimal("5")
+    probe = MagicMock(side_effect=RuntimeError("archive probe reached"))
+    transport = MagicMock(side_effect=AssertionError("transport opened"))
+
+    with (
+        patch(
+            "neurons.validator.read_chain_genesis", return_value=MAINNET_GENESIS_HASH
+        ),
+        patch("neurons.validator.validate_mainnet_archive", probe),
+        patch("neurons.validator.resolve_runtime_provider", transport),
+    ):
+        with pytest.raises(RuntimeError, match="min_miner_stake"):
+            Validator(config=cfg)
+        cfg.endure.min_miner_stake = Decimal("0")
+        with pytest.raises(RuntimeError, match="archive probe reached"):
+            Validator(config=cfg)
+
+    probe.assert_called_once()
+    transport.assert_not_called()
+
+
+def test_mainnet_compression_is_refused_before_the_archive_probe(
+    production_validator_config: bt.Config,
+) -> None:
+    from endure.utils.config import DevOnlyConfigError
+    from neurons.validator import Validator
+
+    cfg = production_validator_config
+    cfg.netuid = 30
+    cfg.subtensor.network = "finney"
+    cfg.subtensor.chain_endpoint = ""
+    cfg.endure.serving_stage = "mainnet"
+    cfg.endure.devnet_time_compression = True
+    probe = MagicMock()
+
+    with (
+        patch("neurons.validator.validate_mainnet_archive", probe),
+        pytest.raises(DevOnlyConfigError),
+    ):
+        Validator(config=cfg)
+
+    probe.assert_not_called()

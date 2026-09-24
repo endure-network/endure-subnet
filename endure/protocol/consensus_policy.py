@@ -22,6 +22,10 @@ DEREGISTRATION_CONFIRMATION_SYNCS: Final = 2
 MAINNET_GENESIS_HASH: Final = (
     "0x2f0555cc76fc2840a25a6ea3b9637146806f1f44b090c175ffde2a7e5ab36c03"
 )
+# Bittensor testnet (test.finney) genesis, read from its public entrypoint.
+TESTNET_GENESIS_HASH: Final = (
+    "0x8f9cf856bf558a14440e75569c9e58594757048d7b3a84b5d25f6bd978263105"
+)
 # Mainnet owner-vote pin: the fallback recipient is always the on-chain
 # SubnetOwnerHotkey, and on mainnet it must also equal this approved hotkey.
 SN30_NETUID: Final = 30

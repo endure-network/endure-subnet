@@ -8,7 +8,9 @@ import pytest
 
 from endure.scoring.weight_processing import (
     U16_MAX,
+    chain_weight_vector,
     convert_weights_and_uids_for_emit,
+    emission_candidate,
     normalize_max_weight,
     normalize_scores,
     process_weights,
@@ -291,3 +293,40 @@ def test_replay_ignores_ambient_decimal_precision_rounding_and_traps(
         assert context.rounding == ROUND_DOWN
         assert context.traps[Inexact]
         assert not context.flags[Inexact]
+
+
+class TestEmissionComposition:
+    @pytest.mark.parametrize(
+        "scores", [[], [D("0"), D("0")], [D("-1"), D("0")], [D("0E-28")]]
+    )
+    def test_nonpositive_scores_abstain_instead_of_uniform_weights(
+        self, scores: list[D]
+    ) -> None:
+        assert emission_candidate(scores) is None
+
+    @pytest.mark.parametrize(
+        ("scores", "expected_uids", "expected_u16"),
+        [
+            ([D("0"), D("0"), D("1")], (2,), (65535,)),
+            ([D("0"), D("0.6"), D("0.075"), D("-0.2")], (1, 2), (65535, 8192)),
+        ],
+    )
+    def test_candidate_encodes_to_the_submitted_u16_vector(
+        self,
+        scores: list[D],
+        expected_uids: tuple[int, ...],
+        expected_u16: tuple[int, ...],
+    ) -> None:
+        raw = emission_candidate(scores)
+        assert raw is not None
+
+        vector = chain_weight_vector(
+            raw,
+            uids=list(range(len(scores))),
+            metagraph_size=len(scores),
+            min_allowed_weights=1,
+            max_weight_limit=D("1"),
+        )
+
+        assert (vector.uint_uids, vector.uint_weights) == (expected_uids, expected_u16)
+        assert sum(vector.processed_weights) == D("1")

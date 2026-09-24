@@ -88,6 +88,11 @@ def _run_blocked_archive_startup(tmp_dir: str) -> None:
         patch.object(validator.Validator, "build_config", return_value=config),
         patch.object(validator, "configure_log_shipping"),
         patch.object(validator.bt.logging, "error", side_effect=print),
+        patch(
+            "endure.live.alpha_market_data."
+            "LIVE_MARKET_DATA_ARCHIVE_PROBE_TIMEOUT_SECONDS",
+            1.0,
+        ),
         patch("bittensor.Subtensor", side_effect=blocked_subtensor),
         patch("endure.live.alpha_market_data.BittensorSubnetInfoFetcher", make_fetcher),
         patch(
@@ -111,6 +116,21 @@ def _run_validator_unregistered_exit() -> None:
     with (
         patch.object(validator, "Validator", side_effect=unregistered_validator),
         patch.object(validator, "configure_log_shipping"),
+    ):
+        _entrypoint(validator.main)
+
+
+def _run_validator_dev_only_refusal() -> None:
+    from neurons import validator
+
+    def refused_validator() -> Never:
+        _leave_unclosed_sdk_client()
+        raise validator.DevOnlyConfigError("compression refused on mainnet")
+
+    with (
+        patch.object(validator, "Validator", side_effect=refused_validator),
+        patch.object(validator, "configure_log_shipping"),
+        patch.object(validator.bt.logging, "error", side_effect=print),
     ):
         _entrypoint(validator.main)
 
@@ -172,6 +192,7 @@ def _run_validator_clean_shutdown() -> None:
 _CHILDREN = {
     "blocked_archive": ("_run_blocked_archive_startup(sys.argv[1])", 1),
     "validator_unregistered": ("_run_validator_unregistered_exit()", 1),
+    "validator_dev_only_refusal": ("_run_validator_dev_only_refusal()", 1),
     "miner_unregistered": ("_run_miner_unregistered_exit()", 1),
     "validator_watchdog": ("_run_validator_watchdog_exit()", 1),
     "validator_clean_shutdown": ("_run_validator_clean_shutdown()", 0),
@@ -182,6 +203,7 @@ _MARKERS = {
         "validator failed: AlphaMarketDataUnavailable:",
     ),
     "validator_unregistered": ("hotkey not registered; exiting",),
+    "validator_dev_only_refusal": ("validator refused to start:",),
     "miner_unregistered": ("hotkey not registered; exiting",),
     "validator_watchdog": ("validator watchdog exiting: validator loop thread",),
     "validator_clean_shutdown": ("teardown ran",),

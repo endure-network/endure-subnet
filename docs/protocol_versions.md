@@ -179,8 +179,11 @@ axon admission (registered hotkey and stake floor, in
 [admission.py](../endure/protocol/admission.py)), deregistration confirmation
 over `DEREGISTRATION_CONFIRMATION_SYNCS = 2` metagraph resyncs (in
 [consensus_policy.py](../endure/protocol/consensus_policy.py), tracked by
-[eligibility.py](../endure/scoring/eligibility.py)), pure Decimal score-to-u16
-processing, and the owner-vote fallback policy are digest-covered. On mainnet
+[eligibility.py](../endure/scoring/eligibility.py)), the complete Decimal
+score-to-u16 composition (abstain on no positive score, chain limits, u16
+encoding, in [weight_processing.py](../endure/scoring/weight_processing.py)),
+the mainnet/testnet genesis identities, and the owner-vote fallback policy are
+digest-covered. On mainnet
 SN30 and Bittensor testnet, one emission-enabled process submits its whole vote
 to the UID of the on-chain subnet owner hotkey whenever no score is positive,
 and earned weights as soon as any score is positive, without a flag change or

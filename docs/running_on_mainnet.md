@@ -25,14 +25,18 @@ without a stage acknowledgement that matches the configured chain
 | `--subtensor.network finney`, `archive`, or `latent-lite` | `--endure.serving_stage mainnet` | refused |
 | `entrypoint-finney.opentensor.ai`, `archive.chain.opentensor.ai`, `lite.sub.latent.to`, or the keyed Dwellir mainnet host as an endpoint or `wss://` network URL | `--endure.serving_stage mainnet` | refused |
 | `--subtensor.network test` or a recognized testnet host | `--endure.serving_stage testnet` | refused |
+| any other endpoint (own node on loopback, a tunnel, `--subtensor.network local`, or a private host) whose genesis is Finney's | `--endure.serving_stage mainnet` | refused |
+| any other endpoint whose genesis is testnet's | `--endure.serving_stage testnet` | refused |
 | any other remote endpoint | none accepted | refused |
 
 A testnet acknowledgement on a mainnet endpoint is refused, and so is the
-reverse. Self-hosted subtensor nodes on a remote host are not recognized;
-extending the allowlist is a code change in `endure/utils/config.py`. Local
-chain endpoints (`localhost`, `127.0.0.1`, `::1`) bypass the gate as
-development runtimes. `--endure.devnet_time_compression` is refused on
-mainnet regardless of the acknowledgement.
+reverse. Before any gate runs, a live neuron whose endpoint is not one of the
+named aliases above reads the chain's genesis hash and is classified by it: an
+operator's own Finney node gets every mainnet gate, the archive probe, live
+market data, and the owner vote, never dev-only fixtures. A chain that cannot
+be identified refuses startup. Only a local chain with any other genesis (a
+localnet) runs as a development runtime. `--endure.devnet_time_compression` is
+refused on mainnet regardless of the acknowledgement, before the archive probe.
 
 ## Release-pinned mainnet policy (key 2042)
 
@@ -59,8 +63,11 @@ operator mode, not a timer: positive scores never enable it automatically.
 Before transport startup, a read-only market-data preflight verifies Finney's
 genesis identity, deep finalized timestamp history used by boundary search, and
 positive Alpha/TAO reserves for subnet 30 at least 30 days before the finalized
-head. A reachable non-archive endpoint is insufficient. Failure refuses startup;
-successful probing is not a guarantee of future archive availability.
+head. A reachable non-archive endpoint is insufficient. Transient transport
+failures, including an HTTP 429 cooldown during a coordinated restart, are
+retried until the probe's 120-second deadline; missing historical data fails
+promptly. Failure refuses startup; successful probing is not a guarantee of
+future archive availability.
 Validator and miner processes end with an explicit process exit after log
 drains flush, never through interpreter finalization, so an abandoned archive
 worker or an unclosed SDK websocket cannot keep a failed process alive and

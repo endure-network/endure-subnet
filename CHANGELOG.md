@@ -12,11 +12,17 @@ key-2041 images and chain parameters are not changed by this source update.
   attempts, and a 100-block metagraph/weight-attempt epoch; refuse conflicting
   overrides and unsafe axon-off emission.
 - Validate mainnet archive identity and historical timestamp/reserve availability
-  before transport startup.
-- Digest-cover storage selection, pure Decimal score-to-u16 processing, miner
-  axon admission (registered hotkey and stake floor), and two-resync
-  deregistration confirmation; remove the unused
-  `moving_average_alpha`/`update_scores` path.
+  before transport startup; transient transport failures such as an HTTP 429
+  cooldown are retried until the probe's 120-second deadline.
+- Classify a live chain whose endpoint is not a named mainnet/testnet alias by
+  its genesis hash before any gate runs, so an operator's own Finney node on
+  loopback, a tunnel or `--subtensor.network local` gets the mainnet gates,
+  live market data and the owner vote instead of dev-only fixtures. Refuse
+  mainnet time compression before the archive probe.
+- Digest-cover storage selection, the score-to-chain composition (abstain on no
+  positive score, chain limits, u16 encoding), miner axon admission (registered
+  hotkey and stake floor), and two-resync deregistration confirmation; remove
+  the unused `moving_average_alpha`/`update_scores` path.
 - Add a standing owner-vote fallback for served Alpha Risk on mainnet SN30 and
   Bittensor testnet: whenever the score vector has no positive entry (cold
   start, or after every scored miner is archived), submit the whole vote to the

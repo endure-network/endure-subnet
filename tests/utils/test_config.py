@@ -23,7 +23,9 @@ from endure.assessment.schemas.forge_lending import (
     build_lending_v1_subnet_asset_schema,
 )
 from endure.assessment.schemas.subnet_alpha_risk import RISK_SCHEMA_ID
+from endure.protocol.consensus_policy import MAINNET_GENESIS_HASH, TESTNET_GENESIS_HASH
 from endure.utils.config import (
+    DevOnlyConfigError,
     active_runtime_schema_entry,
     active_runtime_schema_id,
     active_schema_id,
@@ -32,12 +34,15 @@ from endure.utils.config import (
     add_validator_args,
     check_config,
     config,
+    owner_vote_network,
     permits_dev_only_runtime,
     require_compression_runtime_allowed,
     require_dev_only_runtime,
     require_explicit_netuid,
     require_mainnet_validator_policy,
     require_serving_stage_allowed,
+    resolve_chain_identity,
+    uses_mainnet_consensus_policy,
 )
 
 
@@ -806,3 +811,100 @@ class TestMainnetValidatorPolicy:
 
         with pytest.raises(RuntimeError, match="min_miner_stake"):
             require_mainnet_validator_policy(cfg)
+
+
+class TestChainIdentityByGenesis:
+    """An operator's own Finney node on loopback is mainnet, not a dev chain."""
+
+    # The SDK resolves each of these to ws://127.0.0.1:9944 ("finney" would
+    # override a loopback chain_endpoint, so it is not a loopback case).
+    _LOOPBACK = (
+        ("local", ""),
+        ("", "ws://127.0.0.1:9944"),
+        ("ws://127.0.0.1:9944", ""),
+    )
+
+    @staticmethod
+    def _reader(genesis: str | None) -> Callable[[str], str | None]:
+        def read(endpoint: str) -> str | None:
+            assert "127.0.0.1" in endpoint
+            return genesis
+
+        return read
+
+    @pytest.mark.parametrize(("network", "endpoint"), _LOOPBACK)
+    def test_loopback_mainnet_node_gets_every_mainnet_gate(
+        self, production_validator_config: bt.Config, network: str, endpoint: str
+    ) -> None:
+        cfg = production_validator_config
+        cfg.subtensor.network = network
+        cfg.subtensor.chain_endpoint = endpoint
+        cfg.endure.serving_stage = "mainnet"
+        cfg.endure.min_miner_stake = Decimal("5")
+        assert permits_dev_only_runtime(cfg)
+
+        resolve_chain_identity(cfg, read_genesis=self._reader(MAINNET_GENESIS_HASH))
+
+        assert not permits_dev_only_runtime(cfg)
+        assert uses_mainnet_consensus_policy(cfg)
+        assert owner_vote_network(cfg) == "mainnet"
+        with pytest.raises(RuntimeError, match="min_miner_stake"):
+            require_mainnet_validator_policy(cfg)
+        cfg.endure.serving_stage = "testnet"
+        with pytest.raises(DevOnlyConfigError):
+            require_serving_stage_allowed(cfg)
+        with pytest.raises(DevOnlyConfigError):
+            require_dev_only_runtime(cfg, feature="--endure.devnet_time_compression")
+
+    @pytest.mark.parametrize(("network", "endpoint"), _LOOPBACK)
+    def test_loopback_testnet_node_is_testnet(
+        self, production_validator_config: bt.Config, network: str, endpoint: str
+    ) -> None:
+        cfg = production_validator_config
+        cfg.subtensor.network = network
+        cfg.subtensor.chain_endpoint = endpoint
+
+        resolve_chain_identity(cfg, read_genesis=self._reader(TESTNET_GENESIS_HASH))
+
+        assert not permits_dev_only_runtime(cfg)
+        assert not uses_mainnet_consensus_policy(cfg)
+        assert owner_vote_network(cfg) == "testnet"
+
+    def test_loopback_localnet_stays_a_dev_chain(
+        self, production_validator_config: bt.Config
+    ) -> None:
+        cfg = production_validator_config
+        cfg.subtensor.network = "local"
+        cfg.subtensor.chain_endpoint = ""
+
+        resolve_chain_identity(cfg, read_genesis=self._reader("0xlocalnet"))
+
+        assert permits_dev_only_runtime(cfg)
+        assert owner_vote_network(cfg) is None
+
+    @pytest.mark.parametrize("runtime", ["named-finney", "mock"])
+    def test_named_networks_and_mock_never_read_the_chain(
+        self, production_validator_config: bt.Config, runtime: str
+    ) -> None:
+        cfg = production_validator_config
+        if runtime == "mock":
+            cfg.runtime.mode = "mock"
+            cfg.subtensor.network = "local"
+        else:
+            cfg.subtensor.network = "finney"
+        cfg.subtensor.chain_endpoint = ""
+
+        def unexpected(_endpoint: str) -> str | None:
+            raise AssertionError("genesis read")
+
+        resolve_chain_identity(cfg, read_genesis=unexpected)
+
+    def test_unidentifiable_chain_refuses_startup(
+        self, production_validator_config: bt.Config
+    ) -> None:
+        cfg = production_validator_config
+        cfg.subtensor.network = "local"
+        cfg.subtensor.chain_endpoint = ""
+
+        with pytest.raises(RuntimeError, match="cannot identify the chain"):
+            resolve_chain_identity(cfg, read_genesis=self._reader(None))

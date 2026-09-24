@@ -18,6 +18,7 @@
 
 import argparse
 import os
+from collections.abc import Callable
 from decimal import Decimal, InvalidOperation
 from urllib.parse import urlparse
 
@@ -34,9 +35,11 @@ from endure.assessment.registry import (
 from endure.assessment.schemas.subnet_alpha_risk import RISK_SCHEMA_ID
 from endure.protocol.consensus_policy import (
     EPOCH_LENGTH_BLOCKS,
+    MAINNET_GENESIS_HASH,
     MAX_COMMITS_PER_ROUND,
     MAX_REVEALS_PER_ROUND,
     MIN_MINER_STAKE,
+    TESTNET_GENESIS_HASH,
     require_canonical_mainnet_policy,
 )
 from endure.scoring.emission_policy import OwnerVoteNetwork
@@ -92,14 +95,51 @@ def _effective_chain(config: "bt.Config") -> tuple[str, str]:
     return str(endpoint or "").strip(), str(network or "").strip()
 
 
-def permits_dev_only_runtime(config: "bt.Config") -> bool:
-    """True only for mock or local chain endpoints (risk scope §Dev-only time compression)."""
+def _is_mock_runtime(config: "bt.Config") -> bool:
     runtime = getattr(config, "runtime", None)
     runtime_mode = str(getattr(runtime, "mode", ""))
     if runtime_mode == "mock":
         return True
-    if runtime_mode != "live" and bool(getattr(config, "mock", False)):
+    return runtime_mode != "live" and bool(getattr(config, "mock", False))
+
+
+def _resolved_genesis(config: "bt.Config") -> str | None:
+    section = getattr(config, "endure", None)
+    genesis = getattr(section, "chain_genesis_hash", None)
+    return genesis if isinstance(genesis, str) else None
+
+
+def resolve_chain_identity(
+    config: "bt.Config", *, read_genesis: Callable[[str], str | None]
+) -> None:
+    """Record the connected chain's genesis before any policy gate reads it.
+
+    Endpoint names cannot identify an operator's own Finney node reached over
+    loopback, an SSH tunnel, ``--subtensor.network local`` or a private host.
+    A live runtime whose endpoint name is not already a known mainnet/testnet
+    alias is classified by its genesis hash instead, so such a node gets the
+    full mainnet gates and owner vote rather than dev-only fixtures.
+    """
+    if _is_mock_runtime(config) or _named_mainnet(config) or _named_testnet(config):
+        return
+    endpoint, _network = _effective_chain(config)
+    genesis = read_genesis(endpoint)
+    if genesis is None:
+        raise RuntimeError(
+            f"cannot identify the chain at {safe_endpoint_label(endpoint)}"
+        )
+    config.endure.chain_genesis_hash = genesis
+
+
+def permits_dev_only_runtime(config: "bt.Config") -> bool:
+    """True only for mock runtimes or local chains that are not Finney/testnet.
+
+    Risk scope §Dev-only time compression.
+    """
+    if _is_mock_runtime(config):
         return True
+    if _resolved_genesis(config) in {MAINNET_GENESIS_HASH, TESTNET_GENESIS_HASH}:
+        return False
     endpoint, _network = _effective_chain(config)
     if endpoint in {"mock", "local", "localhost", "127.0.0.1"}:
         return True
@@ -114,18 +154,32 @@ def _host_of(endpoint: str) -> str:
     return parsed.hostname or endpoint.split(":", maxsplit=1)[0]
 
 
-def _is_bittensor_testnet(config: "bt.Config") -> bool:
+def _named_testnet(config: "bt.Config") -> bool:
     endpoint, network = _effective_chain(config)
     if network == "test":
         return True
     return bool({_host_of(endpoint), _host_of(network)} & _TESTNET_HOSTS)
 
 
-def _is_bittensor_mainnet(config: "bt.Config") -> bool:
+def _named_mainnet(config: "bt.Config") -> bool:
     endpoint, network = _effective_chain(config)
     if network in _MAINNET_NETWORKS:
         return True
     return bool({_host_of(endpoint), _host_of(network)} & _MAINNET_HOSTS)
+
+
+def _is_bittensor_testnet(config: "bt.Config") -> bool:
+    genesis = _resolved_genesis(config)
+    if genesis is not None:
+        return genesis == TESTNET_GENESIS_HASH
+    return _named_testnet(config)
+
+
+def _is_bittensor_mainnet(config: "bt.Config") -> bool:
+    genesis = _resolved_genesis(config)
+    if genesis is not None:
+        return genesis == MAINNET_GENESIS_HASH
+    return _named_mainnet(config)
 
 
 def uses_mainnet_consensus_policy(config: "bt.Config") -> bool:

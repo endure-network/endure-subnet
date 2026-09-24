@@ -9,6 +9,7 @@ EMAs whenever scoring happens.
 """
 
 import asyncio
+import copy
 import os
 import threading
 import time
@@ -52,6 +53,7 @@ from endure.base.validator import (
 from endure.live.alpha_market_data import (
     LiveAlphaPriceProvider,
     LiveAlphaPriceProviderConfig,
+    read_chain_genesis,
     validate_mainnet_archive,
 )
 from endure.protocol.admission import miner_admission
@@ -102,6 +104,7 @@ from endure.utils.config import (
     require_explicit_netuid,
     require_mainnet_validator_policy,
     require_serving_stage_allowed,
+    resolve_chain_identity,
     uses_mainnet_consensus_policy,
 )
 from endure.utils.log_shipping import configure_log_shipping
@@ -156,10 +159,16 @@ class Validator(BaseValidatorNeuron):
     """Schema-routed validator round loop."""
 
     def __init__(self, config: bt.Config | None = None) -> None:
-        resolved_config = config or type(self).build_config()
+        resolved_config = copy.deepcopy(config or type(self).build_config())
+        # Endpoint names cannot identify an operator's own Finney node behind
+        # loopback or a tunnel; genesis does, before any policy gate runs.
+        resolve_chain_identity(resolved_config, read_genesis=read_chain_genesis)
         require_serving_stage_allowed(resolved_config)
         require_explicit_netuid(resolved_config)
         require_mainnet_validator_policy(resolved_config)
+        if compression_enabled(resolved_config):
+            # Refuse offline before the network-bound archive probe below.
+            require_compression_runtime_allowed(resolved_config)
         if (
             active_runtime_schema_id(resolved_config) == RISK_SCHEMA_ID
             and int(resolved_config.neuron.num_concurrent_forwards) != 1

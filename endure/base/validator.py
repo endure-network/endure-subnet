@@ -48,10 +48,9 @@ from endure.protocol.weight_intent import (
 )
 from endure.runtime.types import RuntimeProvider
 from endure.scoring.weight_processing import (
+    chain_weight_vector,
     coerce_decimal,
-    convert_weights_and_uids_for_emit,
-    normalize_scores,
-    process_weights,
+    emission_candidate,
 )
 from endure.utils.config import add_validator_args
 from endure.utils.logging import safe_endpoint_label, safe_error
@@ -421,8 +420,8 @@ class BaseValidatorNeuron(BaseNeuron):
 
         if self.config.neuron.disable_set_weights:
             return
-        raw_weights = normalize_scores(weights)
-        if not any(weight > ZERO for weight in raw_weights):
+        raw_weights = emission_candidate(weights)
+        if raw_weights is None:
             bt.logging.warning(
                 "no positive miner scores — abstaining from weight emission "
                 "rather than emitting uniform or inverted weights"
@@ -432,10 +431,10 @@ class BaseValidatorNeuron(BaseNeuron):
         bt.logging.debug("raw_weights", raw_weights)
         bt.logging.debug("raw_weight_uids", str(self.metagraph.uids.tolist()))
         hotkeys = tuple(self.metagraph.hotkeys)
-        processed_weight_uids: list[int] = []
-        processed_weights: list[Decimal] = []
-        uint_uids: list[int] = []
-        uint_weights: list[int] = []
+        processed_weight_uids: tuple[int, ...] = ()
+        processed_weights: tuple[Decimal, ...] = ()
+        uint_uids: tuple[int, ...] = ()
+        uint_weights: tuple[int, ...] = ()
         min_allowed_weights: int | None = None
         max_weight_limit: Decimal | None = None
         status = EMISSION_ERROR
@@ -445,8 +444,8 @@ class BaseValidatorNeuron(BaseNeuron):
         intent: WeightIntentMetadata | None = None
         submission: WeightSubmissionResult | None = None
         try:
-            # Fetched once, BEFORE processing, and passed both into
-            # process_weights and the emission hook: the audit
+            # Fetched once, BEFORE processing, and passed both into the
+            # watched chain-weight transform and the emission hook: the audit
             # trail must record the exact limits that produced the processed
             # vector — a later re-query could observe different chain state.
             min_allowed_weights = int(
@@ -455,29 +454,20 @@ class BaseValidatorNeuron(BaseNeuron):
             max_weight_limit = coerce_decimal(
                 self.subtensor.max_weight_limit(netuid=self.config.netuid)
             )
-            # Process the raw weights to final_weights via subtensor limitations.
-            (
-                processed_weight_uids,
-                processed_weights,
-            ) = process_weights(
+            vector = chain_weight_vector(
+                raw_weights,
                 uids=self.metagraph.uids,
-                weights=raw_weights,
                 metagraph_size=int(self.metagraph.n),
                 min_allowed_weights=min_allowed_weights,
                 max_weight_limit=max_weight_limit,
             )
-            bt.logging.debug("processed_weights", processed_weights)
-            bt.logging.debug("processed_weight_uids", processed_weight_uids)
-
-            # Convert to uint16 weights and uids.
-            (
-                uint_uids,
-                uint_weights,
-            ) = convert_weights_and_uids_for_emit(
-                uids=processed_weight_uids, weights=processed_weights
+            processed_weight_uids, processed_weights, uint_uids, uint_weights = (
+                vector.processed_uids,
+                vector.processed_weights,
+                vector.uint_uids,
+                vector.uint_weights,
             )
-            bt.logging.debug("uint_weights", uint_weights)
-            bt.logging.debug("uint_uids", uint_uids)
+            bt.logging.debug("chain weight vector", vector)
 
             # Submit without blocking this watchdog-protected tick for inclusion.
             # A later metagraph refresh confirms the submission for free.

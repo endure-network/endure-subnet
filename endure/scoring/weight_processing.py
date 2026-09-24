@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal, localcontext
 
 from endure.scoring.context import TR_CONTEXT
@@ -270,3 +271,57 @@ def process_weights(
             limit=max_weight_limit,
         )
         return filtered_uids, normalized_weights
+
+
+# Protocol constant: no low-weight quantile exclusion before chain limits.
+EMISSION_EXCLUDE_QUANTILE = 0
+
+
+def emission_candidate(scores: Sequence[Decimal]) -> list[Decimal] | None:
+    """Normalized raw weights, or ``None`` to abstain when no score is positive.
+
+    All-zero input must never reach ``process_weights``' uniform branch: that
+    would emit noise instead of abstaining.
+    """
+    raw_weights = normalize_scores(scores)
+    if not any(weight > ZERO for weight in raw_weights):
+        return None
+    return raw_weights
+
+
+@dataclass(frozen=True, slots=True)
+class ChainWeightVector:
+    """Chain-constrained processed weights and their u16 submission form."""
+
+    processed_uids: tuple[int, ...]
+    processed_weights: tuple[Decimal, ...]
+    uint_uids: tuple[int, ...]
+    uint_weights: tuple[int, ...]
+
+
+def chain_weight_vector(
+    raw_weights: Sequence[Decimal],
+    *,
+    uids: Sequence[object],
+    metagraph_size: int,
+    min_allowed_weights: int,
+    max_weight_limit: Decimal,
+) -> ChainWeightVector:
+    """Apply chain limits to an emission candidate, then encode it as u16."""
+    processed_uids, processed_weights = process_weights(
+        uids=uids,
+        weights=raw_weights,
+        metagraph_size=metagraph_size,
+        min_allowed_weights=min_allowed_weights,
+        max_weight_limit=max_weight_limit,
+        exclude_quantile=EMISSION_EXCLUDE_QUANTILE,
+    )
+    uint_uids, uint_weights = convert_weights_and_uids_for_emit(
+        uids=processed_uids, weights=processed_weights
+    )
+    return ChainWeightVector(
+        processed_uids=tuple(processed_uids),
+        processed_weights=tuple(processed_weights),
+        uint_uids=tuple(uint_uids),
+        uint_weights=tuple(uint_weights),
+    )
