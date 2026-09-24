@@ -1,8 +1,11 @@
 """Every neuron exit path terminates, including hangs in interpreter finalization."""
 
+import select
+import signal
 import subprocess
 import sys
 import threading
+import time
 from collections.abc import Callable
 from functools import partial
 from pathlib import Path
@@ -240,3 +243,63 @@ def test_process_exits_without_waiting_on_workers_or_finalization(
     assert "archive-password" not in output
     assert "private-key" not in output
     assert "secret" not in output
+
+
+def _run_wedged_construction(neuron: str) -> None:
+    import importlib
+
+    module = importlib.import_module(f"neurons.{neuron}")
+
+    def wedged(*_args: object, **_kwargs: object) -> Never:
+        # A connect or metagraph fetch that never returns: only the stop event
+        # set by the signal handler can notice the shutdown request.
+        _leave_unclosed_sdk_client()
+        print("construction wedged", flush=True)
+        forever = threading.Event()
+        while True:
+            forever.wait()
+
+    with (
+        patch.object(module, "Validator" if neuron == "validator" else "Miner", wedged),
+        patch.object(module, "configure_log_shipping"),
+        patch.object(module, "_STARTUP_SHUTDOWN_GRACE_SECONDS", _TEST_GRACE_SECONDS),
+    ):
+        _entrypoint(module.main)
+
+
+@pytest.mark.parametrize("neuron", ["validator", "miner"])
+@pytest.mark.parametrize("signum", [signal.SIGTERM, signal.SIGINT])
+def test_shutdown_signal_during_wedged_construction_exits(
+    neuron: str, signum: signal.Signals
+) -> None:
+    child = (
+        "from tests.neurons.test_validator_startup_exit import "
+        f"_run_wedged_construction; _run_wedged_construction({neuron!r})"
+    )
+    with subprocess.Popen(
+        [sys.executable, "-u", "-c", child],
+        cwd=Path(__file__).resolve().parents[2],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    ) as process:
+        assert process.stdout is not None
+        try:
+            seen: list[str] = []
+            deadline = time.monotonic() + _CHILD_TIMEOUT_SECONDS
+            while "construction wedged\n" not in seen:
+                ready, _, _ = select.select([process.stdout], [], [], 1.0)
+                assert time.monotonic() < deadline, "".join(seen)
+                if ready:
+                    line = process.stdout.readline()
+                    assert line, "".join(seen)
+                    seen.append(line)
+            process.send_signal(signum)
+            output, _ = process.communicate(timeout=_CHILD_TIMEOUT_SECONDS)
+        finally:
+            if process.poll() is None:
+                process.kill()
+            process.communicate()
+
+    assert process.returncode == 1, "".join(seen) + output
+    assert "shutdown requested during startup" in output

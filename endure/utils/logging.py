@@ -95,6 +95,12 @@ def startup_config_summary(config: object, *, neuron_type: str) -> dict[str, obj
     chain_endpoint = getattr(subtensor, "chain_endpoint", None)
     if not chain_endpoint:
         chain_endpoint = getattr(subtensor, "network", None)
+    if callable(getattr(config, "is_set", None)):
+        # A bittensor Config: log the endpoint the SDK will actually dial (a
+        # network alias outranks an unused chain_endpoint default).
+        from bittensor.core.subtensor import Subtensor
+
+        chain_endpoint, _network = Subtensor.setup_config(None, config)
     summary["subtensor.endpoint"] = safe_endpoint_label(chain_endpoint)
 
     endure = getattr(config, "endure", None)

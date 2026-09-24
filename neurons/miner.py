@@ -24,6 +24,7 @@ from endure.assessment.schemas.subnet_alpha_risk import RISK_SCHEMA_ID
 from endure.assessment.subnet_alpha_universe import ALPHA_RISK_WHITELISTED_NETUIDS
 from endure.base.miner import BaseMinerNeuron
 from endure.base.shutdown import (
+    StartupShutdownGuard,
     install_shutdown_handlers,
     join_thread_or_raise,
     run_entrypoint,
@@ -458,6 +459,9 @@ def _force_restart_if_rpc_abandoned(miner: Miner) -> None:
 
 
 _WATCHDOG_TEARDOWN_GRACE_SECONDS = 60
+# Within Docker's 45 s stop grace: a signal during construction waits this long
+# for construction to finish before the startup guard ends the process.
+_STARTUP_SHUTDOWN_GRACE_SECONDS = 10
 
 
 def _schedule_forced_exit_after_grace() -> threading.Timer:
@@ -482,9 +486,14 @@ def main() -> None:
             f"protocol_version_key={CURRENT_VERSION_KEY}"
         )
         stop = install_shutdown_handlers()
+        startup = StartupShutdownGuard(
+            stop, grace_seconds=_STARTUP_SHUTDOWN_GRACE_SECONDS
+        )
+        constructed = Miner()
+        startup.started()
         miner: Miner | None = None
         try:
-            with Miner() as miner:
+            with constructed as miner:
                 while not stop.is_set():
                     _force_restart_if_rpc_abandoned(miner)
                     if miner.thread is None or not miner.thread.is_alive():

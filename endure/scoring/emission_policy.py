@@ -17,11 +17,11 @@ from endure.protocol.consensus_policy import (
     MAINNET_GENESIS_HASH,
     SN30_NETUID,
     SN30_OWNER_HOTKEY,
+    OwnerVoteNetwork,
 )
 from endure.scoring.weight_processing import U16_MAX
 
 EmissionMode = Literal["scored", "owner_vote", "abstain"]
-OwnerVoteNetwork = Literal["mainnet", "testnet"]
 OwnerVoteBlockReason = Literal[
     "owner_vote_chain_mismatch",
     "owner_hotkey_mismatch",

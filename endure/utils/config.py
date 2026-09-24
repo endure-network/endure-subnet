@@ -20,7 +20,6 @@ import argparse
 import os
 from collections.abc import Callable
 from decimal import Decimal, InvalidOperation
-from urllib.parse import urlparse
 
 import bittensor as bt
 from bittensor.core.subtensor import Subtensor
@@ -35,14 +34,17 @@ from endure.assessment.registry import (
 from endure.assessment.schemas.subnet_alpha_risk import RISK_SCHEMA_ID
 from endure.protocol.consensus_policy import (
     EPOCH_LENGTH_BLOCKS,
-    MAINNET_GENESIS_HASH,
     MAX_COMMITS_PER_ROUND,
     MAX_REVEALS_PER_ROUND,
     MIN_MINER_STAKE,
-    TESTNET_GENESIS_HASH,
+    ChainClass,
+    OwnerVoteNetwork,
+    chain_needs_genesis,
+    chain_owner_vote_network,
+    classify_chain,
+    mainnet_policy_applies,
     require_canonical_mainnet_policy,
 )
-from endure.scoring.emission_policy import OwnerVoteNetwork
 
 from .logging import safe_endpoint_label, setup_events_logger
 
@@ -52,29 +54,6 @@ from .logging import safe_endpoint_label, setup_events_logger
 # argument. Our neuron entrypoints and tests build config from argparse and
 # depend on that parsing, so opt back in unless an operator overrides it.
 os.environ.setdefault("BT_NO_PARSE_CLI_ARGS", "false")
-
-_LOCAL_CHAIN_HOSTS = {"localhost", "127.0.0.1", "::1"}
-# Hosts the serving-stage gate accepts as Bittensor TESTNET. Keyed RPC
-# providers ride --subtensor.network as a wss:// URL because bittensor >=10.3
-# silently drops --subtensor.chain_endpoint during network resolution
-# (Subtensor.setup_config evaluates candidates without breaking, so the
-# always-set network default wins). Extend deliberately: a wrong entry here
-# opens the mainnet serving gate.
-_TESTNET_HOSTS = {
-    "test.finney.opentensor.ai",
-    "api-bittensor-testnet.n.dwellir.com",
-}
-# Hosts the serving-stage gate accepts as Bittensor MAINNET. Serving still
-# requires the explicit --endure.serving_stage mainnet acknowledgement;
-# unrecognized remote endpoints are refused outright.
-_MAINNET_HOSTS = {
-    "entrypoint-finney.opentensor.ai",
-    "archive.chain.opentensor.ai",
-    "lite.sub.latent.to",
-    "api-bittensor-mainnet.n.dwellir.com",
-}
-# bittensor's built-in --subtensor.network aliases that resolve to mainnet.
-_MAINNET_NETWORKS = {"finney", "archive", "latent-lite"}
 
 
 class DevOnlyConfigError(RuntimeError):
@@ -115,14 +94,14 @@ def resolve_chain_identity(
     """Record the connected chain's genesis before any policy gate reads it.
 
     Endpoint names cannot identify an operator's own Finney node reached over
-    loopback, an SSH tunnel, ``--subtensor.network local`` or a private host.
-    A live runtime whose endpoint name is not already a known mainnet/testnet
-    alias is classified by its genesis hash instead, so such a node gets the
-    full mainnet gates and owner vote rather than dev-only fixtures.
+    loopback, an SSH tunnel, ``--subtensor.network local`` or a private host;
+    the watched ``classify_chain`` uses the recorded genesis instead.
     """
-    if _is_mock_runtime(config) or _named_mainnet(config) or _named_testnet(config):
+    endpoint, network = _effective_chain(config)
+    if not chain_needs_genesis(
+        mock=_is_mock_runtime(config), endpoint=endpoint, network=network
+    ):
         return
-    endpoint, _network = _effective_chain(config)
     genesis = read_genesis(endpoint)
     if genesis is None:
         raise RuntimeError(
@@ -131,81 +110,35 @@ def resolve_chain_identity(
     config.endure.chain_genesis_hash = genesis
 
 
+def chain_class(config: "bt.Config") -> ChainClass:
+    endpoint, network = _effective_chain(config)
+    return classify_chain(
+        mock=_is_mock_runtime(config),
+        endpoint=endpoint,
+        network=network,
+        genesis=_resolved_genesis(config),
+    )
+
+
 def permits_dev_only_runtime(config: "bt.Config") -> bool:
     """True only for mock runtimes or local chains that are not Finney/testnet.
 
     Risk scope §Dev-only time compression.
     """
-    if _is_mock_runtime(config):
-        return True
-    if _resolved_genesis(config) in {MAINNET_GENESIS_HASH, TESTNET_GENESIS_HASH}:
-        return False
-    endpoint, _network = _effective_chain(config)
-    if endpoint in {"mock", "local", "localhost", "127.0.0.1"}:
-        return True
-    return _host_of(endpoint) in _LOCAL_CHAIN_HOSTS
-
-
-def _host_of(endpoint: str) -> str:
-    endpoint = endpoint.strip()
-    if not endpoint:
-        return ""
-    parsed = urlparse(endpoint if "://" in endpoint else f"//{endpoint}")
-    return parsed.hostname or endpoint.split(":", maxsplit=1)[0]
-
-
-def _named_testnet(config: "bt.Config") -> bool:
-    endpoint, network = _effective_chain(config)
-    if network == "test":
-        return True
-    return bool({_host_of(endpoint), _host_of(network)} & _TESTNET_HOSTS)
-
-
-def _named_mainnet(config: "bt.Config") -> bool:
-    endpoint, network = _effective_chain(config)
-    if network in _MAINNET_NETWORKS:
-        return True
-    return bool({_host_of(endpoint), _host_of(network)} & _MAINNET_HOSTS)
-
-
-def _is_bittensor_testnet(config: "bt.Config") -> bool:
-    genesis = _resolved_genesis(config)
-    if genesis is not None:
-        return genesis == TESTNET_GENESIS_HASH
-    return _named_testnet(config)
-
-
-def _is_bittensor_mainnet(config: "bt.Config") -> bool:
-    genesis = _resolved_genesis(config)
-    if genesis is not None:
-        return genesis == MAINNET_GENESIS_HASH
-    return _named_mainnet(config)
+    return chain_class(config) == "dev"
 
 
 def uses_mainnet_consensus_policy(config: "bt.Config") -> bool:
-    """Select live Alpha Risk mainnet policy using the effective SDK endpoint."""
-    return (
-        requires_serving_stage_gate(config)
-        and not permits_dev_only_runtime(config)
-        and _is_bittensor_mainnet(config)
+    """Select live Alpha Risk mainnet policy for the classified chain."""
+    return mainnet_policy_applies(
+        chain_class(config), served=requires_serving_stage_gate(config)
     )
 
 
 def owner_vote_network(config: "bt.Config") -> OwnerVoteNetwork | None:
-    """Served live Alpha Risk on mainnet or testnet votes for the owner when idle.
-
-    Mock and local chains keep abstaining so development runs never emit an
-    owner allocation.
-    """
-    if uses_mainnet_consensus_policy(config):
-        return "mainnet"
-    if (
-        requires_serving_stage_gate(config)
-        and not permits_dev_only_runtime(config)
-        and _is_bittensor_testnet(config)
-    ):
-        return "testnet"
-    return None
+    return chain_owner_vote_network(
+        chain_class(config), served=requires_serving_stage_gate(config)
+    )
 
 
 def require_mainnet_validator_policy(config: "bt.Config") -> None:
@@ -242,7 +175,7 @@ def require_serving_stage_allowed(
     section = getattr(config, "endure", None)
     serving_stage = None if section is None else getattr(section, "serving_stage", None)
     endpoint = safe_endpoint_label(_effective_chain(config)[0])
-    if _is_bittensor_testnet(config):
+    if chain_class(config) == "testnet":
         if serving_stage == "testnet":
             return
         raise DevOnlyConfigError(
@@ -251,7 +184,7 @@ def require_serving_stage_allowed(
             f"{endpoint!r} is refused"
         )
 
-    if _is_bittensor_mainnet(config):
+    if chain_class(config) == "mainnet":
         if serving_stage == "mainnet":
             return
         raise DevOnlyConfigError(
@@ -304,7 +237,7 @@ def require_compression_runtime_allowed(config: "bt.Config") -> None:
     section = getattr(config, "endure", None)
     serving_stage = None if section is None else getattr(section, "serving_stage", None)
     endpoint = safe_endpoint_label(_effective_chain(config)[0])
-    if _is_bittensor_testnet(config):
+    if chain_class(config) == "testnet":
         if serving_stage == "testnet":
             return
         raise DevOnlyConfigError(

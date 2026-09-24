@@ -8,10 +8,10 @@ from endure.protocol.consensus_policy import (
     MAINNET_GENESIS_HASH,
     SN30_NETUID,
     SN30_OWNER_HOTKEY,
+    OwnerVoteNetwork,
 )
 from endure.scoring.emission_policy import (
     OwnerVoteBlocked,
-    OwnerVoteNetwork,
     owner_vote_submission_due,
     owner_vote_weights,
     resolve_owner_vote_uid,

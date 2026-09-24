@@ -391,10 +391,8 @@ def test_forward_tracks_tick_health(
     mock_validator_config.neuron.disable_set_weights = True
     validator = Validator(config=mock_validator_config)
 
-    async def _no_sleep(seconds: float) -> None:
-        return None
-
-    monkeypatch.setattr(asyncio, "sleep", _no_sleep)
+    # forward() paces via the shutdown event; a set event returns at once.
+    validator._shutdown_event.set()
     monkeypatch.setattr(
         validator._service, "tick", lambda **_: (_ for _ in ()).throw(OSError("boom"))
     )
@@ -433,10 +431,8 @@ def test_failed_tick_refreshes_loop_heartbeat(
     validator.thread = MagicMock()
     validator.thread.is_alive.return_value = True
 
-    async def _no_sleep(seconds: float) -> None:
-        return None
-
-    monkeypatch.setattr(asyncio, "sleep", _no_sleep)
+    # forward() paces via the shutdown event; a set event returns at once.
+    validator._shutdown_event.set()
     monkeypatch.setattr(
         validator._service, "tick", lambda **_: (_ for _ in ()).throw(OSError("boom"))
     )

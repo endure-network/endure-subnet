@@ -736,7 +736,7 @@ class TestRequireExplicitNetuid:
 
     def test_local_chain_accepts_the_default(self) -> None:
         # Keyed as --subtensor.network: bittensor's resolution drops
-        # --subtensor.chain_endpoint (see _TESTNET_HOSTS in the module).
+        # --subtensor.chain_endpoint (see TESTNET_HOSTS in consensus_policy).
         cfg = self._parsed(
             ["--runtime.mode", "live", "--subtensor.network", "ws://127.0.0.1:9944"]
         )

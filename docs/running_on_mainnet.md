@@ -195,6 +195,8 @@ validator already approaching inactivity.
    while WAL writes are live. A restored backup reproduces its own scoring
    state: one with positive EMAs resumes earned weights, one without resumes
    the owner vote. Stop the process before restoring.
+   Remove `--neuron.moving_average_alpha` from start scripts: key 2042 no
+   longer accepts it (scores come from durable EMAs), and argparse refuses it.
 3. Stop the old weight writer before starting Endure. Keep exactly one writer
    per hotkey; do not run an external weight setter beside it.
 4. Start one final emission-enabled Endure process, with the axon on and

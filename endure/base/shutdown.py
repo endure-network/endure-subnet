@@ -80,6 +80,11 @@ def run_entrypoint(main: Callable[[], None], *, grace_seconds: float) -> NoRetur
     except BaseException:  # noqa: BLE001 — the process boundary must still exit
         traceback.print_exc()
         code = 1
+    terminate_process(code, grace_seconds=grace_seconds)
+
+
+def terminate_process(code: int, *, grace_seconds: float) -> NoReturn:
+    """Drain exit callbacks under a bounded timer, then ``os._exit`` at once."""
     timer = threading.Timer(grace_seconds, os._exit, args=(code,))
     timer.daemon = True
     timer.start()
@@ -90,3 +95,39 @@ def run_entrypoint(main: Callable[[], None], *, grace_seconds: float) -> NoRetur
         except (OSError, ValueError):
             pass
     os._exit(code)
+
+
+class StartupShutdownGuard:
+    """End the process if a shutdown signal arrives before the run loop starts.
+
+    The signal handlers only set ``stop``, which nothing polls while the neuron
+    is still being constructed; a wedged chain connect or metagraph fetch would
+    otherwise survive SIGTERM/SIGINT indefinitely. Construction that finishes
+    within ``grace_seconds`` of the signal hands off to the run loop's normal
+    shutdown instead.
+    """
+
+    def __init__(self, stop: threading.Event, *, grace_seconds: float) -> None:
+        self._started = threading.Event()
+        watcher = threading.Thread(
+            target=self._watch,
+            args=(stop, grace_seconds),
+            name="startup-shutdown-guard",
+            daemon=True,
+        )
+        watcher.start()
+
+    def started(self) -> None:
+        """Construction finished; the run loop now owns shutdown."""
+        self._started.set()
+
+    def _watch(self, stop: threading.Event, grace_seconds: float) -> None:
+        stop.wait()
+        if self._started.wait(grace_seconds):
+            return
+        print(
+            "shutdown requested during startup; exiting before construction ends",
+            file=sys.stderr,
+            flush=True,
+        )
+        terminate_process(1, grace_seconds=grace_seconds)
