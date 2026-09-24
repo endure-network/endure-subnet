@@ -20,8 +20,9 @@ key-2041 images and chain parameters are not changed by this source update.
   its genesis hash before any gate runs, so an operator's own Finney node on
   loopback, a tunnel or `--subtensor.network local` gets the mainnet gates,
   live market data and the owner vote instead of dev-only fixtures. The
-  genesis is read on every start (never taken from a config file) and compared
-  as normalized hex. Refuse mainnet time compression before the archive probe.
+  chain identity is derived on every start, from a named endpoint or by reading
+  the genesis of any non-aliased endpoint, is never taken from a config file,
+  and genesis is compared as normalized hex. Refuse mainnet time compression before the archive probe.
 - Digest-cover storage selection, the score-to-chain composition (abstain on no
   positive score, chain limits, u16 encoding), miner axon admission (registered
   hotkey and stake floor), two-resync deregistration confirmation, emission

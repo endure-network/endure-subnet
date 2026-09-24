@@ -9,10 +9,12 @@ EMAs whenever scoring happens.
 """
 
 import asyncio
+import contextlib
 import copy
 import os
 import threading
 import time
+from collections.abc import Iterator
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -297,7 +299,7 @@ class Validator(BaseValidatorNeuron):
         The API thread and the run loop both touch emission bookkeeping; one
         lock gives every response a consistent emission snapshot.
         """
-        with self._emission_state_lock:
+        with self._emission_state():
             return self._runtime_health_snapshot()
 
     def _runtime_health_snapshot(self) -> RuntimeHealth:
@@ -665,18 +667,41 @@ class Validator(BaseValidatorNeuron):
             return "abstain"
         return mode
 
+    @contextlib.contextmanager
+    def _emission_state(self) -> Iterator[None]:
+        """Hold the emission-state lock; log transitions only after release.
+
+        A stalled log sink must never hold off /health, so messages recorded
+        under the lock are emitted once the outermost holder releases it.
+        """
+        self._emission_state_lock.acquire()
+        self._emission_lock_depth = getattr(self, "_emission_lock_depth", 0) + 1
+        backlog: list[str] = []
+        try:
+            yield
+        finally:
+            self._emission_lock_depth -= 1
+            if self._emission_lock_depth == 0:
+                backlog = getattr(self, "_emission_log_backlog", [])
+                self._emission_log_backlog = []
+            self._emission_state_lock.release()
+        for message in backlog:
+            bt.logging.info(message)
+
     def _set_emission_observation(self, mode: str, reason: str) -> None:
-        with self._emission_state_lock:
+        with self._emission_state():
             if (mode, reason) != (
                 getattr(self, "_emission_mode", None),
                 getattr(self, "_emission_reason", None),
             ):
-                bt.logging.info(f"weight emission mode={mode} reason={reason}")
+                backlog: list[str] = getattr(self, "_emission_log_backlog", [])
+                backlog.append(f"weight emission mode={mode} reason={reason}")
+                self._emission_log_backlog = backlog
             self._emission_mode = mode
             self._emission_reason = reason
 
     def _defer_emission(self, reason: str) -> None:
-        with self._emission_state_lock:
+        with self._emission_state():
             self._emission_expected_since = None
             self._emission_deadline = None
             mode = self._observed_emission_mode()
@@ -707,7 +732,7 @@ class Validator(BaseValidatorNeuron):
     def _refresh_emission_health(
         self, current_block: int | None, *, open_confirmation: bool
     ) -> None:
-        with self._emission_state_lock:
+        with self._emission_state():
             mode = self._observed_emission_mode()
             if mode != getattr(self, "_emission_mode", None):
                 self._emission_blocked_reason = None
@@ -837,7 +862,7 @@ class Validator(BaseValidatorNeuron):
         plan = self._plan_emission(mode, network)
         if plan is None:
             return
-        with self._emission_state_lock:
+        with self._emission_state():
             self._emission_blocked_reason = None
         self._owner_vote_recipient = plan.recipient
         try:
@@ -847,7 +872,7 @@ class Validator(BaseValidatorNeuron):
             # already counted the failed attempt. Returning lets sync() advance
             # the attempt block, so the retry waits for the next epoch.
             bt.logging.warning(f"weight emission refused: {blocked.reason}: {blocked}")
-            with self._emission_state_lock:
+            with self._emission_state():
                 self._emission_blocked_reason = blocked.reason
                 self._set_emission_observation(
                     self._observed_emission_mode(), blocked.reason
@@ -870,7 +895,7 @@ class Validator(BaseValidatorNeuron):
             )
             return False
         if getattr(self, "_emission_block", None) == "score_state_unavailable":
-            with self._emission_state_lock:
+            with self._emission_state():
                 underlying = getattr(self, "_emission_block_underlying", None)
                 if underlying is None:
                     self._clear_emission_block()
@@ -890,7 +915,7 @@ class Validator(BaseValidatorNeuron):
 
     def _block_emission(self, blocked: EmissionBlocked, block: int | None) -> None:
         bt.logging.warning(f"weight emission abstains: {blocked.reason}: {blocked}")
-        with self._emission_state_lock:
+        with self._emission_state():
             # One clock per continuous blocked streak, whatever the reason: a
             # reason flapping between snapshot faults must still page. Severity
             # is timed across observations, so a condition that clears before
@@ -911,7 +936,7 @@ class Validator(BaseValidatorNeuron):
 
     def _clear_emission_block(self) -> None:
         """End the blocked streak: the condition resolved at an attempt/resync."""
-        with self._emission_state_lock:
+        with self._emission_state():
             self._emission_block = None
             self._emission_block_since_block = None
             self._emission_block_seen_block = None
@@ -1003,7 +1028,7 @@ class Validator(BaseValidatorNeuron):
         except EmissionBlocked as blocked:
             self._block_emission(blocked, block)
             return None
-        with self._emission_state_lock:
+        with self._emission_state():
             self._clear_emission_block()
             self._emission_chain_due_block = plan.next_eligible_block
             self._emission_snapshot_permit = plan.permit
@@ -1116,7 +1141,7 @@ class Validator(BaseValidatorNeuron):
         if attempt.status == "submitted":
             self._defer_emission("confirmation_pending")
         else:
-            with self._emission_state_lock:
+            with self._emission_state():
                 reason = (
                     getattr(self, "_emission_blocked_reason", None)
                     or "submission_failed"
@@ -1286,7 +1311,7 @@ class Validator(BaseValidatorNeuron):
             return
         self._consecutive_set_weights_failures = 0
         self._last_set_weights_ok = _utc_now().isoformat()
-        with self._emission_state_lock:
+        with self._emission_state():
             self._emission_blocked_reason = None
             self._defer_emission("confirmed")
         bt.logging.info(

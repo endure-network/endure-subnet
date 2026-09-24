@@ -1,5 +1,6 @@
 """Consumer-facing emission expectedness without a first audit batch or health RPC."""
 
+import threading
 from decimal import Decimal
 from unittest.mock import MagicMock
 
@@ -377,3 +378,32 @@ def test_confirmation_deadline_still_degrades_while_emission_is_disabled(
     assert runtime["emission_submission_overdue"] is False
     assert runtime["emission_confirmation_deadline_block"] == 1040
     assert runtime["weight_emission_degraded"] is True
+
+
+def test_emission_transitions_log_only_after_releasing_the_health_lock(
+    validator: Validator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A stalled log sink must not hold off /health: another thread must be
+    # able to take the emission-state lock while a transition is logged.
+    lock_free_while_logging: list[bool] = []
+
+    def probe(_message: str) -> None:
+        acquired: list[bool] = []
+
+        def other_thread() -> None:
+            got = Validator._emission_state_lock.acquire(blocking=False)
+            if got:
+                Validator._emission_state_lock.release()
+            acquired.append(got)
+
+        worker = threading.Thread(target=other_thread)
+        worker.start()
+        worker.join()
+        lock_free_while_logging.extend(acquired)
+
+    monkeypatch.setattr("neurons.validator.bt.logging.info", probe)
+    validator._block_emission(
+        EmissionBlocked("chain_snapshot_inconsistent", "stale"), 1000
+    )
+
+    assert lock_free_while_logging == [True]
