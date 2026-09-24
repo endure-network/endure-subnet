@@ -146,11 +146,41 @@ and frozen at it.
 **Coverage penalty**: a resolved coordinate the miner's accepted bundle
 skipped scores 0, so cherry-picking easy assets cannot beat full coverage.
 
-**EMA and weights**: one EMA per (hotkey, netuid, output, horizon)
+**EMA and earned weights**: one EMA per (hotkey, netuid, output, horizon)
 coordinate on the existing spine; blended score = equal-weight mean of a
-miner's scored-coordinate EMAs; weights via the existing sharpened
-normalization with all-zero → abstain. Output/horizon weighting in the blend
-is deferred.
+miner's scored-coordinate EMAs; earned weights use the existing sharpened
+normalization. Output/horizon weighting in the blend is deferred. Key `2042`
+does not change scoring coefficients or the mainnet target universe.
+
+**SN30 cold-start lifecycle (key `2042`)**: only served Alpha Risk on mainnet
+netuid `30` may maintain the release-approved owner allocation while the active
+schema has no positive resolved score history, including when no miners have
+submitted. This is a transition allocation, not earned miner reputation or
+proof of model accuracy. The approved UID/hotkey must still match the subnet
+owner; identity, validator permit, chain weight constraints, rate limits,
+startup fencing, one-in-flight submission, and finalized confirmation remain
+safety gates. Bootstrap uses the normal durable prepare/submit/confirm pipeline,
+not an external setter. It creates no synthetic scores or EMA writes, and its
+audit rows have no earned-score or precap provenance.
+
+The first positive `round_score` or `ema_after` in the active schema's
+append-only `assessment_score_history` ends bootstrap permanently for that
+database. The running process switches automatically to earned score-derived
+weights; no flag change or restart is required. After graduation, zero or absent
+eligible scores (including decay or deregistration) cause abstention, never a
+return to bootstrap. Abstention leaves prior on-chain weights untouched.
+Other chains/netuids retain all-zero abstention.
+
+This decision is reconstructed from history after restart, without a new schema
+migration. Mainnet database/history must persist. A consistent post-graduation
+backup preserves the decision after EMA retirement; a backup predating graduation
+cannot remember later events. Deleting history loses that evidence. There is no
+automatic repair, and testnet state must never be copied into mainnet.
+The final emission-enabled configuration keeps the axon
+on and `disable_set_weights` absent/default-false. Explicitly setting it true
+disables both modes indefinitely; neither positive scores nor elapsed time
+automatically enables emission. See the
+[mainnet cutover](../running_on_mainnet.md#coordinated-cutover).
 
 ### Round lifecycle and per-horizon resolution
 

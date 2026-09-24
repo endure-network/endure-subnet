@@ -2,9 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
-from datetime import UTC, date, datetime
+import sqlite3
+from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, date, datetime, timedelta
+from threading import Event
 from unittest.mock import patch
+
+import pytest
+from sqlalchemy import event
 
 from endure.assessment.registry import (
     SchemaRegistry,
@@ -118,6 +125,23 @@ def _commit_synapse(
     )
 
 
+def _committed_reveal(storage: Storage, hotkey: str = "hk-a") -> SubmitReveal:
+    bundle_json = _bundle_json()
+    digest = commit_hash(
+        bundle_json.encode(), bytes.fromhex(VALID_NONCE_HEX), miner_hotkey=hotkey
+    )
+    assert storage.record_commit(
+        ROUND, FORGE_LENDING_SCHEMA_ID, hotkey, digest, now_iso=IN_COMMIT.isoformat()
+    )
+    return SubmitReveal(
+        round_id=ROUND,
+        schema_id=FORGE_LENDING_SCHEMA_ID,
+        spec_version=CURRENT_VERSION_KEY,
+        bundle_json=bundle_json,
+        nonce_hex=VALID_NONCE_HEX,
+    )
+
+
 class TestHandleCommit:
     async def test_accepts_and_persists(self, storage: Storage) -> None:
         _open_round(storage)
@@ -198,22 +222,29 @@ class TestHandleCommit:
 
         assert malformed.rejection_code == RejectionCode.RATE_LIMITED.value
 
-    async def test_atomic_cap_rejects_when_record_commit_returns_false(
-        self, storage: Storage, monkeypatch
+    async def test_commit_validated_before_close_cannot_persist_after_close(
+        self, storage: Storage, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The advisory pre-check can pass yet the atomic record_commit still
-        reject under a concurrent-commit race — that False must surface as
-        RATE_LIMITED (handlers.py authoritative branch), not a silent accept."""
         _open_round(storage)
-        handlers = _handlers(storage, IN_COMMIT)
-        monkeypatch.setattr(storage, "record_commit", lambda *a, **k: False)
+        record_commit = storage.record_commit
 
-        response = await handlers.handle_commit(
+        def close_then_commit(*args, **kwargs):
+            storage.set_round_state(
+                ROUND,
+                FORGE_LENDING_SCHEMA_ID,
+                "revealed",
+                now_iso=IN_REVEAL.isoformat(),
+            )
+            return record_commit(*args, **kwargs)
+
+        monkeypatch.setattr(storage, "record_commit", close_then_commit)
+        response = await _handlers(storage, IN_COMMIT).handle_commit(
             _commit_synapse("ab" * 32), miner_hotkey="hk-a"
         )
 
         assert response.accepted is False
-        assert response.rejection_code == RejectionCode.RATE_LIMITED.value
+        assert response.rejection_code == RejectionCode.LATE_COMMIT.value
+        assert storage.committed_hash(ROUND, FORGE_LENDING_SCHEMA_ID, "hk-a") is None
 
     async def test_rate_limits_different_hash_recommits(self, storage: Storage) -> None:
         _open_round(storage)
@@ -249,6 +280,55 @@ class TestHandleCommit:
 
         assert response.accepted is True
         assert storage.commit_count(ROUND, FORGE_LENDING_SCHEMA_ID, "hk-a") == 3
+
+    @pytest.mark.parametrize(
+        ("retry_kind", "expected_code"),
+        [
+            ("version", RejectionCode.VERSION_MISMATCH),
+            ("schema", RejectionCode.UNKNOWN_SCHEMA),
+            ("early", RejectionCode.LATE_COMMIT),
+            ("late", RejectionCode.LATE_COMMIT),
+            ("close", None),
+        ],
+    )
+    async def test_same_hash_retry_at_cap_enforces_protocol_and_window(
+        self, storage: Storage, retry_kind: str, expected_code: RejectionCode | None
+    ) -> None:
+        _open_round(storage)
+        handlers = _handlers(storage, IN_COMMIT)
+        for bundle_hash in ("ab" * 32, "cd" * 32, "ef" * 32):
+            assert (
+                await handlers.handle_commit(
+                    _commit_synapse(bundle_hash), miner_hotkey="hk-a"
+                )
+            ).accepted
+
+        retry = _commit_synapse("ef" * 32)
+        windows = compute_windows(date(2026, 6, 9), offsets=DEFAULT_OFFSETS)
+        now = IN_COMMIT
+        if retry_kind == "version":
+            retry.spec_version = CURRENT_VERSION_KEY - 1
+        elif retry_kind == "schema":
+            retry.schema_id = "unknown.schema"
+        elif retry_kind == "early":
+            now = windows.commit_open - timedelta(microseconds=1)
+        elif retry_kind == "late":
+            now = windows.commit_close + timedelta(microseconds=1)
+        elif retry_kind == "close":
+            now = windows.commit_close
+
+        response = await _handlers(storage, now).handle_commit(
+            retry, miner_hotkey="hk-a"
+        )
+
+        assert response.accepted is (expected_code is None)
+        assert response.rejection_code == (
+            None if expected_code is None else expected_code.value
+        )
+        assert storage.commit_count(ROUND, FORGE_LENDING_SCHEMA_ID, "hk-a") == 3
+        assert (
+            storage.committed_hash(ROUND, FORGE_LENDING_SCHEMA_ID, "hk-a") == "ef" * 32
+        )
 
 
 class TestSchemaMismatch:
@@ -394,7 +474,157 @@ class TestHandleReveal:
             ("hk-a", bundle_json)
         ]
 
-    async def test_identical_reveal_retries_skip_revalidation(
+    @pytest.mark.parametrize("has_accepted_bundle", [False, True])
+    def test_reveal_racing_frozen_snapshot_cannot_ack_new_acceptance(
+        self,
+        storage: Storage,
+        monkeypatch: pytest.MonkeyPatch,
+        has_accepted_bundle: bool,
+    ) -> None:
+        """Independent SQLite connections serialize even an empty accepted set."""
+        _open_round(storage)
+        reveal = _committed_reveal(storage)
+        expected = []
+        if has_accepted_bundle:
+            storage.record_reveal(
+                ROUND,
+                FORGE_LENDING_SCHEMA_ID,
+                "hk-existing",
+                bundle_json=reveal.bundle_json,
+                nonce_hex=reveal.nonce_hex,
+                accepted=True,
+                rejection_code=None,
+                now_iso=IN_REVEAL.isoformat(),
+            )
+            expected = [("hk-existing", reveal.bundle_json)]
+
+        writer = Storage.from_url(str(storage._engine.url))
+        reveal_ready = Event()
+        snapshot_read = Event()
+        reveal_write_attempted = Event()
+        record_reveal = writer.record_reveal
+        accepted_bundles = storage._accepted_bundles_from_connection
+
+        def pause_validated_reveal(*args, **kwargs):
+            reveal_ready.set()
+            assert snapshot_read.wait(5)
+            return record_reveal(*args, **kwargs)
+
+        def signal_reveal_write(*_args):
+            if snapshot_read.is_set():
+                reveal_write_attempted.set()
+
+        def pause_frozen_read(connection, round_id, schema_id):
+            bundles = accepted_bundles(connection, round_id, schema_id)
+            # Prove close already owns the SQLite writer lock at the read,
+            # rather than only obtaining it when a nonempty snapshot inserts.
+            contender = sqlite3.connect(storage._engine.url.database, timeout=0)
+            try:
+                with pytest.raises(sqlite3.OperationalError, match="locked"):
+                    contender.execute("BEGIN IMMEDIATE")
+            finally:
+                contender.close()
+            snapshot_read.set()
+            assert reveal_write_attempted.wait(5)
+            return bundles
+
+        monkeypatch.setattr(writer, "record_reveal", pause_validated_reveal)
+        monkeypatch.setattr(
+            storage, "_accepted_bundles_from_connection", pause_frozen_read
+        )
+        event.listen(writer._engine, "before_cursor_execute", signal_reveal_write)
+        try:
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                pending_reveal = pool.submit(
+                    asyncio.run,
+                    _handlers(writer, IN_REVEAL).handle_reveal(
+                        reveal, miner_hotkey="hk-a"
+                    ),
+                )
+                try:
+                    assert reveal_ready.wait(5)
+                    close = pool.submit(
+                        storage.publish_assessment_consensus_and_reveal,
+                        ROUND,
+                        FORGE_LENDING_SCHEMA_ID,
+                        [],
+                        now_iso=IN_REVEAL.isoformat(),
+                    )
+                    close.result(timeout=5)
+                finally:
+                    snapshot_read.set()
+                response = pending_reveal.result(timeout=5)
+        finally:
+            event.remove(writer._engine, "before_cursor_execute", signal_reveal_write)
+            writer.close()
+
+        assert response.accepted is False
+        assert response.rejection_code == RejectionCode.LATE_REVEAL.value
+        assert storage.accepted_bundles(ROUND, FORGE_LENDING_SCHEMA_ID) == expected
+        assert storage.scoring_bundles(ROUND, FORGE_LENDING_SCHEMA_ID) == expected
+
+    @pytest.mark.parametrize(
+        "storage_boundary", ["record_reveal_attempt", "record_reveal"]
+    )
+    async def test_identical_reveal_frozen_during_validation_still_acknowledges(
+        self,
+        storage: Storage,
+        monkeypatch: pytest.MonkeyPatch,
+        storage_boundary: str,
+    ) -> None:
+        _open_round(storage)
+        reveal = _committed_reveal(storage)
+        record_reveal = storage.record_reveal
+        original_boundary = getattr(storage, storage_boundary)
+
+        def accept_and_close_before_retry(*args, **kwargs):
+            assert record_reveal(
+                ROUND,
+                FORGE_LENDING_SCHEMA_ID,
+                "hk-a",
+                bundle_json=reveal.bundle_json,
+                nonce_hex=reveal.nonce_hex,
+                accepted=True,
+                rejection_code=None,
+                now_iso=IN_REVEAL.isoformat(),
+            )
+            storage.set_round_state(
+                ROUND,
+                FORGE_LENDING_SCHEMA_ID,
+                "revealed",
+                now_iso=IN_REVEAL.isoformat(),
+            )
+            return original_boundary(*args, **kwargs)
+
+        monkeypatch.setattr(storage, storage_boundary, accept_and_close_before_retry)
+        response = await _handlers(storage, IN_REVEAL).handle_reveal(
+            reveal, miner_hotkey="hk-a"
+        )
+
+        assert response.accepted is True
+        assert storage.scoring_bundles(ROUND, FORGE_LENDING_SCHEMA_ID) == [
+            ("hk-a", reveal.bundle_json)
+        ]
+
+    async def test_closed_round_rejects_new_reveal_without_spending_budget(
+        self, storage: Storage
+    ) -> None:
+        _open_round(storage)
+        reveal = _committed_reveal(storage)
+        storage.set_round_state(
+            ROUND, FORGE_LENDING_SCHEMA_ID, "revealed", now_iso=IN_REVEAL.isoformat()
+        )
+
+        response = await _handlers(storage, IN_REVEAL).handle_reveal(
+            reveal, miner_hotkey="hk-a"
+        )
+
+        assert response.accepted is False
+        assert response.rejection_code == RejectionCode.LATE_REVEAL.value
+        assert storage.reveal_count(ROUND, FORGE_LENDING_SCHEMA_ID, "hk-a") == 0
+        assert storage.scoring_bundles(ROUND, FORGE_LENDING_SCHEMA_ID) == []
+
+    async def test_identical_frozen_reveal_retry_does_not_spend_budget(
         self, storage: Storage
     ) -> None:
         _open_round(storage)
@@ -416,19 +646,16 @@ class TestHandleReveal:
         )
         assert (await handlers.handle_reveal(reveal, miner_hotkey="hk-a")).accepted
 
-        with (
-            patch(
-                "endure.protocol.handlers.validate_reveal",
-                side_effect=AssertionError("idempotent retry was revalidated"),
-            ),
-            patch.object(storage, "record_reveal") as persist,
-        ):
-            retry = await handlers.handle_reveal(
-                reveal.model_copy(), miner_hotkey="hk-a"
-            )
+        storage.set_round_state(
+            ROUND, FORGE_LENDING_SCHEMA_ID, "revealed", now_iso=IN_REVEAL.isoformat()
+        )
+        retry = await handlers.handle_reveal(reveal.model_copy(), miner_hotkey="hk-a")
 
         assert retry.accepted is True
-        persist.assert_not_called()
+        assert storage.reveal_count(ROUND, FORGE_LENDING_SCHEMA_ID, "hk-a") == 1
+        assert storage.scoring_bundles(ROUND, FORGE_LENDING_SCHEMA_ID) == [
+            ("hk-a", bundle_json)
+        ]
 
     async def test_idempotent_retry_still_rejects_stale_protocol_version(
         self, storage: Storage

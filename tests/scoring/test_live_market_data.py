@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from itertools import count
+from types import SimpleNamespace
 
 import pytest
 from async_substrate_interface.errors import (
@@ -24,7 +25,9 @@ from endure.live.alpha_market_data import (
     BittensorSubnetInfoFetcher,
     LiveAlphaPriceProvider,
     LiveAlphaPriceProviderConfig,
+    validate_mainnet_archive,
 )
+from endure.protocol.consensus_policy import MAINNET_GENESIS_HASH
 from endure.protocol.risk_miner import LatestPoolObservation, baseline_risk_bundle
 from endure.scoring.assessment_orchestrator import ResolutionDeadlineExceeded
 from endure.scoring.market_data import (
@@ -55,6 +58,8 @@ class FakeSubnetFetcher:
     current_failures: int = 0
     calls: list[tuple[int, int | None]] = field(default_factory=list)
     current_calls: int = 0
+    genesis: str | None = MAINNET_GENESIS_HASH
+    timestamp_calls: list[int] = field(default_factory=list)
 
     def subnet(self, *, netuid: int, block: int | None = None) -> FakeDynamicInfo:
         self.calls.append((netuid, block))
@@ -74,10 +79,14 @@ class FakeSubnetFetcher:
             raise TimeoutError("archive head unavailable")
         return self.current
 
+    def genesis_hash(self) -> str | None:
+        return self.genesis
+
     def finalized_block(self) -> int:
         return self.finalized
 
     def timestamp_at_block(self, block: int) -> int:
+        self.timestamp_calls.append(block)
         return self.timestamps_by_block[block]
 
 
@@ -91,6 +100,8 @@ class FakeArchiveSubstrate:
     finalized: int
     timestamps_by_block: dict[int, int]
     query_hashes: list[str] = field(default_factory=list)
+    closed: bool = False
+    genesis: str | None = None
 
     def get_chain_finalised_head(self) -> str:
         return "finalized"
@@ -100,6 +111,8 @@ class FakeArchiveSubstrate:
         return self.finalized
 
     def get_block_hash(self, block_id: int) -> str:
+        if block_id == 0 and self.genesis is not None:
+            return self.genesis
         return f"block-{block_id}"
 
     def query(
@@ -117,6 +130,9 @@ class FakeArchiveSubstrate:
         block = int(block_hash.removeprefix("block-"))
         return FakeStorageValue(value=self.timestamps_by_block[block])
 
+    def close(self) -> None:
+        self.closed = True
+
 
 @dataclass(slots=True)
 class BlockingSubtensor:
@@ -124,6 +140,7 @@ class BlockingSubtensor:
     slow_current_block: bool = False
     sleep_seconds: float = 0.6
     calls: list[tuple[int, int | None]] = field(default_factory=list)
+    closed: bool = False
 
     def subnet(self, netuid: int, block: int | None = None) -> FakeDynamicInfo:
         self.calls.append((netuid, block))
@@ -135,6 +152,9 @@ class BlockingSubtensor:
         if self.slow_current_block:
             time.sleep(self.sleep_seconds)
         return 9_999
+
+    def close(self) -> None:
+        self.closed = True
 
 
 @dataclass(slots=True)
@@ -198,6 +218,181 @@ def _reveal_close(seconds_after_epoch: int) -> datetime:
 
 def _timestamp(seconds_after_epoch: int) -> int:
     return 1_767_225_600_000 + seconds_after_epoch * 1_000
+
+
+def _archive_probe_fetcher() -> FakeSubnetFetcher:
+    # Sparse synthetic blocks deliberately do not follow a 12-second estimate.
+    timestamps = {block: _timestamp(block * 86_400) for block in range(101)}
+    timestamps[100] += 3_600_000
+    return FakeSubnetFetcher(
+        responses={(30, 70): FakeDynamicInfo(tao_in=5_000, alpha_in=1_000)},
+        finalized=100,
+        timestamps_by_block=timestamps,
+    )
+
+
+def _archive_probe_provider(fetcher: FakeSubnetFetcher) -> LiveAlphaPriceProvider:
+    return LiveAlphaPriceProvider(
+        config=LiveAlphaPriceProviderConfig(
+            endpoint="wss://archive.example/private-key?token=secret",
+            request_pause_seconds=Decimal("0"),
+            max_attempts=1,
+        ),
+        fetcher=fetcher,
+    )
+
+
+def test_archive_readiness_uses_deep_history_and_timestamp_lookback() -> None:
+    fetcher = _archive_probe_fetcher()
+
+    _archive_probe_provider(fetcher).validate_archive(netuid=30)
+
+    # The old midpoint is required by scoring's binary search even though it
+    # precedes the 30-day reserve lookback; only one historical pool is fetched.
+    assert 50 in fetcher.timestamp_calls
+    assert fetcher.calls == [(30, 70)]
+    assert fetcher.current_calls == 0
+
+
+@pytest.mark.parametrize("genesis", ["0xwrong-chain", None])
+def test_archive_readiness_rejects_wrong_or_missing_genesis(
+    genesis: str | None,
+) -> None:
+    fetcher = _archive_probe_fetcher()
+    fetcher.genesis = genesis
+
+    with pytest.raises(AlphaMarketDataUnavailable):
+        _archive_probe_provider(fetcher).validate_archive(netuid=30)
+
+    assert fetcher.calls == []
+    assert fetcher.timestamp_calls == []
+
+
+@pytest.mark.parametrize("missing_block", [50, 70, 100])
+def test_archive_readiness_rejects_pruned_or_missing_timestamp_history(
+    missing_block: int,
+) -> None:
+    fetcher = _archive_probe_fetcher()
+    del fetcher.timestamps_by_block[missing_block]
+
+    with pytest.raises(AlphaMarketDataUnavailable):
+        _archive_probe_provider(fetcher).validate_archive(netuid=30)
+
+    assert fetcher.calls == []
+
+
+@pytest.mark.parametrize(
+    ("tao", "alpha"), [(0, 1_000), (5_000, 0), (-1, 1_000), (5_000, -1)]
+)
+def test_archive_readiness_rejects_nonpositive_reserves(tao: int, alpha: int) -> None:
+    fetcher = _archive_probe_fetcher()
+    fetcher.responses[(30, 70)] = FakeDynamicInfo(tao_in=tao, alpha_in=alpha)
+
+    with pytest.raises(AlphaMarketDataUnavailable):
+        _archive_probe_provider(fetcher).validate_archive(netuid=30)
+
+
+def test_archive_readiness_rejects_missing_historical_pool() -> None:
+    fetcher = _archive_probe_fetcher()
+    fetcher.responses.clear()
+
+    with pytest.raises(AlphaMarketDataUnavailable):
+        _archive_probe_provider(fetcher).validate_archive(netuid=30)
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        LookupError("historical state discarded"),
+        TimeoutError("archive timed out"),
+        OSError("archive wss://archive.example/private-key?token=secret unavailable"),
+        SubstrateRequestException(
+            {"code": -32000, "message": "State already discarded"}
+        ),
+    ],
+)
+def test_archive_readiness_rejects_unavailable_historical_reserves(
+    error: Exception,
+) -> None:
+    fetcher = _archive_probe_fetcher()
+    fetcher.failed_blocks = frozenset({70})
+    fetcher.failure_error = error
+
+    with pytest.raises(AlphaMarketDataUnavailable) as caught:
+        _archive_probe_provider(fetcher).validate_archive(netuid=30)
+
+    assert "secret" not in str(caught.value)
+    assert "private-key" not in str(caught.value)
+    assert caught.value.__suppress_context__
+
+
+def test_archive_readiness_enforces_probe_deadline() -> None:
+    fetcher = _archive_probe_fetcher()
+    ticks = iter([0.0, 121.0])
+    provider = LiveAlphaPriceProvider(
+        config=LiveAlphaPriceProviderConfig(max_attempts=1),
+        fetcher=fetcher,
+        now_fn=lambda: next(ticks),
+    )
+
+    with pytest.raises(AlphaMarketDataUnavailable):
+        provider.validate_archive(netuid=30)
+
+    assert fetcher.calls == []
+    assert fetcher.timestamp_calls == []
+
+
+@pytest.mark.parametrize(
+    "info",
+    [
+        None,
+        object(),
+        SimpleNamespace(tao_in=None, alpha_in=1_000),
+        SimpleNamespace(tao_in="invalid", alpha_in=1_000),
+    ],
+)
+def test_archive_readiness_rejects_malformed_pool_response(
+    monkeypatch: pytest.MonkeyPatch, info: object
+) -> None:
+    fetcher = _archive_probe_fetcher()
+    monkeypatch.setattr(FakeSubnetFetcher, "subnet", lambda _self, **_kwargs: info)
+
+    with pytest.raises(AlphaMarketDataUnavailable):
+        _archive_probe_provider(fetcher).validate_archive(netuid=30)
+
+
+@pytest.mark.parametrize("failure", [None, "identity"])
+def test_archive_probe_releases_scoped_clients(
+    monkeypatch: pytest.MonkeyPatch, failure: str | None
+) -> None:
+    source = _archive_probe_fetcher()
+    substrate = FakeArchiveSubstrate(
+        finalized=source.finalized,
+        timestamps_by_block=source.timestamps_by_block,
+        genesis="0xwrong-chain" if failure == "identity" else MAINNET_GENESIS_HASH,
+    )
+    subtensor = BlockingSubtensor()
+
+    def make_fetcher(endpoint: str) -> BittensorSubnetInfoFetcher:
+        fetcher = BittensorSubnetInfoFetcher(
+            endpoint, subtensor=subtensor, min_request_interval_seconds=0.0
+        )
+        fetcher._make_substrate = lambda: substrate
+        return fetcher
+
+    monkeypatch.setattr(
+        "endure.live.alpha_market_data.BittensorSubnetInfoFetcher", make_fetcher
+    )
+
+    if failure is None:
+        validate_mainnet_archive("mock://archive", netuid=30)
+    else:
+        with pytest.raises(AlphaMarketDataUnavailable):
+            validate_mainnet_archive("mock://archive", netuid=30)
+
+    assert substrate.closed
+    assert subtensor.closed is (failure is None)
+    assert subtensor.calls == ([(30, 70)] if failure is None else [])
 
 
 def test_live_provider_uses_first_block_at_or_after_reveal_close() -> None:

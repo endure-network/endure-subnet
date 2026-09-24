@@ -5,8 +5,9 @@
 > mainnet only behind the explicit `--endure.serving_stage mainnet`
 > acknowledgement, on releases promoted to the `:prod` image channel after the
 > owner release decision ([running_on_mainnet.md](docs/running_on_mainnet.md)).
-> The current protocol key is `2041` ([contract](endure/protocol/version_contract.py));
-> activated and retired leases are tracked in the [version registry](docs/protocol_versions.md).
+> This source candidate uses protocol key `2042` ([contract](endure/protocol/version_contract.py));
+> published `v0.1.0` images use key `2041`; adopting `2042` requires a coordinated release.
+> Activated and retired leases are tracked in the [version registry](docs/protocol_versions.md).
 
 Endure is a Bittensor risk-intelligence subnet: miners submit falsifiable
 assessments, validators resolve and score them, and consumers read signed risk
@@ -35,9 +36,22 @@ and emit Bittensor weights. The signed read API publishes the resulting A–E
 risk tier. See [mining](docs/mining.md) for the protocol and [the current
 scope](docs/specs/2026-07-06-alpha-risk-v1-scope.md) for the product contract.
 There is no minimum runtime: a miner enters scoring with its first accepted
-round, sees its first weights once that round's 5-day horizon resolves, and is
-paid from a decaying accuracy record rather than single rounds — see
+round and becomes eligible for earned weights after positive scores resolve,
+typically from that round's 5-day horizon. Earned weights follow a decaying
+accuracy record rather than single rounds; submission and finalized confirmation
+remain separate — see
 [eligibility and the earnings timeline](docs/mining.md#eligibility-and-the-earnings-timeline).
+
+The key-`2042` source candidate adds unattended cold start only for served Alpha
+Risk on mainnet SN30: one emission-enabled validator maintains the approved owner
+allocation while there is no positive resolved score history, including when
+there are no miners. This is a transition allocation, not earned miner reputation
+or proof of model accuracy. Positive history permanently ends bootstrap for the
+retained database and the same process switches to earned weights without a flag
+change or restart. Later zero or absent eligible scores cause abstention, never
+renewed bootstrap, and leave prior chain weights untouched. Other chains/netuids
+retain all-zero abstention. See the
+[identity and emission safety gates](docs/running_on_mainnet.md#weights-and-abstention).
 
 Known limitations: this is a testnet soak with one public validator endpoint;
 outcomes and feeds can diverge between validators; interfaces and
@@ -108,8 +122,9 @@ prefix and stop each process manually.
 ## Run a miner
 
 Use the [standalone miner image](docs/deploy/operator-node.md#run-a-miner)
-or follow the [mining guide](docs/mining.md) for source installation. Acceptance is gated by hotkey
-registration and each validator's configured stake floor, and covering the
+or follow the [mining guide](docs/mining.md) for source installation. Acceptance requires
+hotkey registration. Key `2042` mainnet validators use a canonical zero additional
+stake floor; testnet floors remain configurable. Covering the
 [full round universe](docs/mining.md#cover-the-full-universe) is the dominant
 earnings lever — skipped coordinates score zero. Never share a mnemonic, coldkey,
 hotkey file, seed, wallet archive, or endpoint credential in a public report.
@@ -121,6 +136,13 @@ or follow [validating](docs/validating.md) for source installation. Validators
 need durable database storage, backed-up state, a registered hotkey, and an
 archive market-data endpoint. Mainnet requires a qualified production release
 and the explicit acknowledgement described in [the mainnet guide](docs/running_on_mainnet.md).
+For the key-`2042` cutover, stop the old writer before starting one final Endure
+process with the axon on and `disable_set_weights` omitted/default-false.
+Explicitly setting the flag true disables both bootstrap and earned emission
+indefinitely; scores never auto-enable it. Preserve the mainnet database/history
+across restarts. A consistent post-graduation backup retains that decision;
+an older backup cannot recover later events. No automatic history repair or
+new migration is added. Never copy a testnet database into mainnet.
 
 ## Register on testnet
 

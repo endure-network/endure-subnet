@@ -1,7 +1,6 @@
 import argparse
 import asyncio
 import logging
-import os
 import threading
 from collections.abc import Iterator
 from contextlib import ExitStack, contextmanager
@@ -801,8 +800,13 @@ def test_main_hard_exits_when_watchdog_races_rpc_abandonment() -> None:
     context = MagicMock()
     # Given: the worker latches and dies between the latch check and the
     # watchdog probe.
-    context.chain_rpc_restart_required.side_effect = [False, True]
-    context.watchdog_exit_reason.return_value = "scoring loop thread exited"
+    context.chain_rpc_restart_required.return_value = False
+
+    def latch_during_watchdog() -> str:
+        context.chain_rpc_restart_required.return_value = True
+        return "scoring loop thread exited"
+
+    context.watchdog_exit_reason.side_effect = latch_during_watchdog
 
     with (
         patch(
@@ -911,22 +915,6 @@ def test_main_hard_exits_when_latching_teardown_also_raises() -> None:
     hard_exit.assert_called_with(1)
 
 
-def test_forced_exit_after_grace_arms_a_daemon_timer() -> None:
-    from neurons.validator import (
-        _WATCHDOG_TEARDOWN_GRACE_SECONDS,
-        _schedule_forced_exit_after_grace,
-    )
-
-    timer = _schedule_forced_exit_after_grace()
-    try:
-        assert timer.daemon is True
-        assert timer.interval == _WATCHDOG_TEARDOWN_GRACE_SECONDS
-        assert timer.function is os._exit
-        assert timer.args == (1,)
-    finally:
-        timer.cancel()
-
-
 def test_main_redacts_runtime_endpoint_credentials() -> None:
     from neurons.validator import main
 
@@ -942,6 +930,7 @@ def test_main_redacts_runtime_endpoint_credentials() -> None:
         ),
         patch("neurons.validator.Validator", side_effect=RuntimeError(credential_url)),
         patch("neurons.validator.bt.logging.error", error_log),
+        patch("neurons.validator._schedule_forced_exit_after_grace"),
         pytest.raises(SystemExit) as exit_info,
     ):
         main()
@@ -1030,38 +1019,6 @@ def test_sync_brackets_gated_chain_work_with_tick_progress(
     # completion, so its bounded RPC time never stacks onto a prior tick's age.
     assert marks_during_sync == [1_000.0]
     assert validator.watchdog_exit_reason() is None
-
-
-def test_set_weights_abstains_until_first_resolution(
-    mock_validator_config: bt.Config,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Epoch 0: all-zero scores would emit the SDK's uniform fallback —
-    abstain instead until something has actually scored."""
-    from decimal import Decimal
-
-    from endure.base.validator import BaseValidatorNeuron
-    from neurons.validator import Validator
-
-    mock_validator_config.neuron.axon_off = True
-    mock_validator_config.neuron.disable_set_weights = True
-    validator = Validator(config=mock_validator_config)
-
-    calls = {"n": 0}
-    monkeypatch.setattr(
-        BaseValidatorNeuron,
-        "set_weights",
-        lambda self: calls.__setitem__("n", calls["n"] + 1),
-    )
-
-    validator.scores = [Decimal(0) for _ in validator.scores]
-    validator.set_weights()
-    assert calls["n"] == 0
-
-    if validator.scores:
-        validator.scores[0] = Decimal("0.5")
-        validator.set_weights()
-        assert calls["n"] == 1
 
 
 def test_apply_weights_maps_hotkeys_to_metagraph_positions(

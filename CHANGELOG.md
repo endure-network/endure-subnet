@@ -1,5 +1,47 @@
 # Changelog
 
+## Unreleased — SN30 correctness cutover
+
+Protocol key `2042`; miners and validators must upgrade together. Published
+key-2041 images and chain parameters are not changed by this source update.
+
+- Serialize commit/reveal persistence with round closure; acknowledge only
+  durable accepted reveals and preserve frozen empty snapshots.
+- Validate protocol keys and windows on capped commit retries.
+- Pin mainnet admission to zero additional miner stake, 10 commit/reveal
+  attempts, and a 100-block metagraph/weight-attempt epoch; refuse conflicting
+  overrides and unsafe axon-off emission.
+- Validate mainnet archive identity and historical timestamp/reserve availability
+  before transport startup.
+- Digest-cover storage selection and pure Decimal score-to-u16 processing;
+  remove the unused `moving_average_alpha`/`update_scores` path.
+- Add unattended cold start for served Alpha Risk on mainnet SN30 only: maintain
+  the approved owner transition allocation until active-schema history records
+  a positive resolved score, then automatically use earned score-derived weights.
+  This is not earned reputation or evidence of model accuracy; no synthetic
+  scores/EMAs or earned-score audit provenance are created for bootstrap.
+- Reconstruct permanent bootstrap graduation from retained score history on
+  restart. Later zero/absent eligible scores abstain without clearing chain
+  weights or returning to bootstrap; other chains/netuids retain all-zero
+  abstention. Preserve mainnet SQLite/history and never copy testnet state;
+  a consistent post-graduation backup retains the decision, but an older backup
+  cannot recover later events. There is no automatic history repair.
+- Replace the external-setter/restart cutover with one final emission-enabled
+  Endure process, axon on and `disable_set_weights` omitted/default-false.
+  An explicitly true flag remains an indefinite off switch for both modes.
+  Recipient/owner checks, permits, chain constraints, rate limits, startup
+  fencing, one-in-flight submission, and durable finalized confirmation remain
+  required. Scoring coefficients and the mainnet target universe are unchanged.
+- Expose emission mode, stable wait/failure reasons, and expected submission and
+  confirmation deadlines on existing health/log surfaces. Missing first
+  submissions can degrade readiness; intentional eligibility waits do not.
+  Document scheduler/fence startup delay and activity-cutoff headroom.
+- Bound fatal startup teardown with the existing 60-second hard-exit fallback,
+  including archive workers that remain blocked after the probe times out.
+
+No schema migration is added. See the [mainnet cutover procedure](docs/running_on_mainnet.md#coordinated-cutover)
+and [conditional determinism limits](docs/economic-limitations.md#conditional-determinism).
+
 ## v0.1.0 — Initial Alpha Risk release
 
 Protocol key `2041`: signed submissions, miner score ownership, the 15-subnet

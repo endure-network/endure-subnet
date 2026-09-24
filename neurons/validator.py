@@ -47,7 +47,9 @@ from endure.base.validator import (
 from endure.live.alpha_market_data import (
     LiveAlphaPriceProvider,
     LiveAlphaPriceProviderConfig,
+    validate_mainnet_archive,
 )
+from endure.protocol.consensus_policy import SN30_BOOTSTRAP_NETUID
 from endure.protocol.handlers import SubmissionHandlers
 from endure.protocol.risk_runtime import (
     RECORDED_FIXTURE_WINDOW_START_BLOCK,
@@ -62,6 +64,13 @@ from endure.protocol.vertical import AssessmentRoundProgram, VerticalRuntime
 from endure.runtime.identity import runtime_identity
 from endure.runtime.resolve import resolve_runtime_provider
 from endure.scoring.assessment_orchestrator import ResolutionBudget
+from endure.scoring.emission_policy import (
+    BootstrapPolicyError,
+    bootstrap_submission_due,
+    select_emission_candidate,
+    validate_bootstrap_recipient,
+    validate_bootstrap_vector,
+)
 from endure.scoring.market_data import recorded_mainnet_fixture_provider
 from endure.scoring.policy import DEFAULT_PAYOUT_HALF_LIFE_ROUNDS
 from endure.scoring.risk.orchestrator import RiskScoringOrchestrator
@@ -80,7 +89,9 @@ from endure.utils.config import (
     permits_dev_only_runtime,
     require_compression_runtime_allowed,
     require_explicit_netuid,
+    require_mainnet_validator_policy,
     require_serving_stage_allowed,
+    uses_mainnet_consensus_policy,
 )
 from endure.utils.log_shipping import configure_log_shipping
 from endure.utils.logging import safe_endpoint_label, safe_error
@@ -139,6 +150,7 @@ class Validator(BaseValidatorNeuron):
         resolved_config = config or type(self).build_config()
         require_serving_stage_allowed(resolved_config)
         require_explicit_netuid(resolved_config)
+        require_mainnet_validator_policy(resolved_config)
         if (
             active_runtime_schema_id(resolved_config) == RISK_SCHEMA_ID
             and int(resolved_config.neuron.num_concurrent_forwards) != 1
@@ -177,6 +189,10 @@ class Validator(BaseValidatorNeuron):
                 "endure.health_tick_max_duration_seconds; a budget at or above "
                 "the watchdog window cannot prevent stale-tick restarts"
             )
+        if uses_mainnet_consensus_policy(resolved_config):
+            validate_mainnet_archive(
+                str(resolved_config.endure.market_data_endpoint), netuid=30
+            )
         super().__init__(
             config=resolved_config,
             runtime_provider=resolve_runtime_provider(resolved_config),
@@ -185,6 +201,18 @@ class Validator(BaseValidatorNeuron):
         _run_migrations(self.config.endure.database_url)
         self._storage = Storage.from_url(self.config.endure.database_url)
         self._weight_emission_startup_fence_block: int | None = None
+        self._positive_score_history_id = 0
+        self._has_positive_score_history = False
+        self._bootstrap_chain_snapshot: bt.MetagraphInfo | None = None
+        self._emission_mode = (
+            "disabled" if self.config.neuron.disable_set_weights else "abstain"
+        )
+        self._emission_reason = "initializing"
+        self._emission_expected_since: float | None = None
+        self._emission_deadline: float | None = None
+        self._emission_next_eligible_block: int | None = None
+        self._emission_chain_due_block: int | None = None
+        self._emission_blocked_reason: str | None = None
         self._handlers = SubmissionHandlers(
             storage=self._storage,
             schema_id=self._schema_id,
@@ -211,17 +239,6 @@ class Validator(BaseValidatorNeuron):
         self._api_thread: threading.Thread | None = None
         self._attach_handlers()
         self._start_api()
-        # D1=B: the code default stays 0; the operator's deployment sets the
-        # floor. Warn loudly when a live network runs with no stake gate — any
-        # registered hotkey can then impose commit/reveal load.
-        if str(self.config.runtime.mode) != "mock" and (
-            self.config.endure.min_miner_stake <= 0
-        ):
-            bt.logging.warning(
-                "endure.min_miner_stake is 0 on a live network — any registered "
-                "hotkey can impose commit/reveal load; pass "
-                "--endure.min_miner_stake with a positive TAO floor"
-            )
 
     def runtime_health(self) -> RuntimeHealth:
         """Stuck-loop observability, merged into /health. Tick fields are the
@@ -271,6 +288,16 @@ class Validator(BaseValidatorNeuron):
             and time.monotonic() - self._started_monotonic
             > int(self.config.endure.health_startup_grace_seconds)
         )
+        self._refresh_emission_health(
+            current_block,
+            open_confirmation=(
+                confirmation is not None and confirmation.open_submissions > 0
+            ),
+        )
+        submission_overdue = (
+            self._emission_deadline is not None
+            and time.monotonic() > self._emission_deadline
+        )
         weight_emission_degraded = (
             gate.degraded
             or gate.abandoned_generations > 0
@@ -279,6 +306,7 @@ class Validator(BaseValidatorNeuron):
             or deadline_overdue
             or fallback_overdue
             or unknown_block_open
+            or submission_overdue
         )
         long_op_started = getattr(self, "_long_op_started_monotonic", None)
         return {
@@ -322,6 +350,27 @@ class Validator(BaseValidatorNeuron):
             "last_set_weights_ok": self._last_set_weights_ok,
             "consecutive_set_weights_failures": self._consecutive_set_weights_failures,
             "weight_emission_degraded": weight_emission_degraded,
+            "emission_mode": self._emission_mode,
+            "emission_reason": self._emission_reason,
+            "emission_blocked_reason": getattr(self, "_emission_blocked_reason", None),
+            "emission_expected": self._emission_expected_since is not None,
+            "emission_next_eligible_block": self._emission_next_eligible_block,
+            "emission_expected_seconds": (
+                None
+                if self._emission_expected_since is None
+                else max(0.0, time.monotonic() - self._emission_expected_since)
+            ),
+            "emission_deadline_in_seconds": (
+                None
+                if self._emission_deadline is None
+                else self._emission_deadline - time.monotonic()
+            ),
+            "emission_submission_overdue": submission_overdue,
+            "emission_confirmation_deadline_block": (
+                None
+                if confirmation is None
+                else confirmation.oldest_open_deadline_block
+            ),
             "last_confirmed_weights_at": (
                 None if confirmation is None else confirmation.last_confirmed_at
             ),
@@ -537,10 +586,9 @@ class Validator(BaseValidatorNeuron):
             return True, "Missing dendrite or hotkey"
         if synapse.dendrite.hotkey not in self.metagraph.hotkeys:
             return True, "Unrecognized hotkey"
-        # Registration is cheap; the stake gate bounds who can impose
-        # commit/reveal load. The threshold is parsed to Decimal at argparse
-        # time (boot); the chain-native metagraph float is crossed into Decimal
-        # through str to avoid binary-float artifacts at the threshold.
+        # Mainnet pins this floor to zero. Testnet/local operators may use S
+        # to bound commit/reveal load; cross the SDK boundary through str so
+        # Decimal comparisons do not inherit binary-float artifacts.
         min_stake = self.config.endure.min_miner_stake
         if min_stake > 0:
             uid = self.metagraph.hotkeys.index(synapse.dendrite.hotkey)
@@ -548,14 +596,195 @@ class Validator(BaseValidatorNeuron):
                 return True, "Insufficient stake"
         return False, "Hotkey recognized"
 
-    def set_weights(self):
-        """Abstain until something has scored: all-zero scores would emit the
-        SDK's uniform fallback — pure noise into consensus during validator
-        warm-up."""
-        if not any(score != ZERO for score in self.scores):
-            bt.logging.info("no resolved scores yet — abstaining from set_weights")
+    def _observed_emission_mode(self) -> str:
+        """Read local policy facts only; never consult RPC from the health route."""
+        if self.config.neuron.disable_set_weights:
+            return "disabled"
+        if any(score > ZERO for score in getattr(self, "scores", ())):
+            return "scored"
+        bootstrap = int(
+            self.config.netuid
+        ) == SN30_BOOTSTRAP_NETUID and uses_mainnet_consensus_policy(self.config)
+        graduated = getattr(self, "_has_positive_score_history", False)
+        storage = getattr(self, "_storage", None)
+        if bootstrap and not graduated and storage is not None:
+            _, graduated = storage.positive_assessment_score_history_since(
+                self._schema_id,
+                after_id=getattr(self, "_positive_score_history_id", 0),
+            )
+        return "bootstrap" if bootstrap and not graduated else "abstain"
+
+    def _set_emission_observation(self, mode: str, reason: str) -> None:
+        if (mode, reason) != (
+            getattr(self, "_emission_mode", None),
+            getattr(self, "_emission_reason", None),
+        ):
+            bt.logging.info(f"weight emission mode={mode} reason={reason}")
+        self._emission_mode = mode
+        self._emission_reason = reason
+
+    def _defer_emission(self, reason: str) -> None:
+        self._emission_expected_since = None
+        self._emission_deadline = None
+        if reason in {"disabled", "no_positive_scores"}:
+            self._emission_blocked_reason = None
+        self._set_emission_observation(self._observed_emission_mode(), reason)
+
+    def _refresh_emission_health(
+        self, current_block: int | None, *, open_confirmation: bool
+    ) -> None:
+        mode = self._observed_emission_mode()
+        if mode != getattr(self, "_emission_mode", None):
+            self._emission_blocked_reason = None
+            self._emission_expected_since = None
+            self._emission_deadline = None
+        self._emission_next_eligible_block = None
+        reason = self._emission_wait_reason(mode, current_block, open_confirmation)
+        if reason is not None:
+            self._defer_emission(reason)
+            return
+        now = time.monotonic()
+        if getattr(self, "_emission_expected_since", None) is None:
+            self._emission_expected_since = now
+            self._emission_deadline = max(
+                now + int(self.config.endure.health_tick_max_duration_seconds),
+                self._started_monotonic
+                + int(self.config.endure.health_startup_grace_seconds),
+            )
+        reason = getattr(self, "_emission_blocked_reason", None) or (
+            "ready" if self.rpc_gate.ready() else "rpc_deferred"
+        )
+        if (
+            reason == "ready"
+            and self._emission_deadline is not None
+            and now > self._emission_deadline
+        ):
+            reason = "submission_overdue"
+        self._set_emission_observation(mode, reason)
+
+    def _emission_wait_reason(  # noqa: PLR0911 — explicit, ordered eligibility gates.
+        self, mode: str, block: int | None, open_confirmation: bool
+    ) -> str | None:
+        if mode == "disabled":
+            return "disabled"
+        if mode == "abstain":
+            return "no_positive_scores"
+        if open_confirmation:
+            return "confirmation_pending"
+        if block is None:
+            return "chain_state_unavailable"
+        storage = getattr(self, "_storage", None)
+        if str(self.config.runtime.mode) != "mock":
+            fence = (
+                storage.weight_emission_startup_fence(
+                    schema_id=self._schema_id, protocol_version_key=CURRENT_VERSION_KEY
+                )
+                if storage is not None
+                else None
+            )
+            if fence is None or block <= fence:
+                self._emission_next_eligible_block = (
+                    None if fence is None else fence + 1
+                )
+                return "startup_fence"
+        hotkeys = self.metagraph.hotkeys
+        if not 0 <= int(self.uid) < len(hotkeys) or hotkeys[int(self.uid)] != str(
+            self.wallet.hotkey.ss58_address
+        ):
+            return "validator_identity_invalid"
+        uid = int(self.uid)
+        permits = self.metagraph.validator_permit
+        if uid < 0 or uid >= len(permits):
+            return "chain_state_unavailable"
+        permit = bool(permits[uid])
+        if getattr(self, "_emission_snapshot_block", -1) >= block:
+            permit = self._emission_snapshot_permit
+        if not permit:
+            return "no_validator_permit"
+        chain_due = getattr(self, "_emission_chain_due_block", None)
+        if chain_due is not None and block < chain_due:
+            self._emission_next_eligible_block = chain_due
+            return "chain_rate_limit"
+        last_attempt = getattr(self, "_last_weights_attempt", None)
+        if last_attempt is None:
+            return "epoch_pacing"
+        due = last_attempt + int(self.config.neuron.epoch_length) + 1
+        # Once due, an unsuccessful attempt is not progress. Do not perpetually
+        # renew its deadline simply because the scheduler paces another retry.
+        if block < due and getattr(self, "_emission_expected_since", None) is None:
+            self._emission_next_eligible_block = due
+            return "epoch_pacing"
+        return None
+
+    def should_set_weights(self) -> bool:
+        due = super().should_set_weights()
+        storage = getattr(self, "_storage", None)
+        self._refresh_emission_health(
+            _cached_block_number(vars(self.metagraph).get("block")),
+            open_confirmation=(
+                storage is not None
+                and storage.has_open_weight_emission_confirmation(
+                    schema_id=self._schema_id
+                )
+            ),
+        )
+        return due
+
+    def set_weights(self) -> None:
+        """Select bootstrap or earned weights without changing score authority."""
+        if self.config.neuron.disable_set_weights:
+            self._defer_emission("disabled")
             return
         storage = getattr(self, "_storage", None)
+        bootstrap_enabled = int(
+            self.config.netuid
+        ) == SN30_BOOTSTRAP_NETUID and uses_mainnet_consensus_policy(self.config)
+        positive_history = False
+        if bootstrap_enabled:
+            if storage is None:
+                self._emission_blocked_reason = "score_history_unavailable"
+                self._set_emission_observation("bootstrap", "score_history_unavailable")
+                raise BootstrapPolicyError("bootstrap requires durable score history")
+            if not self._has_positive_score_history:
+                (
+                    self._positive_score_history_id,
+                    self._has_positive_score_history,
+                ) = storage.positive_assessment_score_history_since(
+                    self._schema_id, after_id=self._positive_score_history_id
+                )
+            positive_history = self._has_positive_score_history
+        try:
+            candidate = select_emission_candidate(
+                self.scores,
+                bootstrap_enabled=bootstrap_enabled,
+                has_positive_history=positive_history,
+            )
+        except BootstrapPolicyError:
+            self._emission_blocked_reason = "bootstrap_vector_invalid"
+            self._set_emission_observation("bootstrap", "bootstrap_vector_invalid")
+            raise
+        self._set_emission_observation(
+            candidate.mode, getattr(self, "_emission_reason", "initializing")
+        )
+        if candidate.mode == "abstain":
+            self._defer_emission("no_positive_scores")
+            return
+        if not self._weight_emission_ready(storage):
+            return
+        snapshot = None
+        if candidate.mode == "bootstrap":
+            snapshot = self._bootstrap_snapshot_if_due()
+            if snapshot is None:
+                return
+        self._emission_blocked_reason = None
+        self._bootstrap_chain_snapshot = snapshot
+        try:
+            self._emit_weight_candidate(candidate.weights)
+        finally:
+            self._bootstrap_chain_snapshot = None
+
+    def _weight_emission_ready(self, storage: Storage | None) -> bool:
+        """Keep startup fencing and durable single-flight common to both modes."""
         if str(self.config.runtime.mode) != "mock":
             startup_fence = (
                 storage.weight_emission_startup_fence(
@@ -568,7 +797,8 @@ class Validator(BaseValidatorNeuron):
             if startup_fence is None:
                 current_block = self._safe_block()
                 if current_block is None:
-                    return
+                    self._defer_emission("chain_state_unavailable")
+                    return False
                 netuid = int(self.config.netuid)
                 startup_fence = (
                     self.gated_subtensor.cr4_reveal_deadline_at(
@@ -588,20 +818,62 @@ class Validator(BaseValidatorNeuron):
                         protocol_version_key=CURRENT_VERSION_KEY,
                         fence_block=startup_fence,
                     )
-                bt.logging.info("weight emission startup fence initialized")
-                return
+                self._defer_emission("startup_fence")
+                return False
             if startup_fence > 0:
                 current_block = self._safe_block()
                 if current_block is None or current_block <= startup_fence:
-                    return
+                    self._defer_emission("startup_fence")
+                    return False
         if storage is not None and storage.has_open_weight_emission_confirmation(
             schema_id=self._schema_id
         ):
-            bt.logging.info(
-                "weight emission remains unconfirmed — abstaining from a new submission"
+            self._defer_emission("confirmation_pending")
+            return False
+        return True
+
+    def _bootstrap_snapshot_if_due(self) -> bt.MetagraphInfo | None:
+        """Check current registration, owner identity, permit and chain pacing."""
+        netuid = int(self.config.netuid)
+        block = int(self.subtensor.get_current_block())
+        snapshot = self.subtensor.get_metagraph_info(netuid=netuid, block=block)
+        if snapshot is None or snapshot.block != block:
+            self._emission_blocked_reason = "bootstrap_snapshot_invalid"
+            self._set_emission_observation("bootstrap", "bootstrap_snapshot_invalid")
+            raise BootstrapPolicyError("bootstrap requires a current chain snapshot")
+        try:
+            validate_bootstrap_recipient(
+                chain_identity=self.gated_subtensor.get_block_hash(0),
+                netuid=netuid,
+                hotkeys=snapshot.hotkeys,
+                owner_hotkey=snapshot.owner_hotkey,
             )
-            return
-        super().set_weights()
+            due = bootstrap_submission_due(
+                validator_uid=int(self.uid),
+                validator_hotkey=str(self.wallet.hotkey.ss58_address),
+                hotkeys=snapshot.hotkeys,
+                validator_permits=snapshot.validator_permit,
+                last_updates=snapshot.last_update,
+                block=block,
+                weights_rate_limit=snapshot.weights_rate_limit,
+            )
+        except BootstrapPolicyError:
+            self._emission_blocked_reason = "bootstrap_identity_invalid"
+            self._set_emission_observation("bootstrap", "bootstrap_identity_invalid")
+            raise
+        self._emission_chain_due_block = (
+            snapshot.last_update[self.uid] + snapshot.weights_rate_limit
+        )
+        self._emission_snapshot_permit = bool(snapshot.validator_permit[self.uid])
+        self._emission_snapshot_block = block
+        if not due:
+            self._defer_emission(
+                "no_validator_permit"
+                if not snapshot.validator_permit[self.uid]
+                else "chain_rate_limit"
+            )
+            return None
+        return snapshot
 
     def _emission_blended_snapshot(self) -> dict[str, Decimal]:
         cached: dict[str, Decimal] = getattr(self, "_blended_snapshot", {})
@@ -619,7 +891,11 @@ class Validator(BaseValidatorNeuron):
         storage = getattr(self, "_storage", None)
         if storage is None:
             return []
-        blended = self._emission_blended_snapshot()
+        blended = (
+            {}
+            if getattr(self, "_bootstrap_chain_snapshot", None) is not None
+            else self._emission_blended_snapshot()
+        )
         u16_by_uid = dict(zip(attempt.uint_uids, attempt.uint_weights, strict=True))
         rows: list[WeightEmissionRow] = []
         for uid, processed in zip(
@@ -647,6 +923,26 @@ class Validator(BaseValidatorNeuron):
         return rows
 
     def _on_weights_prepared(self, attempt: WeightEmissionAttempt) -> int | None:
+        snapshot = getattr(self, "_bootstrap_chain_snapshot", None)
+        if snapshot is not None:
+            try:
+                validate_bootstrap_recipient(
+                    chain_identity=attempt.chain_identity or "",
+                    netuid=attempt.netuid if attempt.netuid is not None else -1,
+                    hotkeys=attempt.hotkeys,
+                    owner_hotkey=snapshot.owner_hotkey,
+                )
+                validate_bootstrap_vector(
+                    uids=attempt.uint_uids,
+                    weights=attempt.uint_weights,
+                    min_allowed_weights=attempt.min_allowed_weights,
+                    max_weight_limit=attempt.max_weight_limit,
+                )
+            except BootstrapPolicyError:
+                self._emission_blocked_reason = "bootstrap_vector_invalid"
+                self._set_emission_observation("bootstrap", "bootstrap_vector_invalid")
+                raise
+        self._set_emission_observation(self._observed_emission_mode(), "prepared")
         storage = getattr(self, "_storage", None)
         if storage is None:
             return None
@@ -680,6 +976,14 @@ class Validator(BaseValidatorNeuron):
     def _on_weights_emitted(
         self, attempt: WeightEmissionAttempt, batch_id: int | None = None
     ) -> None:
+        if attempt.status == "submitted":
+            self._defer_emission("confirmation_pending")
+        else:
+            reason = (
+                getattr(self, "_emission_blocked_reason", None) or "submission_failed"
+            )
+            self._emission_blocked_reason = reason
+            self._set_emission_observation(self._observed_emission_mode(), reason)
         storage = getattr(self, "_storage", None)
         if storage is None:
             return
@@ -834,6 +1138,8 @@ class Validator(BaseValidatorNeuron):
             return
         self._consecutive_set_weights_failures = 0
         self._last_set_weights_ok = _utc_now().isoformat()
+        self._emission_blocked_reason = None
+        self._defer_emission("confirmed")
         bt.logging.info(
             f"confirmed {confirmed} weight emission batch(es) "
             f"at finalized block {finalized_block}"
@@ -1117,7 +1423,7 @@ _WATCHDOG_TEARDOWN_GRACE_SECONDS = 60
 
 def _schedule_forced_exit_after_grace() -> threading.Timer:
     # SystemExit only terminates the process once every non-daemon thread
-    # unwinds — and the wedged tick worker that trips the watchdog may never
+    # unwinds — and a wedged startup archive or watchdog tick worker may never
     # return. A daemon timer guarantees the supervisor gets a dead process to
     # restart while still giving graceful teardown a bounded head start.
     timer = threading.Timer(_WATCHDOG_TEARDOWN_GRACE_SECONDS, os._exit, args=(1,))
@@ -1165,6 +1471,9 @@ def main() -> None:
         bt.logging.error(f"validator refused to start: {safe_error(error)}")
         raise SystemExit(1) from None
     except Exception as error:  # noqa: BLE001 - CLI boundary must redact SDK errors.
+        # Construction can fail after abandoning a non-daemon archive worker,
+        # before a Validator exists to run the normal teardown/watchdog path.
+        _schedule_forced_exit_after_grace()
         bt.logging.error(
             f"validator failed: {type(error).__name__}: {safe_error(error)}"
         )

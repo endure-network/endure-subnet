@@ -32,6 +32,13 @@ from endure.assessment.registry import (
     default_registry,
 )
 from endure.assessment.schemas.subnet_alpha_risk import RISK_SCHEMA_ID
+from endure.protocol.consensus_policy import (
+    EPOCH_LENGTH_BLOCKS,
+    MAX_COMMITS_PER_ROUND,
+    MAX_REVEALS_PER_ROUND,
+    MIN_MINER_STAKE,
+    require_canonical_mainnet_policy,
+)
 
 from .logging import safe_endpoint_label, setup_events_logger
 
@@ -118,6 +125,31 @@ def _is_bittensor_mainnet(config: "bt.Config") -> bool:
     if network in _MAINNET_NETWORKS:
         return True
     return bool({_host_of(endpoint), _host_of(network)} & _MAINNET_HOSTS)
+
+
+def uses_mainnet_consensus_policy(config: "bt.Config") -> bool:
+    """Select live Alpha Risk mainnet policy using the effective SDK endpoint."""
+    return (
+        requires_serving_stage_gate(config)
+        and not permits_dev_only_runtime(config)
+        and _is_bittensor_mainnet(config)
+    )
+
+
+def require_mainnet_validator_policy(config: "bt.Config") -> None:
+    """Fail before transport startup if mainnet policy or serving is unsafe."""
+    if not uses_mainnet_consensus_policy(config):
+        return
+    require_canonical_mainnet_policy(
+        min_miner_stake=config.endure.min_miner_stake,
+        max_commits_per_round=int(config.endure.max_commits_per_round),
+        max_reveals_per_round=int(config.endure.max_reveals_per_round),
+        epoch_length=int(config.neuron.epoch_length),
+    )
+    if config.neuron.axon_off and not config.neuron.disable_set_weights:
+        raise RuntimeError(
+            "--neuron.axon_off on mainnet requires --neuron.disable_set_weights"
+        )
 
 
 def requires_serving_stage_gate(
@@ -222,19 +254,6 @@ def _positive_int(value: str) -> int:
     parsed = int(value)
     if parsed <= 0:
         raise argparse.ArgumentTypeError(f"must be a positive integer, got {parsed}")
-    return parsed
-
-
-def _unit_interval_decimal(value: str) -> Decimal:
-    # EMA alpha affects scoring: parse it as Decimal (not float, per the
-    # Decimal policy) and reject anything outside [0, 1], since alpha > 1
-    # inverts the moving average and NaN/negative corrupts scores.
-    try:
-        parsed = Decimal(value)
-    except (InvalidOperation, ValueError) as exc:
-        raise argparse.ArgumentTypeError(f"invalid Decimal value: {value!r}") from exc
-    if parsed.is_nan() or not (Decimal("0") <= parsed <= Decimal("1")):
-        raise argparse.ArgumentTypeError(f"must be a Decimal in [0, 1], got {parsed}")
     return parsed
 
 
@@ -372,8 +391,8 @@ def add_args(cls, parser):
     parser.add_argument(
         "--neuron.epoch_length",
         type=_positive_int,
-        help="The default epoch length (how often we set weights, measured in 12 second blocks).",
-        default=100,
+        help="Metagraph refresh and weight-attempt interval in blocks; mainnet validators use the release-pinned value.",
+        default=EPOCH_LENGTH_BLOCKS,
     )
 
     parser.add_argument(
@@ -530,24 +549,24 @@ def add_args(cls, parser):
     parser.add_argument(
         "--endure.min_miner_stake",
         type=_non_negative_decimal,
-        default=Decimal("0"),
+        default=MIN_MINER_STAKE,
         help=(
-            "Minimum miner stake (TAO) to accept commits/reveals; 0 disables "
-            "the gate (validator-only). Parsed as Decimal — TAO is an "
-            "economic value."
+            "Minimum miner metagraph stake weight S to accept commits/reveals "
+            "(not a TAO balance). Mainnet requires the canonical zero floor; "
+            "testnet/local validators may configure a positive floor."
         ),
     )
     parser.add_argument(
         "--endure.max_commits_per_round",
         type=_positive_int,
-        default=10,
-        help="Per-miner commit rate limit per round.",
+        default=MAX_COMMITS_PER_ROUND,
+        help="Per-miner commit rate limit per round; release-pinned on mainnet.",
     )
     parser.add_argument(
         "--endure.max_reveals_per_round",
         type=_positive_int,
-        default=10,
-        help="Per-miner reveal rate limit per round.",
+        default=MAX_REVEALS_PER_ROUND,
+        help="Per-miner reveal rate limit per round; release-pinned on mainnet.",
     )
     parser.add_argument(
         "--endure.api_port",
@@ -647,13 +666,6 @@ def add_validator_args(cls, parser):
         action="store_true",
         help="Disables setting weights.",
         default=False,
-    )
-
-    parser.add_argument(
-        "--neuron.moving_average_alpha",
-        type=_unit_interval_decimal,
-        help="Moving average alpha parameter, how much to add of the new observation.",
-        default=Decimal("0.1"),
     )
 
     parser.add_argument(

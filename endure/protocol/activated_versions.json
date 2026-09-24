@@ -258,14 +258,20 @@
       "evidence_sha256": "86150d44b3134f1a10fe4a98d4bafda63eb6aa55c9d348ec0284bb83c2d384fc",
       "key": 30,
       "record_id": "activation-0043"
+    },
+    {
+      "digest": "570989ed4a3e73bc1283e99742c3931712ec0e3c4aebc96a5aebcc1375ea87f7",
+      "evidence_sha256": "0df17c6368167b0f8b3f376b2d84e5f9810d89860c67532dfaef348a2559918d",
+      "key": 2041,
+      "record_id": "activation-0044"
     }
   ],
   "current_lease": {
-    "authority_sha256": "27e8f797e62ce76333067470e18a32bdccdd80a385235b4d700d21513880c2b1",
-    "digest": "570989ed4a3e73bc1283e99742c3931712ec0e3c4aebc96a5aebcc1375ea87f7",
-    "holder": "codex/pr57-release-mitigations",
-    "key": 2041
+    "authority_sha256": "73e7392d3101bc635420e5148492edf373b8230eb26ed0d4c297980775aee71e",
+    "digest": "4be32f79360668468c6405e7af56a4f6a02abae9adace8f51e391f2e102ee435",
+    "holder": "fix/sn30-consensus-config-divergence",
+    "key": 2042
   },
-  "previous_activation_id": "activation-0043",
+  "previous_activation_id": "activation-0044",
   "schema_version": 1
 }

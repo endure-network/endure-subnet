@@ -36,6 +36,7 @@ from endure.utils.config import (
     require_compression_runtime_allowed,
     require_dev_only_runtime,
     require_explicit_netuid,
+    require_mainnet_validator_policy,
     require_serving_stage_allowed,
 )
 
@@ -93,16 +94,6 @@ class TestAddArgs:
         with pytest.raises(SystemExit):
             parser.parse_args(["--endure.tick_seconds", "-1"])
 
-    def test_validator_args_registered(self) -> None:
-        parser = argparse.ArgumentParser()
-        add_validator_args(_FakeCls, parser)
-        dests = {a.dest for a in parser._actions}
-        assert "neuron.name" in dests
-        assert "runtime.mode" in dests
-        assert "neuron.disable_set_weights" in dests
-        assert "neuron.moving_average_alpha" in dests
-        assert "neuron.vpermit_tao_limit" not in dests
-
     @pytest.mark.parametrize(
         ("add_options", "removed_argv"),
         (
@@ -113,6 +104,7 @@ class TestAddArgs:
             (add_miner_args, ["--wandb.project_name", "project"]),
             (add_miner_args, ["--wandb.entity", "entity"]),
             (add_validator_args, ["--neuron.vpermit_tao_limit", "4096"]),
+            (add_validator_args, ["--neuron.moving_average_alpha", "0.25"]),
         ),
     )
     def test_removed_cli_options_are_rejected(
@@ -652,38 +644,11 @@ class TestArgValidation:
         with pytest.raises(SystemExit):
             self._base_parser().parse_args(["--neuron.events_retention_size", bad])
 
-    def test_moving_average_alpha_parses_decimal(self) -> None:
-        ns = self._validator_parser().parse_args(
-            ["--neuron.moving_average_alpha", "0.25"]
-        )
-        value = getattr(ns, "neuron.moving_average_alpha")
-        assert value == Decimal("0.25")
-        assert isinstance(value, Decimal)
-
-    def test_moving_average_alpha_default_is_unit_interval_decimal(self) -> None:
-        value = getattr(
-            self._validator_parser().parse_args([]), "neuron.moving_average_alpha"
-        )
-        assert isinstance(value, Decimal)
-        assert Decimal("0") <= value <= Decimal("1")
-
-    @pytest.mark.parametrize("bad", ["1.5", "-0.1", "nan", "notanumber"])
-    def test_moving_average_alpha_rejects_out_of_range(self, bad: str) -> None:
-        with pytest.raises(SystemExit):
-            self._validator_parser().parse_args(["--neuron.moving_average_alpha", bad])
-
     def test_min_miner_stake_parses_decimal(self) -> None:
         ns = self._validator_parser().parse_args(["--endure.min_miner_stake", "10"])
         value = getattr(ns, "endure.min_miner_stake")
         assert value == Decimal("10")
         assert isinstance(value, Decimal)
-
-    def test_min_miner_stake_default_is_zero_decimal(self) -> None:
-        value = getattr(
-            self._validator_parser().parse_args([]), "endure.min_miner_stake"
-        )
-        assert isinstance(value, Decimal)
-        assert value == Decimal("0")
 
     @pytest.mark.parametrize("bad", ["-5", "nan", "Infinity", "notanumber"])
     def test_min_miner_stake_rejects_invalid(self, bad: str) -> None:
@@ -785,3 +750,59 @@ class TestRequireExplicitNetuid:
         built = self._parsed([])
         built.merge(self._parsed(["--netuid", "1", *self._LIVE]))
         require_explicit_netuid(built)
+
+
+class TestMainnetValidatorPolicy:
+    @pytest.mark.parametrize(
+        ("section", "option", "value"),
+        (
+            ("endure", "min_miner_stake", Decimal("0.1")),
+            ("endure", "max_commits_per_round", 11),
+            ("endure", "max_reveals_per_round", 9),
+            ("neuron", "epoch_length", 101),
+        ),
+    )
+    def test_mainnet_rejects_effective_policy_overrides(
+        self,
+        production_validator_config: bt.Config,
+        section: str,
+        option: str,
+        value: Decimal | int,
+    ) -> None:
+        cfg = production_validator_config
+        cfg.subtensor.network = "finney"
+        cfg.endure.serving_stage = "mainnet"
+        setattr(getattr(cfg, section), option, value)
+
+        with pytest.raises(RuntimeError, match=rf"--{section}\.{option}"):
+            require_mainnet_validator_policy(cfg)
+
+    def test_axon_off_requires_emission_disabled_on_mainnet(
+        self, production_validator_config: bt.Config
+    ) -> None:
+        cfg = production_validator_config
+        cfg.subtensor.network = "finney"
+        cfg.endure.serving_stage = "mainnet"
+        cfg.neuron.axon_off = True
+        cfg.neuron.disable_set_weights = True
+        require_mainnet_validator_policy(cfg)
+
+        cfg.neuron.disable_set_weights = False
+
+        with pytest.raises(RuntimeError, match="disable_set_weights"):
+            require_mainnet_validator_policy(cfg)
+
+    def test_testnet_override_cannot_carry_over_to_mainnet(
+        self, production_validator_config: bt.Config
+    ) -> None:
+        cfg = production_validator_config
+        cfg.subtensor.network = "test"
+        cfg.endure.serving_stage = "testnet"
+        cfg.endure.min_miner_stake = Decimal("1")
+        require_mainnet_validator_policy(cfg)
+
+        cfg.subtensor.network = "finney"
+        cfg.endure.serving_stage = "mainnet"
+
+        with pytest.raises(RuntimeError, match="min_miner_stake"):
+            require_mainnet_validator_policy(cfg)

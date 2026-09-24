@@ -15,7 +15,7 @@ from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeoutError
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from threading import Condition
 from typing import Final, Protocol
@@ -25,6 +25,7 @@ from async_substrate_interface.errors import SubstrateRequestException
 from async_substrate_interface.sync_substrate import SubstrateInterface
 
 from endure.live.sleeping import sleep_decimal
+from endure.protocol.consensus_policy import MAINNET_GENESIS_HASH
 from endure.protocol.risk_miner import LatestPoolObservation
 from endure.scoring.assessment_orchestrator import ResolutionDeadlineExceeded
 from endure.scoring.market_data import (
@@ -54,6 +55,8 @@ LIVE_MARKET_DATA_MIN_REQUEST_INTERVAL_SECONDS: Final = 0.5
 LIVE_MARKET_DATA_HEAD_CACHE_TTL_SECONDS: Final = 30.0
 LIVE_MARKET_DATA_MAX_SERIES_CACHE_ENTRIES: Final = 64
 LIVE_MARKET_DATA_SNAPSHOT_RETENTION_BLOCKS: Final = 30 * 24 * 60 * 60 // BLOCK_SECONDS
+LIVE_MARKET_DATA_ARCHIVE_PROBE_TIMEOUT_SECONDS: Final = 120.0
+LIVE_MARKET_DATA_ARCHIVE_LOOKBACK: Final = timedelta(days=30)
 
 # The SDK's own retry substrate surfaces exhaustion as MaxRetriesExceeded
 # (a SubstrateRequestException, plain Exception subclass) — observed live on
@@ -135,6 +138,8 @@ class AlphaSubnetInfoFetcher(Protocol):
     def finalized_block(self) -> int: ...
 
     def timestamp_at_block(self, block: int) -> int: ...
+
+    def genesis_hash(self) -> str | None: ...
 
 
 class ArchiveSubstrateLike(Protocol):
@@ -230,6 +235,7 @@ class BittensorSubnetInfoFetcher:
         self._executor = self._new_executor()
         self._abandoned_workers = 0
         self._abandoned_workers_condition = Condition()
+        self._closed = False
 
     def _new_executor(self) -> ThreadPoolExecutor:
         # One worker serializes access to the non-thread-safe SDK connection.
@@ -238,6 +244,26 @@ class BittensorSubnetInfoFetcher:
             max_workers=LIVE_MARKET_DATA_TIMEOUT_WORKERS,
             thread_name_prefix="alpha-archive-timeout",
         )
+
+    def close(self) -> None:
+        """Release connected clients on their worker, with a bounded wait."""
+        if self._closed:
+            return
+        self._closed = True
+        subtensor, substrate = self._subtensor, self._substrate
+        self._subtensor = None
+        self._substrate = None
+        future = self._executor.submit(_close_archive_clients, subtensor, substrate)
+        try:
+            future.result(timeout=self._request_timeout_seconds)
+        except Exception as error:  # noqa: BLE001 — preserve the readiness failure
+            bt.logging.warning(f"archive cleanup incomplete: {type(error).__name__}")
+        finally:
+            self._executor.shutdown(wait=False)
+
+    def genesis_hash(self) -> str | None:
+        substrate = self._active_substrate()
+        return self._call_archive_operation(lambda: substrate.get_block_hash(0))
 
     def subnet(self, *, netuid: int, block: int | None = None) -> DynamicInfoLike:
         subtensor = self._active_subtensor()
@@ -294,7 +320,9 @@ class BittensorSubnetInfoFetcher:
         subtensor = self._subtensor
         if subtensor is None:
             try:
-                subtensor = self._call_with_timeout(self._make_subtensor)
+                subtensor = self._call_with_timeout(
+                    self._make_subtensor, close_result_on_timeout=True
+                )
             except Exception as error:  # noqa: BLE001 — any reconnect failure voids
                 self._apply_rate_limit_cooldown(error)
                 if isinstance(error, ARCHIVE_FETCH_FAILURES):
@@ -309,7 +337,9 @@ class BittensorSubnetInfoFetcher:
         substrate = self._substrate
         if substrate is None:
             try:
-                substrate = self._call_with_timeout(self._make_substrate)
+                substrate = self._call_with_timeout(
+                    self._make_substrate, close_result_on_timeout=True
+                )
             except Exception as error:  # noqa: BLE001 — any reconnect failure voids
                 self._apply_rate_limit_cooldown(error)
                 if isinstance(error, ARCHIVE_FETCH_FAILURES):
@@ -326,6 +356,9 @@ class BittensorSubnetInfoFetcher:
             # The cached SDK connection may be poisoned after any operation error.
             # A 429 additionally guards the next reconnect behind the cooldown.
             if not _is_archive_request_rate_limited(error):
+                self._executor.submit(
+                    _close_archive_clients, self._subtensor, self._substrate
+                )
                 self._subtensor = None
                 self._substrate = None
             self._apply_rate_limit_cooldown(error)
@@ -344,7 +377,11 @@ class BittensorSubnetInfoFetcher:
                 self._pace_sleep(wait)
         self._last_request_at = self._now_fn()
 
-    def _call_with_timeout[T](self, operation: Callable[[], T]) -> T:
+    def _call_with_timeout[T](
+        self, operation: Callable[[], T], *, close_result_on_timeout: bool = False
+    ) -> T:
+        if self._closed:
+            raise ConnectionError("archive fetcher is closed")
         with self._abandoned_workers_condition:
             if self._abandoned_workers >= LIVE_MARKET_DATA_MAX_ABANDONED_WORKERS:
                 raise ConnectionError("archive timed-out workers at capacity")
@@ -357,9 +394,15 @@ class BittensorSubnetInfoFetcher:
             # work so a permanently hung archive cannot grow threads unboundedly.
             future.cancel()
             old_executor = self._executor
+            if close_result_on_timeout:
+                old_executor.submit(_close_late_archive_client, future)
             self._executor = self._new_executor()
+            old_executor.submit(
+                _close_archive_clients, self._subtensor, self._substrate
+            )
             self._subtensor = None
-            old_executor.shutdown(wait=False, cancel_futures=True)
+            self._substrate = None
+            old_executor.shutdown(wait=False)
             with self._abandoned_workers_condition:
                 if not future.done():
                     self._abandoned_workers += 1
@@ -370,6 +413,26 @@ class BittensorSubnetInfoFetcher:
         with self._abandoned_workers_condition:
             self._abandoned_workers -= 1
             self._abandoned_workers_condition.notify_all()
+
+
+def _close_late_archive_client[T](future: Future[T]) -> None:
+    try:
+        client = future.result()
+    except Exception:  # noqa: BLE001 — cancelled or failed construction owns no client
+        return
+    _close_archive_clients(client)
+
+
+def _close_archive_clients(*clients: object) -> None:
+    for client in clients:
+        close = getattr(client, "close", None)
+        if close is not None:
+            try:
+                close()
+            except Exception as error:  # noqa: BLE001 — still close the other client
+                bt.logging.warning(
+                    f"archive client cleanup failed: {type(error).__name__}"
+                )
 
 
 class LiveAlphaPriceProvider:
@@ -410,6 +473,62 @@ class LiveAlphaPriceProvider:
     @property
     def endpoint(self) -> str:
         return self._config.endpoint
+
+    def validate_archive(self, *, netuid: int) -> None:
+        """Fail closed unless mainnet has timestamp and positive pool history.
+
+        ``netuid`` must be a known active mainnet Alpha subnet, not the chain
+        netuid on which this validator happens to be registered. The probe
+        resolves one 30-day boundary, exercising the same deep timestamp
+        bisection as scoring, then reads just that historical pool.
+        """
+        previous_deadline = self._deadline_exceeded_fn
+        deadline = self._now_fn() + LIVE_MARKET_DATA_ARCHIVE_PROBE_TIMEOUT_SECONDS
+        self._deadline_exceeded_fn = lambda: (
+            self._now_fn() >= deadline
+            or (previous_deadline is not None and previous_deadline())
+        )
+        try:
+            self._validate_archive(netuid=netuid)
+        except Exception:  # noqa: BLE001 — fail closed without endpoint credentials
+            raise AlphaMarketDataUnavailable(
+                "mainnet archive readiness failed: mainnet identity, deep finalized "
+                "timestamps and positive 30-day Alpha reserves are required"
+            ) from None
+        finally:
+            self._deadline_exceeded_fn = previous_deadline
+
+    def _validate_archive(self, *, netuid: int) -> None:
+        if netuid <= 0:
+            raise AlphaMarketDataUnavailable("archive probe requires an Alpha subnet")
+        if self._with_retry(self._fetcher.genesis_hash) != MAINNET_GENESIS_HASH:
+            raise AlphaMarketDataUnavailable("archive is not Bittensor mainnet")
+        finalized = self._with_retry(self._fetcher.finalized_block)
+        if finalized <= 0:
+            raise AlphaMarketDataUnavailable("archive has no finalized history")
+        finalized_ms = self._timestamp_at_block(finalized)
+        finalized_at = datetime(1970, 1, 1, tzinfo=UTC) + timedelta(
+            milliseconds=finalized_ms
+        )
+        cutoff = finalized_at - LIVE_MARKET_DATA_ARCHIVE_LOOKBACK
+        block = self.last_finalized_block_at_or_before(cutoff, now=finalized_at)
+        historical_ms = self._timestamp_at_block(block)
+        if (
+            block >= finalized
+            or historical_ms <= 0
+            or historical_ms > _utc_timestamp_milliseconds(cutoff)
+        ):
+            raise AlphaMarketDataUnavailable("archive lacks 30-day timestamp history")
+        info = self._with_retry(
+            lambda: self._fetcher.subnet(netuid=netuid, block=block)
+        )
+        # Use the same reserve validation as scoring, never the SDK's spot price.
+        alpha_snapshot_from_reserves(
+            netuid=netuid,
+            block=block,
+            tao_rao=int(info.tao_in),
+            alpha_rao=int(info.alpha_in),
+        )
 
     def block_for_reveal_close(self, reveal_close: datetime, *, now: datetime) -> int:
         """Resolve the first finalized mainnet block at or after ``reveal_close``."""
@@ -674,6 +793,18 @@ class LiveAlphaPriceProvider:
             for key, snapshot in self._snapshots.items()
             if key[1] >= cutoff
         }
+
+
+def validate_mainnet_archive(endpoint: str, *, netuid: int) -> None:
+    """Read-only startup preflight; release its SDK clients before returning."""
+    fetcher = BittensorSubnetInfoFetcher(endpoint)
+    try:
+        LiveAlphaPriceProvider(
+            config=LiveAlphaPriceProviderConfig(endpoint=endpoint),
+            fetcher=fetcher,
+        ).validate_archive(netuid=netuid)
+    finally:
+        fetcher.close()
 
 
 def _canonical_blocks(window: ResolutionWindow) -> tuple[int, ...]:

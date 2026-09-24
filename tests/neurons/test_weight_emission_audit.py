@@ -274,6 +274,7 @@ def _audit_validator(storage: Storage) -> Validator:
     validator._schema_id = RISK_SCHEMA_ID
     validator.config = MagicMock()
     validator.config.neuron.epoch_length = 60
+    validator.config.neuron.disable_set_weights = False
     validator.config.netuid = 1
     validator._blended_snapshot = {
         VALIDATOR_HOTKEY: Decimal("0.5"),
@@ -1324,7 +1325,7 @@ class TestWeightEmissionAudit:
         validator.config.runtime.mode = "mock"
         validator.scores = [Decimal("1")]
         emit = MagicMock()
-        monkeypatch.setattr(BaseValidatorNeuron, "set_weights", emit)
+        monkeypatch.setattr(BaseValidatorNeuron, "_emit_weight_candidate", emit)
         validator.set_weights()
         emit.assert_not_called()
 
@@ -2644,7 +2645,7 @@ class TestWeightEmissionAudit:
             status="submitted",
         )
         emit = MagicMock()
-        monkeypatch.setattr(BaseValidatorNeuron, "set_weights", emit)
+        monkeypatch.setattr(BaseValidatorNeuron, "_emit_weight_candidate", emit)
 
         validator.set_weights()
 
@@ -2662,7 +2663,7 @@ class TestWeightEmissionAudit:
         current_block = MagicMock(return_value=100)
         validator._safe_block = current_block
         emit = MagicMock()
-        monkeypatch.setattr(BaseValidatorNeuron, "set_weights", emit)
+        monkeypatch.setattr(BaseValidatorNeuron, "_emit_weight_candidate", emit)
 
         validator.set_weights()
         current_block.return_value = 732
@@ -2670,7 +2671,7 @@ class TestWeightEmissionAudit:
         current_block.return_value += 1
         validator.set_weights()
 
-        emit.assert_called_once_with()
+        emit.assert_called_once()
 
         restarted = _audit_validator(storage)
         restarted.scores = [Decimal("0.5")]
@@ -2754,6 +2755,7 @@ def _base_neuron(
     neuron.gated_subtensor = subtensor
     config = MagicMock()
     config.netuid = 1
+    config.neuron.disable_set_weights = False
     neuron.config = config
     neuron.wallet = MagicMock()
     neuron.wallet.hotkey.ss58_address = "hk-a"
@@ -2811,7 +2813,7 @@ class TestSetWeightsAttemptWrapping:
         assert batch["confirmation_state"] == "ambiguous"
         assert storage.has_open_weight_emission_confirmation(schema_id=RISK_SCHEMA_ID)
         emit = MagicMock()
-        monkeypatch.setattr(BaseValidatorNeuron, "set_weights", emit)
+        monkeypatch.setattr(BaseValidatorNeuron, "_emit_weight_candidate", emit)
         validator.set_weights()
         emit.assert_not_called()
         assert validator.subtensor.set_weights.call_count == 1

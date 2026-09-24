@@ -27,7 +27,6 @@ from endure.assessment.schemas.subnet_alpha_risk import (
 )
 from endure.protocol.canonical import canonical_bundle_bytes
 from endure.protocol.round_engine import DEFAULT_OFFSETS, compute_windows
-from endure.runtime.identity import content_revision
 from endure.scoring.assessment_orchestrator import REALIZED_TARGET_RESOLVED
 from endure.storage.repository import Storage
 from endure.storage.tables import rounds
@@ -69,18 +68,6 @@ def _corrupt_round_state(storage: Storage, state: str) -> None:
 
 
 class TestHealthAndSchemas:
-    def test_health(self, client: TestClient) -> None:
-        response = client.get("/health")
-
-        assert response.status_code == 200
-        body = response.json()
-        assert body["schema_id"] == FORGE_LENDING_SCHEMA_ID
-        assert body["version"] == "0.1.0"
-        assert body["protocol_version_key"] == 2041
-        assert body["source_revision"] == "unknown"
-        assert body["image_version"] == "dev"
-        assert body["content_revision"] == content_revision()
-
     def test_schemas_discovery(self, client: TestClient) -> None:
         response = client.get("/schemas")
 

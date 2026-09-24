@@ -1,7 +1,8 @@
 # Running Endure on Testnet
 
-> **Experimental testnet alpha, `v0.1.0-rc.3` candidate, protocol key `2041`.** This is
-> not a mainnet guide. The authoritative compatibility value is
+> **Experimental testnet alpha.** This source candidate uses protocol key `2042`;
+> published `v0.1.0` images use key `2041`; adopting `2042` requires a coordinated release.
+> This is not a mainnet guide. The authoritative source compatibility value is
 > [version_contract.py](../endure/protocol/version_contract.py).
 
 Choose your role: [run a miner image](deploy/operator-node.md#run-a-miner) or

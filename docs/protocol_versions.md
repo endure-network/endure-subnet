@@ -129,7 +129,7 @@ first-parent staging lineage in commit
 `90c973f7a369746a4b19a8b4eb04fed2d37e4caa`; its source-bound receipt is
 `86150d44b3134f1a10fe4a98d4bafda63eb6aa55c9d348ec0284bb83c2d384fc`.
 
-Key `2041` is leased to the SN30 qualification candidate. Signed commit and
+Key `2041` was leased to the SN30 qualification candidate. Signed commit and
 reveal requests bind all request fields, and rejected reveal persistence is
 bounded by admission while accepted retries remain idempotent. Miners and
 validators must upgrade together. The candidate line also carries the
@@ -163,3 +163,37 @@ consensus weights while preserving retired EMA memory and historical round
 settlement. Reintroduction resumes preserved scores under the existing
 registration rules; validators clear cached scores when no eligible scores remain. See the [universe-change policy](specs/2026-07-20-scoring-fairness-deltas.md#universe-changes)
 and [upgrade and rollback guidance](deploy/operator-node.md#rollback).
+
+Key `2041` is recorded as `activation-0044`. It first appeared on the public
+first-parent staging lineage in commit
+`824f1367f4d23cb4cee6605d53db709bd86bdd23`; its source-bound receipt is
+`0df17c6368167b0f8b3f376b2d84e5f9810d89860c67532dfaef348a2559918d`.
+The published `v0.1.0` images retain that assignment.
+
+Key `2042` is leased to the SN30 correctness and unattended cold-start cutover.
+It pins mainnet admission to zero additional miner stake, commit/reveal caps of
+10, and a 100-block metagraph/weight-attempt epoch. Admission and snapshot closure
+serialize in SQLite, empty frozen snapshots never backfill during reads, and
+commit retries validate the key and window. Storage admission/selection,
+pure Decimal score-to-u16 processing, and the approved SN30 bootstrap policy
+are digest-covered. One emission-enabled process maintains the pinned UID-176
+allocation until positive resolved history exists, then uses earned weights
+without a flag change or restart. Retained history prevents bootstrap re-entry.
+Explicitly disabling emission remains a true off switch. Startup teardown and
+existing health/log observability are hardened in the same release.
+No schema migration is introduced; scoring coefficients and the target universe
+are unchanged. This remains one unserved `2042` lease, not another key bump.
+
+Its watched-tree digest is
+`4be32f79360668468c6405e7af56a4f6a02abae9adace8f51e391f2e102ee435`.
+The public lease authority receipt uses
+`PREVIOUS_RECEIPT=27e8f797e62ce76333067470e18a32bdccdd80a385235b4d700d21513880c2b1`,
+`CURRENT_VERSION_KEY=2042`, and
+`CURRENT_VERSION_DIGEST=4be32f79360668468c6405e7af56a4f6a02abae9adace8f51e391f2e102ee435`
+under the `LEASE_AUTHORITY` format above, producing
+`73e7392d3101bc635420e5148492edf373b8230eb26ed0d4c297980775aee71e`.
+
+Miners and validators must upgrade together. This source update does not publish
+production images, deploy services, or raise the chain's weight-version floor.
+Follow the [coordinated cutover](running_on_mainnet.md#coordinated-cutover) after
+qualification and agreement with independently operated validators.

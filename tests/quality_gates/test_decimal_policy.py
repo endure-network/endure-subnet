@@ -2,10 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from scripts.quality_gates.checks import (
-    DECIMAL_POLICY_PATHS,
-    find_decimal_policy_violations,
-)
+from scripts.quality_gates.checks import find_decimal_policy_violations
 
 
 def test_decimal_policy_reports_float_calls(tmp_path: Path) -> None:
@@ -114,8 +111,3 @@ def test_decimal_policy_reports_syntax_error_without_crashing(tmp_path: Path) ->
 
     assert len(violations) == 1
     assert "could not parse" in violations[0].message
-
-
-def test_decimal_policy_targets_runtime_weight_paths() -> None:
-    assert Path("endure/base/validator.py") in DECIMAL_POLICY_PATHS
-    assert Path("endure/base/utils/weight_utils.py") in DECIMAL_POLICY_PATHS

@@ -964,7 +964,7 @@ class Storage:
         if state not in VALID_ROUND_STATES:
             raise ValueError(f"invalid round state: {state}")
         with self._engine.begin() as connection:
-            if state == ROUND_STATE_REVEALED:
+            if state in POST_EMBARGO_ROUND_STATES:
                 self._snapshot_consensus_bundles_if_open(
                     connection, round_id, schema_id, now_iso=now_iso
                 )
@@ -1010,12 +1010,21 @@ class Storage:
     ) -> bool:
         """Idempotent last-wins commit upsert, rate-capped atomically.
 
-        An unchanged hash is an accepted no-op. Changed hashes check and
-        increment in one transaction: the UPDATE only fires while
-        commit_count < max_commits, so concurrent commits cannot exceed the
-        cap. Returns False when a changed hash is rate-limited.
+        An unchanged hash is an accepted no-op while the round remains open.
+        Changed hashes cannot replace an accepted reveal, and their UPDATE
+        checks the cap atomically. Returns False for closed rounds or a changed
+        hash that cannot be admitted.
         """
         with self._engine.begin() as connection:
+            connection.exec_driver_sql("BEGIN IMMEDIATE")
+            state = connection.execute(
+                select(rounds.c.state).where(
+                    rounds.c.round_id == round_id,
+                    rounds.c.schema_id == schema_id,
+                )
+            ).scalar_one_or_none()
+            if state != ROUND_STATE_OPEN:
+                return False
             update_query = (
                 update(submissions)
                 .where(
@@ -1023,6 +1032,7 @@ class Storage:
                     submissions.c.schema_id == schema_id,
                     submissions.c.miner_hotkey == miner_hotkey,
                     submissions.c.commit_hash.is_distinct_from(bundle_hash),
+                    submissions.c.verdict != "accepted",
                 )
                 .values(
                     commit_hash=bundle_hash,
@@ -1047,9 +1057,8 @@ class Storage:
             ).first()
             if existing is not None:
                 return existing.commit_hash == bundle_hash
-            created = connection.execute(
-                sqlite_insert(submissions)
-                .values(
+            connection.execute(
+                insert(submissions).values(
                     round_id=round_id,
                     schema_id=schema_id,
                     miner_hotkey=miner_hotkey,
@@ -1058,23 +1067,8 @@ class Storage:
                     commit_count=1,
                     verdict="committed",
                 )
-                .on_conflict_do_nothing()
             )
-            if created.rowcount > 0:
-                return True
-            # A concurrent first commit won the insert race — retry the
-            # capped update against the row it created. Its hash may be
-            # identical, which is a successful no-op rather than a rate hit.
-            if connection.execute(update_query).rowcount > 0:
-                return True
-            concurrent = connection.execute(
-                select(submissions.c.commit_hash).where(
-                    submissions.c.round_id == round_id,
-                    submissions.c.schema_id == schema_id,
-                    submissions.c.miner_hotkey == miner_hotkey,
-                )
-            ).first()
-            return concurrent is not None and concurrent.commit_hash == bundle_hash
+            return True
 
     def committed_hash(
         self, round_id: str, schema_id: str, miner_hotkey: str
@@ -1114,7 +1108,8 @@ class Storage:
 
         The counter lives beside the commit and survives validator restarts.
         An absent commit cannot spend reveal budget because it cannot produce a
-        valid reveal and has no submission row to charge.
+        valid reveal and has no submission row to charge. The UPDATE checks
+        round state atomically so closure also freezes admission counters.
         """
         with self._engine.begin() as connection:
             update_query = update(submissions).where(
@@ -1122,6 +1117,13 @@ class Storage:
                 submissions.c.schema_id == schema_id,
                 submissions.c.miner_hotkey == miner_hotkey,
                 submissions.c.commit_hash.is_not(None),
+                select(rounds.c.round_id)
+                .where(
+                    rounds.c.round_id == round_id,
+                    rounds.c.schema_id == schema_id,
+                    rounds.c.state == ROUND_STATE_OPEN,
+                )
+                .exists(),
             )
             if max_reveals is not None:
                 update_query = update_query.where(
@@ -1148,14 +1150,37 @@ class Storage:
     def accepted_reveal(
         self, round_id: str, schema_id: str, miner_hotkey: str
     ) -> tuple[str, str] | None:
-        """Return the accepted bundle and nonce for an idempotent retry."""
+        """Return an accepted retry identity, restricted to frozen members after close."""
         with self._engine.connect() as connection:
             row = connection.execute(
-                select(submissions.c.bundle_json, submissions.c.nonce_hex).where(
+                select(submissions.c.bundle_json, submissions.c.nonce_hex)
+                .join(
+                    rounds,
+                    and_(
+                        rounds.c.round_id == submissions.c.round_id,
+                        rounds.c.schema_id == submissions.c.schema_id,
+                    ),
+                )
+                .where(
                     submissions.c.round_id == round_id,
                     submissions.c.schema_id == schema_id,
                     submissions.c.miner_hotkey == miner_hotkey,
                     submissions.c.verdict == "accepted",
+                    or_(
+                        rounds.c.state == ROUND_STATE_OPEN,
+                        select(consensus_bundle_snapshots.c.miner_hotkey)
+                        .where(
+                            consensus_bundle_snapshots.c.round_id
+                            == submissions.c.round_id,
+                            consensus_bundle_snapshots.c.schema_id
+                            == submissions.c.schema_id,
+                            consensus_bundle_snapshots.c.miner_hotkey
+                            == submissions.c.miner_hotkey,
+                            consensus_bundle_snapshots.c.bundle_json
+                            == submissions.c.bundle_json,
+                        )
+                        .exists(),
+                    ),
                 )
             ).first()
         if row is None or row.bundle_json is None or row.nonce_hex is None:
@@ -1179,8 +1204,9 @@ class Storage:
         A repeated identical reveal (the miner's per-tick re-push of the same
         bundle while it waits on the window/acks, or a hostile replay) is a
         no-op write — record_reveal is idempotent so a reveal can't churn the
-        row. An accepted reveal is terminal: a later rejected attempt never
-        erases a bundle that 5d/30d scoring still has to read.
+        row. An accepted reveal is terminal. Admission and round closure take
+        the SQLite writer lock before reading: closure freezes all earlier
+        accepted writes, and no reveal can write after closure.
         """
         verdict = "accepted" if accepted else "rejected"
         values = {
@@ -1191,6 +1217,15 @@ class Storage:
             "rejection_code": rejection_code,
         }
         with self._engine.begin() as connection:
+            connection.exec_driver_sql("BEGIN IMMEDIATE")
+            state = connection.execute(
+                select(rounds.c.state).where(
+                    rounds.c.round_id == round_id,
+                    rounds.c.schema_id == schema_id,
+                )
+            ).scalar_one_or_none()
+            if state != ROUND_STATE_OPEN:
+                return False
             reveal_row = select(
                 submissions.c.verdict,
                 submissions.c.bundle_json,
@@ -1203,26 +1238,16 @@ class Storage:
             )
             existing = connection.execute(reveal_row).first()
             if existing is None:
-                created = connection.execute(
-                    sqlite_insert(submissions)
-                    .values(
+                connection.execute(
+                    insert(submissions).values(
                         round_id=round_id,
                         schema_id=schema_id,
                         miner_hotkey=miner_hotkey,
                         **values,
                     )
-                    .on_conflict_do_nothing()
                 )
-                if created.rowcount > 0:
-                    return True
-                # The first SELECT holds no write lock under deferred WAL
-                # locking, so another first reveal can win the insert gap. A
-                # no-op conflict did not persist this call's values; re-read
-                # the authoritative row before reconciling it below.
-                existing = connection.execute(reveal_row).first()
-            if existing is None:
-                return False
-            if not accepted and existing.verdict == "accepted":
+                return True
+            if existing.verdict == "accepted":
                 return False  # accepted is terminal
             if (
                 existing.verdict == verdict
@@ -1284,6 +1309,10 @@ class Storage:
         *,
         now_iso: str,
     ) -> list[tuple[str, str]]:
+        # This must be the first database operation in each close transaction.
+        # A deferred read can miss an accepted writer before its first INSERT,
+        # particularly when the accepted set is empty and there is no INSERT.
+        connection.exec_driver_sql("BEGIN IMMEDIATE")
         state = connection.execute(
             select(rounds.c.state).where(
                 rounds.c.round_id == round_id,
@@ -1402,36 +1431,6 @@ class Storage:
             result = connection.execute(query)
             return [(row.miner_hotkey, row.bundle_json) for row in result]
 
-    def _snapshot_legacy_consensus_bundles_if_absent(
-        self,
-        connection: Connection,
-        round_id: str,
-        schema_id: str,
-        *,
-        now_iso: str,
-    ) -> list[tuple[str, str]]:
-        snapshots = self._consensus_bundles_from_connection(
-            connection, round_id, schema_id
-        )
-        if snapshots:
-            return snapshots
-        bundles = self._accepted_bundles_from_connection(
-            connection, round_id, schema_id
-        )
-        for miner_hotkey, bundle_json in bundles:
-            connection.execute(
-                sqlite_insert(consensus_bundle_snapshots)
-                .values(
-                    round_id=round_id,
-                    schema_id=schema_id,
-                    miner_hotkey=miner_hotkey,
-                    bundle_json=bundle_json,
-                    snapshotted_at=now_iso,
-                )
-                .on_conflict_do_nothing()
-            )
-        return self._consensus_bundles_from_connection(connection, round_id, schema_id)
-
     def scoring_bundles(
         self,
         round_id: str,
@@ -1439,10 +1438,9 @@ class Storage:
         *,
         limit: int | None = None,
         offset: int = 0,
-        now_iso: str | None = None,
     ) -> list[tuple[str, str]]:
         """Return consensus snapshots after reveal and live accepted bundles before it."""
-        with self._engine.begin() as connection:
+        with self._engine.connect() as connection:
             state = connection.execute(
                 select(rounds.c.state).where(
                     rounds.c.round_id == round_id,
@@ -1450,22 +1448,8 @@ class Storage:
                 )
             ).scalar_one_or_none()
             if state in POST_EMBARGO_ROUND_STATES:
-                snapshots = self._consensus_bundles_from_connection(
+                bundles = self._consensus_bundles_from_connection(
                     connection, round_id, schema_id
-                )
-                bundles = (
-                    snapshots
-                    if snapshots
-                    else self._snapshot_legacy_consensus_bundles_if_absent(
-                        connection,
-                        round_id,
-                        schema_id,
-                        now_iso=(
-                            now_iso
-                            if now_iso is not None
-                            else datetime.now(UTC).isoformat()
-                        ),
-                    )
                 )
             else:
                 bundles = self._accepted_bundles_from_connection(
@@ -2104,6 +2088,38 @@ class Storage:
             self._insert_assessment_score_history(
                 connection, round_id, schema_id, rows, now_iso=now_iso
             )
+
+    def positive_assessment_score_history_since(
+        self, schema_id: str, *, after_id: int = 0
+    ) -> tuple[int, bool]:
+        """Read the append-only graduation evidence without changing earned state.
+
+        The cursor avoids rescanning zero-only history during warm-up. A restart
+        starts at zero, so retirement, EMA pruning and an empty current vector
+        cannot erase the fact that positive resolved scores once existed.
+        Decimal parsing preserves zero exponents and arbitrarily small positives.
+        """
+        cursor = after_id
+        with self._engine.connect() as connection:
+            rows = connection.execute(
+                select(
+                    assessment_score_history.c.id,
+                    assessment_score_history.c.round_score_text,
+                    assessment_score_history.c.ema_after_text,
+                )
+                .where(
+                    assessment_score_history.c.schema_id == schema_id,
+                    assessment_score_history.c.id > after_id,
+                )
+                .order_by(assessment_score_history.c.id)
+            ).mappings()
+            for row in rows:
+                cursor = _int_from_mapping(row, "id")
+                if _decimal_from_mapping(row, "round_score_text") > Decimal(
+                    "0"
+                ) or _decimal_from_mapping(row, "ema_after_text") > Decimal("0"):
+                    return cursor, True
+        return cursor, False
 
     def record_assessment_scoring_pass(
         self,

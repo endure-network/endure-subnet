@@ -27,7 +27,7 @@ from abc import abstractmethod
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
-from typing import List, Sequence, Union
+from typing import Sequence, Union
 
 import bittensor as bt
 import numpy as np
@@ -41,22 +41,22 @@ from endure.base.rate_gate import (
     RateLimited,
 )
 from endure.base.shutdown import join_thread_or_raise
-from endure.base.utils.weight_utils import (
-    coerce_decimal,
-    convert_weights_and_uids_for_emit,
-    process_weights_for_netuid,
-)  # Replace when bittensor exposes numpy-native helpers.
 from endure.protocol.version_contract import CURRENT_VERSION_KEY
 from endure.protocol.weight_intent import (
     WeightIntentPayload,
     canonical_weight_intent_hash,
 )
 from endure.runtime.types import RuntimeProvider
+from endure.scoring.weight_processing import (
+    coerce_decimal,
+    convert_weights_and_uids_for_emit,
+    normalize_scores,
+    process_weights,
+)
 from endure.utils.config import add_validator_args
 from endure.utils.logging import safe_endpoint_label, safe_error
 
 ZERO = Decimal("0")
-ONE = Decimal("1")
 
 CONSECUTIVE_FAILURES_BEFORE_RECONNECT = 5
 PROVIDER_THROTTLE_RECONNECT_THRESHOLD = 3
@@ -412,24 +412,16 @@ class BaseValidatorNeuron(BaseNeuron):
         self.stop_run_thread()
         self.close_transport_resources()
 
-    def _normalized_weights(self) -> list[Decimal]:
-        """Clamp negative scores to zero, then normalize to sum 1.
+    def set_weights(self) -> None:
+        """Normalize the current score vector and submit it."""
+        self._emit_weight_candidate(self.scores)
 
-        Negative scores must never drive emission: a negative total would
-        invert the weight vector (rewarding the worst miner), and a mixed-sign
-        total of zero would fall through to the uniform-weights path. Clamping
-        first makes both impossible; an all-zero result signals abstention.
-        """
-        clamped = [score if score > ZERO else ZERO for score in self.scores]
-        norm = sum(clamped, ZERO)
-        if norm <= ZERO:
-            return [ZERO] * len(self.scores)
-        return [score / norm for score in clamped]
+    def _emit_weight_candidate(self, weights: Sequence[Decimal]) -> None:
+        """Execute one candidate through the shared durable emission hooks."""
 
-    def set_weights(self):
-        """Normalize current scores and submit the resulting chain weights."""
-
-        raw_weights = self._normalized_weights()
+        if self.config.neuron.disable_set_weights:
+            return
+        raw_weights = normalize_scores(weights)
         if not any(weight > ZERO for weight in raw_weights):
             bt.logging.warning(
                 "no positive miner scores — abstaining from weight emission "
@@ -454,7 +446,7 @@ class BaseValidatorNeuron(BaseNeuron):
         submission: WeightSubmissionResult | None = None
         try:
             # Fetched once, BEFORE processing, and passed both into
-            # process_weights_for_netuid and the emission hook: the audit
+            # process_weights and the emission hook: the audit
             # trail must record the exact limits that produced the processed
             # vector — a later re-query could observe different chain state.
             min_allowed_weights = int(
@@ -467,12 +459,10 @@ class BaseValidatorNeuron(BaseNeuron):
             (
                 processed_weight_uids,
                 processed_weights,
-            ) = process_weights_for_netuid(
+            ) = process_weights(
                 uids=self.metagraph.uids,
                 weights=raw_weights,
-                netuid=self.config.netuid,
-                subtensor=self.subtensor,
-                metagraph=self.metagraph,
+                metagraph_size=int(self.metagraph.n),
                 min_allowed_weights=min_allowed_weights,
                 max_weight_limit=max_weight_limit,
             )
@@ -854,7 +844,7 @@ class BaseValidatorNeuron(BaseNeuron):
         _ = batch_id
 
     def resync_metagraph(self):
-        """Resyncs the metagraph and updates the hotkeys and moving averages based on the new metagraph."""
+        """Resync the metagraph and align scores with their owning hotkeys."""
         bt.logging.info("resync_metagraph()")
 
         # Sync the metagraph.
@@ -874,67 +864,6 @@ class BaseValidatorNeuron(BaseNeuron):
         self.scores = scores
         self.hotkeys = hotkeys
         self._on_metagraph_synced()
-
-    def update_scores(
-        self,
-        rewards: Sequence[object] | np.ndarray,
-        uids: "List[int] | np.ndarray",
-    ):
-        """Performs exponential moving average on the scores based on the rewards received from the miners."""
-
-        raw_rewards = (
-            rewards.tolist() if isinstance(rewards, np.ndarray) else list(rewards)
-        )
-        rewards_list: list[Decimal] = []
-        saw_non_finite = False
-        for reward in raw_rewards:
-            candidate = reward if isinstance(reward, Decimal) else Decimal(str(reward))
-            if not candidate.is_finite():
-                saw_non_finite = True
-                rewards_list.append(ZERO)
-            else:
-                rewards_list.append(candidate)
-        if saw_non_finite:
-            bt.logging.warning(f"Non-finite values detected in rewards: {rewards}")
-
-        uids_list = uids.copy().tolist() if isinstance(uids, np.ndarray) else list(uids)
-
-        # Handle edge case: If either rewards or uids is empty.
-        if len(rewards_list) == 0 or len(uids_list) == 0:
-            bt.logging.info(f"rewards: {rewards_list}, uids_list: {uids_list}")
-            bt.logging.warning(
-                "Either rewards or uids_list is empty. No updates will be performed."
-            )
-            return
-
-        # Check if sizes of rewards and uids match.
-        if len(rewards_list) != len(uids_list):
-            raise ValueError(
-                f"Shape mismatch: rewards array of length {len(rewards_list)} "
-                f"cannot be broadcast to uids array of length {len(uids_list)}"
-            )
-
-        # Compute forward pass rewards, assumes uids are mutually exclusive.
-        scattered_rewards = [ZERO] * len(self.scores)
-        score_count = len(self.scores)
-        for uid, reward in zip(uids_list, rewards_list, strict=True):
-            uid_index = int(uid)
-            if not (0 <= uid_index < score_count):
-                bt.logging.warning(
-                    f"Skipping out-of-range uid {uid_index} (scores length {score_count})."
-                )
-                continue
-            scattered_rewards[uid_index] = coerce_decimal(reward)
-        bt.logging.debug(f"Scattered rewards: {rewards_list}")
-
-        # Update scores with rewards produced by this step.
-        alpha = Decimal(str(self.config.neuron.moving_average_alpha))
-        one_minus_alpha = ONE - alpha
-        self.scores = [
-            (alpha * scattered) + (one_minus_alpha * current)
-            for scattered, current in zip(scattered_rewards, self.scores, strict=True)
-        ]
-        bt.logging.debug(f"Updated moving avg scores: {self.scores}")
 
     def save_state(self):
         """Saves the state of the validator to a file."""

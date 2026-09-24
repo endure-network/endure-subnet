@@ -10,10 +10,10 @@ so constants cannot drift outside the contract again.
 from pathlib import Path
 
 ACTIVATED_VERSION_REGISTRY_DIGEST = (
-    "fb198ab167ffc24e94fd4b870a983127b8b15f18d3014a8909ce061b6664d694"
+    "02c9a047eba24318538d5a58527e4a7fbc8ab16f309106439c902eaa421108d1"
 )
 ACTIVATED_VERSION_HISTORY_DIGEST = (
-    "d9d7c8b59cf36386d2087e87db158b81f82d03977fcead6ec9c54207f714a8aa"
+    "1cd6c2a53bbf4d4d11cbdaefada0327afb67640b10f1a04e7d18656c38c4ee32"
 )
 
 WATCHED_PATHS = (
@@ -22,14 +22,17 @@ WATCHED_PATHS = (
     Path("endure/aggregation"),
     Path("endure/scoring"),
     Path("endure/publication"),
+    # Admission, snapshot membership and historical eligibility are semantic,
+    # even though their transactions live in the persistence boundary.
+    Path("endure/storage/repository.py"),
 )
 
 # Previous accepted protocol snapshot. When watched paths change, promote the
 # current values into the previous fields, then write the new digest and bump
 # the current version key.
-PREVIOUS_VERSION_KEY = 30
+PREVIOUS_VERSION_KEY = 2041
 PREVIOUS_VERSION_DIGEST = (
-    "3904a799a6560082a05b0ff62274cf4c71547cf1f5dfd0311418d2f4e574ef14"
+    "570989ed4a3e73bc1283e99742c3931712ec0e3c4aebc96a5aebcc1375ea87f7"
 )
 
 # Production serving status and CURRENT_VERSION_KEY stay unchanged until R6.
@@ -122,7 +125,11 @@ PREVIOUS_VERSION_DIGEST = (
 # must deploy together. This shared release key clears the SN30 chain floor.
 # Includes the 15-netuid mainnet universe refresh; mainnet serving opens
 # behind the explicit --endure.serving_stage mainnet acknowledgement.
-CURRENT_VERSION_KEY = 2041
+# 2042: release-pinned mainnet admission, atomic reveal/snapshot closure,
+# immutable empty snapshots, and digest-covered Decimal emission processing.
+# Storage selection and the pinned SN30 bootstrap/earned-graduation policy
+# are included in the watched tree; one durable emitter serves both modes.
+CURRENT_VERSION_KEY = 2042
 CURRENT_VERSION_DIGEST = (
-    "570989ed4a3e73bc1283e99742c3931712ec0e3c4aebc96a5aebcc1375ea87f7"
+    "4be32f79360668468c6405e7af56a4f6a02abae9adace8f51e391f2e102ee435"
 )
