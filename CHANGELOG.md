@@ -27,9 +27,10 @@ key-2041 images and chain parameters are not changed by this source update.
   hotkey and stake floor), two-resync deregistration confirmation, emission
   planning and its pre-submission recheck (`emission_policy.py`), and Alpha
   market-data sampling decisions (canonical sample blocks, timestamp-to-block
-  boundary searches, series gap policy, gap-versus-outage classification of
-  archive failures), moved unchanged into `market_sampling.py` (old-vs-new
-  differentials: 4,500 and 4,000 cases, 0 mismatches);
+  boundary searches, series gap policy, scoring retry budget, missing-value
+  and gap-versus-outage classification of archive reads), moved unchanged into
+  `market_sampling.py` (old-vs-new differentials: 0 mismatches); which schema
+  is served (`consensus_policy.py`);
   remove the unused `moving_average_alpha`/`update_scores` path.
 - Add a standing owner-vote fallback for served Alpha Risk on mainnet SN30 and
   Bittensor testnet: whenever the score vector has no positive entry (cold

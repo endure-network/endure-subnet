@@ -297,6 +297,34 @@ def test_one_clock_covers_a_blocked_streak_across_flapping_reasons(
     assert _client(validator).get("/health").status_code == 200
 
 
+def test_a_score_read_failure_does_not_restart_the_interrupted_fault_clock(
+    validator: Validator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("neurons.validator.time.monotonic", lambda: 10000.0)
+    validator.scores = [Decimal(0)]
+    validator._mark_tick_progress()
+    runtime = MagicMock()
+    runtime.round_program.weights.return_value = {}
+    runtime.round_program.blended_scores.return_value = {}
+    validator._vertical_runtime = runtime
+    validator._block_emission(
+        EmissionBlocked("chain_snapshot_inconsistent", "stale"), 1000
+    )
+    validator._block_emission(
+        EmissionBlocked("score_state_unavailable", "database is locked"), 1100
+    )
+
+    # The score read recovers; the snapshot fault is still there at 1200.
+    assert validator._refresh_scores_from_durable_state()
+    assert validator._emission_block == "chain_snapshot_inconsistent"
+    validator._block_emission(
+        EmissionBlocked("chain_snapshot_inconsistent", "stale"), 1200
+    )
+    validator.metagraph.block = 1200
+
+    assert _client(validator).get("/health").status_code == 503
+
+
 def test_confirmation_deadline_still_degrades_while_emission_is_disabled(
     validator: Validator,
     monkeypatch: pytest.MonkeyPatch,

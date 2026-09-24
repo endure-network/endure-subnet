@@ -11,6 +11,8 @@ from decimal import Decimal
 from typing import Final, Literal
 from urllib.parse import urlparse
 
+from endure.assessment.schemas.subnet_alpha_risk import RISK_SCHEMA_ID
+
 MIN_MINER_STAKE: Final = Decimal("0")
 MAX_COMMITS_PER_ROUND: Final = 10
 MAX_REVEALS_PER_ROUND: Final = 10
@@ -146,6 +148,11 @@ def classify_chain(
     if genesis is not None:
         return "unrecognized"
     return _named_class(endpoint=endpoint, network=network) or "unrecognized"
+
+
+def serves_alpha_risk(*, schema_id: str, serving_status: str) -> bool:
+    """Only the served Alpha Risk schema runs mainnet policy or the owner vote."""
+    return schema_id == RISK_SCHEMA_ID and serving_status == "served"
 
 
 def mainnet_policy_applies(chain: ChainClass, *, served: bool) -> bool:

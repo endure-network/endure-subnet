@@ -688,6 +688,12 @@ def _reregister_scored_miners(validator: ReplayValidator, chain: ReplayChain) ->
     validator.scores = [Decimal(0)] * len(chain.hotkeys)
 
 
+def _base_resync(validator: ReplayValidator, chain: ReplayChain) -> None:
+    """Base resync order: align (zeroing moved UIDs), then the post-sync hook."""
+    _reregister_scored_miners(validator, chain)
+    validator._on_metagraph_synced()
+
+
 def test_resync_after_reregistration_keeps_earned_weights(
     storage: Storage,
     mock_validator_config: bt.Config,
@@ -700,11 +706,19 @@ def test_resync_after_reregistration_keeps_earned_weights(
     monkeypatch.setattr(
         BaseValidatorNeuron,
         "resync_metagraph",
-        lambda self: _reregister_scored_miners(self, chain),
+        lambda self: _base_resync(self, chain),
+    )
+    # The confirmation RPCs are where /health can poll mid-resync.
+    modes_during_confirmation: list[str] = []
+    monkeypatch.setattr(
+        validator,
+        "_resolve_weight_confirmations",
+        lambda: modes_during_confirmation.append(validator._observed_emission_mode()),
     )
 
     validator.resync_metagraph()
 
+    assert modes_during_confirmation == ["scored"]
     assert validator._observed_emission_mode() == "scored"
     validator.set_weights()
     assert chain.submissions == [((3, 4), (65535, 8192), CURRENT_VERSION_KEY)]
@@ -767,7 +781,7 @@ def test_failed_resync_rebuild_never_reports_owner_vote(
     monkeypatch.setattr(
         BaseValidatorNeuron,
         "resync_metagraph",
-        lambda self: _reregister_scored_miners(self, chain),
+        lambda self: _base_resync(self, chain),
     )
 
     def unreadable() -> dict[str, Decimal]:
@@ -780,6 +794,7 @@ def test_failed_resync_rebuild_never_reports_owner_vote(
             round_program=SimpleNamespace(weights=unreadable, blended_scores=dict)
         ),
     )
+    monkeypatch.setattr(validator, "_resolve_weight_confirmations", lambda: None)
     validator.resync_metagraph()
 
     # The aligned vector is all zero, but durable positive EMAs exist.

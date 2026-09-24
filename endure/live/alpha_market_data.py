@@ -42,11 +42,13 @@ from endure.scoring.market_data import (
 )
 from endure.scoring.market_sampling import (
     ARCHIVE_FETCH_FAILURES,
+    SCORING_ARCHIVE_ATTEMPTS,
     SNAPSHOT_FETCH_FAILURES,
     SeriesSampling,
     canonical_snapshot_blocks,
     first_block_at_or_after,
     last_block_at_or_before,
+    require_archive_value,
     retry_exhausted_failure,
     snapshot_failure_is_outage,
 )
@@ -54,7 +56,6 @@ from endure.scoring.risk.observables import BLOCK_SECONDS
 from endure.utils.logging import safe_error
 
 MAINNET_ARCHIVE_ENDPOINT: Final = "wss://archive.chain.opentensor.ai:443"
-LIVE_MARKET_DATA_MAX_ATTEMPTS: Final = 6
 LIVE_MARKET_DATA_REQUEST_PAUSE_SECONDS: Final = Decimal("0.25")
 LIVE_MARKET_DATA_REQUEST_TIMEOUT_SECONDS: Final = 10.0
 LIVE_MARKET_DATA_TIMEOUT_WORKERS: Final = 1
@@ -179,7 +180,7 @@ class LiveAlphaPriceProviderConfig:
     endpoint: str = MAINNET_ARCHIVE_ENDPOINT
     request_pause_seconds: Decimal = LIVE_MARKET_DATA_REQUEST_PAUSE_SECONDS
     request_timeout_seconds: float = LIVE_MARKET_DATA_REQUEST_TIMEOUT_SECONDS
-    max_attempts: int = LIVE_MARKET_DATA_MAX_ATTEMPTS
+    max_attempts: int = SCORING_ARCHIVE_ATTEMPTS
 
 
 @dataclass(frozen=True, slots=True)
@@ -277,9 +278,9 @@ class BittensorSubnetInfoFetcher:
             result = self._call_archive_operation(
                 lambda: subtensor.subnet(netuid, block=block)
             )
-        if result is None:
-            raise LookupError(f"archive returned no subnet info for netuid={netuid}")
-        return result
+        return require_archive_value(
+            result, f"returned no subnet info for netuid={netuid}"
+        )
 
     def current_block(self) -> int:
         subtensor = self._active_subtensor()
@@ -298,13 +299,16 @@ class BittensorSubnetInfoFetcher:
         substrate = self._active_substrate()
 
         def operation() -> int:
-            block_hash = substrate.get_block_hash(block)
-            if block_hash is None:
-                raise LookupError(f"archive missing block hash for block={block}")
+            block_hash = require_archive_value(
+                substrate.get_block_hash(block),
+                f"missing block hash for block={block}",
+            )
             timestamp = substrate.query("Timestamp", "Now", block_hash=block_hash)
-            if timestamp.value is None:
-                raise LookupError(f"archive missing Timestamp.Now for block={block}")
-            return int(timestamp.value)
+            return int(
+                require_archive_value(
+                    timestamp.value, f"missing Timestamp.Now for block={block}"
+                )
+            )
 
         return int(self._call_archive_operation(operation))
 

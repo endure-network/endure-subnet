@@ -251,6 +251,7 @@ class Validator(BaseValidatorNeuron):
         self._emission_block: EmissionBlockReason | None = None
         self._emission_block_since_block: int | None = None
         self._emission_block_seen_block: int | None = None
+        self._emission_block_underlying: EmissionBlockReason | None = None
         self._emission_mode = (
             "disabled" if self.config.neuron.disable_set_weights else "abstain"
         )
@@ -869,7 +870,16 @@ class Validator(BaseValidatorNeuron):
             )
             return False
         if getattr(self, "_emission_block", None) == "score_state_unavailable":
-            self._clear_emission_block()
+            with self._emission_state_lock:
+                underlying = getattr(self, "_emission_block_underlying", None)
+                if underlying is None:
+                    self._clear_emission_block()
+                else:
+                    # Only the score-read component resolved; the interrupted
+                    # fault's streak (and its escalation clock) continues.
+                    self._emission_block = underlying
+                    self._emission_blocked_reason = underlying
+                    self._emission_block_underlying = None
         return True
 
     def _chain_block_hint(self) -> int | None:
@@ -887,6 +897,13 @@ class Validator(BaseValidatorNeuron):
             # the next attempt is never re-observed and never pages.
             if getattr(self, "_emission_block_since_block", None) is None:
                 self._emission_block_since_block = block
+            current = getattr(self, "_emission_block", None)
+            if blocked.reason == "score_state_unavailable" and current not in {
+                None,
+                "score_state_unavailable",
+            }:
+                # Remember the fault the score-read failure interrupted.
+                self._emission_block_underlying = current
             self._emission_block_seen_block = block
             self._emission_block = blocked.reason
             self._emission_blocked_reason = blocked.reason
@@ -898,6 +915,7 @@ class Validator(BaseValidatorNeuron):
             self._emission_block = None
             self._emission_block_since_block = None
             self._emission_block_seen_block = None
+            self._emission_block_underlying = None
 
     def _weight_emission_ready(self, storage: Storage | None) -> bool:
         """Keep startup fencing and durable single-flight common to both modes."""
@@ -1154,6 +1172,15 @@ class Validator(BaseValidatorNeuron):
         )
 
     def _on_metagraph_synced(self) -> None:
+        if getattr(self, "_durable_scores_loaded", False):
+            # Resync alignment has just zeroed UIDs whose hotkey changed. Rebuild
+            # from durable EMAs before any confirmation RPC, so /health never
+            # reads the zeroed vector as owner_vote and a miner that
+            # re-registered at a new UID keeps its earned weight.
+            self._refresh_scores_from_durable_state()
+        self._resolve_weight_confirmations()
+
+    def _resolve_weight_confirmations(self) -> None:
         """Resolve every restart-surviving submitted weight batch from chain state."""
         storage = getattr(self, "_storage", None)
         if storage is None:
@@ -1321,11 +1348,6 @@ class Validator(BaseValidatorNeuron):
         """Advance the deregistration tracker once per metagraph refresh."""
         super().resync_metagraph()
         self._deregistration_tracker().advance(self.metagraph.hotkeys)
-        if getattr(self, "_durable_scores_loaded", False):
-            # Resync alignment zeroes UIDs whose hotkey changed; rebuild from
-            # durable EMAs so a miner that re-registered at a new UID keeps its
-            # earned weight instead of reading as all-zero scores.
-            self._refresh_scores_from_durable_state()
 
     def _deregistration_tracker(self) -> DeregistrationTracker:
         # The base constructor's first sync can resync before __init__ seeds.

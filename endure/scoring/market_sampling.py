@@ -55,6 +55,13 @@ SNAPSHOT_FETCH_FAILURES: Final = (
 )
 
 
+def require_archive_value[T](value: T | None, missing: str) -> T:
+    """An archive read that returned nothing is missing data, never an outage."""
+    if value is None:
+        raise LookupError(f"archive {missing}")
+    return value
+
+
 def retry_exhausted_failure(error: BaseException, message: str) -> Exception:
     """The failure an archive read raises once its attempts are exhausted.
 
@@ -81,6 +88,10 @@ def snapshot_failure_is_outage(error: BaseException) -> bool:
         return True
     return False
 
+
+# Attempts per scoring archive read before its failure is classified: missing
+# data then becomes a definitive gap, anything else an outage.
+SCORING_ARCHIVE_ATTEMPTS: Final = 6
 
 # Consecutive archive-unavailable snapshots that abandon a series early.
 MAX_CONSECUTIVE_ARCHIVE_GAPS: Final = 2

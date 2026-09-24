@@ -25,6 +25,7 @@ from endure.protocol.consensus_policy import (
     classify_chain,
     mainnet_policy_applies,
     require_canonical_mainnet_policy,
+    serves_alpha_risk,
 )
 from endure.protocol.version_contract import WATCHED_PATHS
 from endure.scoring.eligibility import DeregistrationTracker, scoring_set
@@ -38,6 +39,7 @@ from endure.scoring.market_sampling import (
     canonical_snapshot_blocks,
     first_block_at_or_after,
     last_block_at_or_before,
+    require_archive_value,
     retry_exhausted_failure,
     snapshot_failure_is_outage,
 )
@@ -62,6 +64,7 @@ _POLICY: tuple[Callable[..., object] | type, ...] = (
     chain_owner_vote_network,
     mainnet_policy_applies,
     require_canonical_mainnet_policy,
+    serves_alpha_risk,
     DeregistrationTracker,
     scoring_set,
     select_emission_mode,
@@ -73,6 +76,7 @@ _POLICY: tuple[Callable[..., object] | type, ...] = (
     first_block_at_or_after,
     last_block_at_or_before,
     SeriesSampling,
+    require_archive_value,
     retry_exhausted_failure,
     snapshot_failure_is_outage,
 )

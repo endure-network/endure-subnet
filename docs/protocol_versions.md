@@ -186,12 +186,12 @@ encoding, in [weight_processing.py](../endure/scoring/weight_processing.py)),
 emission planning from one chain snapshot and its pre-submission recheck (in
 [emission_policy.py](../endure/scoring/emission_policy.py)), Alpha
 market-data sampling decisions (canonical sample blocks, timestamp-to-block
-boundary searches, the series gap policy, and the gap-versus-outage
-classification of archive failures, in
+boundary searches, the series gap policy, the scoring retry budget, and the
+missing-value and gap-versus-outage classification of archive reads, in
 [market_sampling.py](../endure/scoring/market_sampling.py), moved unchanged
 from `endure/live/alpha_market_data.py`; old-vs-new differentials over 4,500
-and 4,000 cases found 0 mismatches), the mainnet/testnet genesis identities, and the
-owner-vote fallback policy are
+and 4,000 cases found 0 mismatches), the mainnet/testnet genesis identities,
+which schema is served, and the owner-vote fallback policy are
 digest-covered. On mainnet
 SN30 and Bittensor testnet, one emission-enabled process submits its whole vote
 to the UID of the on-chain subnet owner hotkey whenever no score is positive,

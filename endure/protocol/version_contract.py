@@ -128,16 +128,17 @@ PREVIOUS_VERSION_DIGEST = (
 # 2042: release-pinned mainnet admission (including axon-off emission),
 # atomic reveal/snapshot closure and immutable empty snapshots. Watched
 # decisions: storage admission/selection; miner axon admission; the scoring set
-# (expected miners, archival) and deregistration confirmation; genesis-based
-# chain classification, mainnet-policy applicability and the owner-vote
-# network; emission planning from one chain snapshot (identity, permit, strict
-# rate limit, scored UIDs matching the snapshot, the on-chain SubnetOwnerHotkey
-# recipient pinned to the SN30 owner on mainnet) and its pre-submission
-# recheck; the score-to-u16 composition; and Alpha market-data sampling
-# (canonical blocks, boundary searches, gap policy, archive failure
-# classification). Unwatched runtime code performs RPC/SQLite I/O, CLI
-# plumbing, process lifecycle and health reporting (non-consensus severity and
-# the startup-probe retry schedule).
+# (expected miners, archival) and deregistration confirmation; which schema is
+# served, genesis-based chain classification, mainnet-policy applicability and
+# the owner-vote network; emission planning from one chain snapshot (identity,
+# permit, strict rate limit, scored UIDs matching the snapshot, the on-chain
+# SubnetOwnerHotkey recipient pinned to the SN30 owner on mainnet) and its
+# pre-submission recheck; the score-to-u16 composition; and Alpha market-data
+# sampling (canonical blocks, boundary searches, gap policy, the scoring retry
+# budget, and the missing-value and gap-versus-outage classification of archive
+# reads). Unwatched runtime code performs RPC/SQLite I/O, CLI plumbing, process
+# lifecycle, the startup archive-probe schedule, and non-consensus health
+# severity.
 CURRENT_VERSION_KEY = 2042
 CURRENT_VERSION_DIGEST = (
     "eb63f6f3d2f87a6e1cffad8adc8135280a643313f17267c5b2b4770918330195"

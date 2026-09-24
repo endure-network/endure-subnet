@@ -45,6 +45,7 @@ from endure.protocol.consensus_policy import (
     mainnet_policy_applies,
     normalize_genesis_hash,
     require_canonical_mainnet_policy,
+    serves_alpha_risk,
 )
 
 from .logging import safe_endpoint_label, setup_events_logger
@@ -163,7 +164,9 @@ def requires_serving_stage_gate(
     config: "bt.Config", registry: SchemaRegistry | None = None
 ) -> bool:
     entry = active_schema_entry(config, registry)
-    return entry.schema.schema_id == RISK_SCHEMA_ID and entry.serving_status == "served"
+    return serves_alpha_risk(
+        schema_id=entry.schema.schema_id, serving_status=entry.serving_status
+    )
 
 
 def require_serving_stage_allowed(
