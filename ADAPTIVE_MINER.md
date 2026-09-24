@@ -108,3 +108,74 @@ The standard image at `ghcr.io/endure-network/endure-subnet-miner:prod` runs
 the public baseline strategy. Compare per-coordinate EMAs only after enough
 5-day outcomes have resolved. The 30-day coordinates cannot be evaluated
 before their full horizon elapses.
+
+## Optional: three distinct registered hotkeys
+
+`deploy/adaptive-miner/docker-compose.three.yaml` is an alternative to the
+single-miner Compose file, not an overlay for it. It runs three copies of the
+same adaptive forecast strategy on one host. Each copy has a separate hotkey,
+read-only wallet mount, axon port (`8092`, `8093`, `8094`), and persistent
+commit/reveal state volume. **Do not run both Compose projects for the same
+hotkey**: two processes can create conflicting commitments.
+
+1. On the secure operator machine, create and register three different
+   mainnet hotkeys on netuid `30`. Registration and stake are paid, chain-side
+   actions; inspect their current costs before approving them. The chain
+   assigns each registered hotkey a UID. Numeric UIDs are not configured here
+   and may change, so track the three public hotkey addresses.
+2. On the miner host, create three separate absolute wallet roots. Each must
+   contain only `<wallet-name>/coldkeypub.txt` and
+   `<wallet-name>/hotkeys/<one-hotkey-name>`. Do not copy `coldkey` or a
+   mnemonic to the host. Open and map TCP ports `8092` through `8094` to the
+   same public `EXTERNAL_IP`.
+3. Copy `deploy/adaptive-miner/three.env.example` to
+   `deploy/adaptive-miner/.env.three`, restrict its permissions, and replace the
+   wallet-root, wallet, hotkey, and IP values. Keep the promoted `:prod` image
+   selected. `.env.three` is ignored by Git and must contain no secrets.
+
+   ```bash
+   cd deploy/adaptive-miner
+   cp three.env.example .env.three
+   chmod 0600 .env.three
+   ```
+4. From `deploy/adaptive-miner`, run the read-only checks:
+
+   ```bash
+   python3 preflight_three.py .env.three
+   docker compose --env-file .env.three -f docker-compose.three.yaml config --quiet
+   ```
+
+   Preflight reads the local hotkey files and confirms that wallet roots do
+   not overlap and all three public addresses differ. It does not query the
+   chain. Confirm all three addresses appear as separately registered miners
+   on netuid `30` before starting. A distinct UID follows registration, not
+   from choosing an environment-variable number.
+5. Only after the production release gate above is complete, pull the image
+   and start the miners. Start one at a time after each initial 30-day history
+   backfill, since each process has its own in-memory cache and three
+   simultaneous cold starts can overwhelm the archive endpoint:
+
+   ```bash
+   docker compose --env-file .env.three -f docker-compose.three.yaml pull
+   docker compose --env-file .env.three -f docker-compose.three.yaml up -d --no-build miner-1
+   docker compose --env-file .env.three -f docker-compose.three.yaml logs -f miner-1
+   ```
+
+   After the first miner completes its initial backfill, start `miner-2` with
+   the same `up -d --no-build` command; repeat for `miner-3` when the second
+   miner finishes. Use `logs -f miner-2` and `logs -f miner-3` to check each.
+
+   Verify an accepted commit and reveal for **each** hotkey. Never remove the
+   `miner-1-state`, `miner-2-state`, or `miner-3-state` volumes during an
+   outstanding commitment. If moving an already-running single miner into
+   this project, wait until its reveal has completed or deliberately migrate
+   its state volume first; the new project does not reuse the single-miner
+   volume automatically.
+
+Three hotkeys running this one strategy do **not** provide three independent
+forecasts. The current scorer treats duplicate hotkeys independently, a known
+economic limitation and unresolved qualification issue documented in
+[`docs/economic-limitations.md`](docs/economic-limitations.md). Additional
+hotkeys add registration, stake, hosting, and market-data costs, with no
+guaranteed payout increase. This configuration does not itself clear the
+testnet soak or owner release gates for mainnet.

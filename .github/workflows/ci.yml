@@ -123,6 +123,10 @@ jobs:
           docker compose -f deploy/soak-miners/docker-compose.yaml config
           docker compose --env-file deploy/operator-node/env.example \
             -f deploy/operator-node/docker-compose.yaml config
+          docker compose --env-file deploy/adaptive-miner/.env.example \
+            -f deploy/adaptive-miner/docker-compose.yaml config
+          docker compose --env-file deploy/adaptive-miner/three.env.example \
+            -f deploy/adaptive-miner/docker-compose.three.yaml config
           docker compose -f docker-compose.yml config
       - name: Build and smoke-test the adaptive mainnet candidate
         run: |

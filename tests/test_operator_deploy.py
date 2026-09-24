@@ -402,6 +402,63 @@ def test_adaptive_mainnet_compose_requires_a_qualified_image() -> None:
     assert "SERVING_STAGE=mainnet" in env_example
 
 
+def test_adaptive_three_mainnet_compose_isolates_hotkey_config() -> None:
+    compose_path = ROOT / "deploy/adaptive-miner/docker-compose.three.yaml"
+    services = yaml.safe_load(compose_path.read_text())["services"]
+    env_example = (ROOT / "deploy/adaptive-miner/three.env.example").read_text()
+
+    assert set(services) == {"miner-1", "miner-2", "miner-3"}
+    assert "ghcr.io/endure-network/endure-subnet-adaptive-miner:prod" in env_example
+    assert "NETUID=30" in env_example
+    assert "CHAIN=finney" in env_example
+    assert "SERVING_STAGE=mainnet" in env_example
+
+    wallet_mounts: set[str] = set()
+    state_mounts: set[str] = set()
+    hotkey_refs: set[str] = set()
+    for index, port in enumerate(range(8092, 8095), start=1):
+        service = services[f"miner-{index}"]
+        command = service["command"]
+        assert "build" not in service
+        assert service["image"].startswith("${MINER_IMAGE:")
+        assert service["pull_policy"] == "always"
+        assert service["ports"] == [f"{port}:{port}"]
+        assert service["environment"]["MINER_AXON_PORT"] == str(port)
+
+        wallet_mount = next(
+            str(volume)
+            for volume in service["volumes"]
+            if str(volume).endswith(":/root/.bittensor/wallets:ro")
+        )
+        state_mount = next(
+            str(volume)
+            for volume in service["volumes"]
+            if str(volume).endswith(":/root/.bittensor/miners")
+        )
+        assert wallet_mount.startswith(f"${{MINER{index}_WALLET_ROOT:")
+        assert state_mount == f"miner-{index}-state:/root/.bittensor/miners"
+        wallet_mounts.add(wallet_mount)
+        state_mounts.add(state_mount)
+
+        assert command[command.index("--netuid") + 1].startswith("${NETUID:")
+        assert command[command.index("--subtensor.network") + 1].startswith("${CHAIN:")
+        assert command[command.index("--wallet.name") + 1].startswith(
+            f"${{MINER{index}_WALLET:"
+        )
+        hotkey_ref = command[command.index("--wallet.hotkey") + 1]
+        assert hotkey_ref.startswith(f"${{MINER{index}_HOTKEY:?")
+        hotkey_refs.add(hotkey_ref)
+        assert command[command.index("--endure.active_schema") + 1] == (
+            "risk.v1.subnet_alpha"
+        )
+        assert command[command.index("--endure.serving_stage") + 1].startswith(
+            "${SERVING_STAGE:"
+        )
+        assert command[command.index("--axon.port") + 1] == str(port)
+
+    assert len(wallet_mounts) == len(state_mounts) == len(hotkey_refs) == 3
+
+
 def test_operator_deploy_takes_the_release_identity_from_the_images() -> None:
     deploy_script = (ROOT / "deploy/operator-node/deploy.sh").read_text()
     env_example = (ROOT / "deploy/operator-node/env.example").read_text()
