@@ -129,7 +129,7 @@ jobs:
           docker build --platform linux/amd64 \
             --build-arg ENDURE_SOURCE_REVISION="$(git rev-parse HEAD)" \
             --build-arg ENDURE_SOURCE_URL="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
-            --build-arg ENDURE_IMAGE_VERSION="pr-$GITHUB_RUN_ID" \
+            --build-arg ENDURE_IMAGE_VERSION="sha-$(git rev-parse HEAD)" \
             --file deploy/adaptive-miner/Dockerfile \
             --tag endure-subnet-adaptive-miner:ci .
           docker run --rm --entrypoint python endure-subnet-adaptive-miner:ci \
