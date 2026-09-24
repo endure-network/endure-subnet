@@ -65,6 +65,7 @@ jobs:
           owner="${GITHUB_REPOSITORY_OWNER,,}"
           echo "VALIDATOR_TAG=ghcr.io/$owner/endure-subnet-validator:sha-$SOURCE_SHA" >> "$GITHUB_ENV"
           echo "MINER_TAG=ghcr.io/$owner/endure-subnet-miner:sha-$SOURCE_SHA" >> "$GITHUB_ENV"
+          echo "ADAPTIVE_MINER_TAG=ghcr.io/$owner/endure-subnet-adaptive-miner:sha-$SOURCE_SHA" >> "$GITHUB_ENV"
 
       - name: Authenticate to the container registry
         run: echo "$GH_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
@@ -87,6 +88,15 @@ jobs:
             --file docker/miner.Dockerfile \
             --tag "$MINER_TAG" .
 
+      - name: Build adaptive miner
+        run: |
+          docker build --platform linux/amd64 \
+            --build-arg ENDURE_SOURCE_REVISION="$SOURCE_SHA" \
+            --build-arg ENDURE_SOURCE_URL="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
+            --build-arg ENDURE_IMAGE_VERSION="sha-$SOURCE_SHA" \
+            --file deploy/adaptive-miner/Dockerfile \
+            --tag "$ADAPTIVE_MINER_TAG" .
+
       - name: Recheck release qualification
         run: |
           staging_sha="$(gh api \
@@ -98,6 +108,7 @@ jobs:
         run: |
           docker push "$VALIDATOR_TAG"
           docker push "$MINER_TAG"
+          docker push "$ADAPTIVE_MINER_TAG"
 
       - name: Record deployable digests
         run: |
@@ -105,12 +116,17 @@ jobs:
             --format '{{json .Manifest}}' "$VALIDATOR_TAG" | jq -r .digest)"
           miner_digest="$(docker buildx imagetools inspect \
             --format '{{json .Manifest}}' "$MINER_TAG" | jq -r .digest)"
+          adaptive_miner_digest="$(docker buildx imagetools inspect \
+            --format '{{json .Manifest}}' "$ADAPTIVE_MINER_TAG" | jq -r .digest)"
           [[ "$validator_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
           [[ "$miner_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          [[ "$adaptive_miner_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
           validator_ref="${VALIDATOR_TAG%:*}@$validator_digest"
           miner_ref="${MINER_TAG%:*}@$miner_digest"
-          printf 'SOURCE_SHA=%s\nVALIDATOR_IMAGE=%s\nMINER_IMAGE=%s\n' \
-            "$SOURCE_SHA" "$validator_ref" "$miner_ref" > release-images.env
+          adaptive_miner_ref="${ADAPTIVE_MINER_TAG%:*}@$adaptive_miner_digest"
+          printf 'SOURCE_SHA=%s\nVALIDATOR_IMAGE=%s\nMINER_IMAGE=%s\nADAPTIVE_MINER_IMAGE=%s\n' \
+            "$SOURCE_SHA" "$validator_ref" "$miner_ref" "$adaptive_miner_ref" \
+            > release-images.env
           grep -Eq '@sha256:[0-9a-f]{64}$' release-images.env
           {
             echo '### Immutable release images'
@@ -147,7 +163,7 @@ jobs:
         run: |
           gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" \
             --name "release-images-$SOURCE_SHA"
-          test "$(wc -l < release-images.env)" -eq 3
+          test "$(wc -l < release-images.env)" -eq 4
           grep -Fx "SOURCE_SHA=$SOURCE_SHA" release-images.env
           staging_sha="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/staging" --jq .object.sha)"
           test "$staging_sha" = "$SOURCE_SHA"
@@ -159,7 +175,7 @@ jobs:
         run: |
           # shellcheck disable=SC1091
           source ./release-images.env
-          for ref in "$VALIDATOR_IMAGE" "$MINER_IMAGE"; do
+          for ref in "$VALIDATOR_IMAGE" "$MINER_IMAGE" "$ADAPTIVE_MINER_IMAGE"; do
             repo="${ref%%@*}"
             docker buildx imagetools create --prefer-index=false \
               --tag "$repo:testnet" "$ref"

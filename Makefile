@@ -86,12 +86,12 @@ ensure-gitleaks:
 ensure-verify-deps: dev-install
 
 lint: ## Run ruff check + format check
-	$(PYTHON) -m ruff check endure/ neurons/ scripts/ tests/ verify/
-	$(PYTHON) -m ruff format --check endure/ neurons/ scripts/ tests/ verify/
+	$(PYTHON) -m ruff check custom_miner/ endure/ neurons/ scripts/ tests/ verify/
+	$(PYTHON) -m ruff format --check custom_miner/ endure/ neurons/ scripts/ tests/ verify/
 
 format: ## Apply ruff format + fix
-	$(PYTHON) -m ruff check --fix endure/ neurons/ scripts/ tests/ verify/
-	$(PYTHON) -m ruff format endure/ neurons/ scripts/ tests/ verify/
+	$(PYTHON) -m ruff check --fix custom_miner/ endure/ neurons/ scripts/ tests/ verify/
+	$(PYTHON) -m ruff format custom_miner/ endure/ neurons/ scripts/ tests/ verify/
 
 typecheck: ## Run pyright only
 	$(PYTHON) -m pyright

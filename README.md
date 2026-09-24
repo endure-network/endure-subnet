@@ -113,6 +113,8 @@ registration and each validator's configured stake floor, and covering the
 [full round universe](docs/mining.md#cover-the-full-universe) is the dominant
 earnings lever — skipped coordinates score zero. Never share a mnemonic, coldkey,
 hotkey file, seed, wallet archive, or endpoint credential in a public report.
+The optional [adaptive miner](ADAPTIVE_MINER.md) uses trailing Alpha market
+history and is published through the same staging-to-production release gates.
 
 ## Run a validator
 

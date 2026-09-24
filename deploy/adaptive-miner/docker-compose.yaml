@@ -1,0 +1,50 @@
+name: endure-adaptive-mainnet-miner
+
+services:
+  miner:
+    image: "${MINER_IMAGE:?set MINER_IMAGE to a qualified adaptive-miner tag or digest}"
+    pull_policy: always
+    restart: unless-stopped
+    stop_grace_period: 45s
+    init: true
+    environment:
+      MINER_AXON_PORT: "${MINER_AXON_PORT:-8092}"
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - ${MINER_WALLET_ROOT:?set MINER_WALLET_ROOT}:/root/.bittensor/wallets:ro
+      - miner-state:/root/.bittensor/miners
+    ports:
+      - "${MINER_AXON_PORT:-8092}:${MINER_AXON_PORT:-8092}"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import os,socket;s=socket.create_connection(('127.0.0.1',int(os.environ['MINER_AXON_PORT'])),timeout=5);s.close()
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 2700s
+    command:
+      - --netuid
+      - "${NETUID:?set NETUID}"
+      - --subtensor.network
+      - "${CHAIN:?set CHAIN}"
+      - --wallet.name
+      - "${MINER_WALLET:?set MINER_WALLET}"
+      - --wallet.hotkey
+      - "${MINER_HOTKEY:-miner}"
+      - --endure.active_schema
+      - risk.v1.subnet_alpha
+      - --endure.serving_stage
+      - "${SERVING_STAGE:?set SERVING_STAGE}"
+      - --endure.market_data_endpoint
+      - "${MARKET_DATA_ENDPOINT:-wss://archive.chain.opentensor.ai:443}"
+      - --axon.port
+      - "${MINER_AXON_PORT:-8092}"
+      - --axon.external_ip
+      - "${EXTERNAL_IP:?set EXTERNAL_IP}"
+      - --logging.info
+
+volumes:
+  miner-state:

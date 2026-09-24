@@ -82,18 +82,25 @@ jobs:
           owner="${GITHUB_REPOSITORY_OWNER,,}"
           validator_repo="ghcr.io/$owner/endure-subnet-validator"
           miner_repo="ghcr.io/$owner/endure-subnet-miner"
+          adaptive_miner_repo="ghcr.io/$owner/endure-subnet-adaptive-miner"
           validator_digest="$(soaked_digest "$validator_repo")"
           miner_digest="$(soaked_digest "$miner_repo")"
+          adaptive_miner_digest="$(soaked_digest "$adaptive_miner_repo")"
           {
             echo "VALIDATOR_REPO=$validator_repo"
             echo "VALIDATOR_DIGEST=$validator_digest"
             echo "MINER_REPO=$miner_repo"
             echo "MINER_DIGEST=$miner_digest"
+            echo "ADAPTIVE_MINER_REPO=$adaptive_miner_repo"
+            echo "ADAPTIVE_MINER_DIGEST=$adaptive_miner_digest"
           } >> "$GITHUB_ENV"
 
       - name: Retag as prod and semver
         run: |
-          for pair in "$VALIDATOR_REPO@$VALIDATOR_DIGEST" "$MINER_REPO@$MINER_DIGEST"; do
+          for pair in \
+            "$VALIDATOR_REPO@$VALIDATOR_DIGEST" \
+            "$MINER_REPO@$MINER_DIGEST" \
+            "$ADAPTIVE_MINER_REPO@$ADAPTIVE_MINER_DIGEST"; do
             repo="${pair%%@*}"
             docker buildx imagetools create --prefer-index=false \
               --tag "$repo:prod" \
@@ -109,7 +116,10 @@ jobs:
             echo "Release tag: \`$RELEASE_TAG\` (source commit \`$TAG_SHA\`)"
             echo
           } >> "$GITHUB_STEP_SUMMARY"
-          for pair in "$VALIDATOR_REPO@$VALIDATOR_DIGEST" "$MINER_REPO@$MINER_DIGEST"; do
+          for pair in \
+            "$VALIDATOR_REPO@$VALIDATOR_DIGEST" \
+            "$MINER_REPO@$MINER_DIGEST" \
+            "$ADAPTIVE_MINER_REPO@$ADAPTIVE_MINER_DIGEST"; do
             repo="${pair%%@*}"
             source_digest="${pair#*@}"
             [[ "$source_digest" =~ ^sha256:[0-9a-f]{64}$ ]]

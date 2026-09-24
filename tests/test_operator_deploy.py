@@ -304,6 +304,7 @@ def test_release_workflow_publishes_only_a_green_staging_sha() -> None:
     assert workflow.count('test "$staging_sha" = "$SOURCE_SHA"') == 4
     assert "ghcr.io/$owner/endure-subnet-validator:sha-$SOURCE_SHA" in workflow
     assert "ghcr.io/$owner/endure-subnet-miner:sha-$SOURCE_SHA" in workflow
+    assert "ghcr.io/$owner/endure-subnet-adaptive-miner:sha-$SOURCE_SHA" in workflow
     assert "ghcr.io/$owner/endure-validator:sha-$SOURCE_SHA" not in workflow
     assert "ghcr.io/$owner/endure-miner:sha-$SOURCE_SHA" not in workflow
     assert "for _ in {1..360}; do" in workflow
@@ -314,6 +315,7 @@ def test_release_workflow_publishes_only_a_green_staging_sha() -> None:
         < workflow.index("      - name: Authenticate to the container registry")
         < workflow.index("      - name: Build validator")
         < workflow.index("      - name: Build miner")
+        < workflow.index("      - name: Build adaptive miner")
         < workflow.index("      - name: Recheck release qualification")
         < workflow.index("      - name: Publish images")
         < workflow.index("      - name: Record deployable digests")
@@ -322,7 +324,7 @@ def test_release_workflow_publishes_only_a_green_staging_sha() -> None:
     assert workflow.count("scripts/quality_gates/require_release_workflows.sh") == 3
     assert "commits/$SOURCE_SHA/check-runs" not in workflow
     assert '--build-arg ENDURE_SOURCE_REVISION="$SOURCE_SHA"' in workflow
-    assert workflow.count("docker push") == 2
+    assert workflow.count("docker push") == 3
     assert "@sha256:" in workflow
     action_references = re.findall(
         r"^\s*- uses: ([^\s#]+)", workflow, flags=re.MULTILINE
@@ -385,6 +387,21 @@ def test_operator_compose_uses_published_images_and_host_durability() -> None:
     assert "deploy/operator-node/docker-compose.yaml config" in ci_workflow
 
 
+def test_adaptive_mainnet_compose_requires_a_qualified_image() -> None:
+    compose_path = ROOT / "deploy/adaptive-miner/docker-compose.yaml"
+    compose_text = compose_path.read_text()
+    miner = yaml.safe_load(compose_text)["services"]["miner"]
+    env_example = (ROOT / "deploy/adaptive-miner/.env.example").read_text()
+
+    assert "build" not in miner
+    assert miner["image"].startswith("${MINER_IMAGE:")
+    assert miner["pull_policy"] == "always"
+    assert "ghcr.io/endure-network/endure-subnet-adaptive-miner:prod" in env_example
+    assert "NETUID=30" in env_example
+    assert "CHAIN=finney" in env_example
+    assert "SERVING_STAGE=mainnet" in env_example
+
+
 def test_operator_deploy_takes_the_release_identity_from_the_images() -> None:
     deploy_script = (ROOT / "deploy/operator-node/deploy.sh").read_text()
     env_example = (ROOT / "deploy/operator-node/env.example").read_text()
@@ -436,7 +453,7 @@ def test_operator_deploy_accepts_tags_and_records_rollback() -> None:
     assert "http://127.0.0.1:8714/health" in deploy_script
 
 
-def test_prod_retag_uses_digest_preserving_copy_for_both_images(tmp_path: Path) -> None:
+def test_prod_retag_uses_digest_preserving_copy_for_all_images(tmp_path: Path) -> None:
     workflow = yaml.safe_load(
         (ROOT / ".github/workflows/publish-prod-images.yml").read_text()
     )
@@ -475,8 +492,10 @@ else:
             "RELEASE_TAG": "v0.1.0",
             "VALIDATOR_REPO": "ghcr.io/example/validator",
             "MINER_REPO": "ghcr.io/example/miner",
+            "ADAPTIVE_MINER_REPO": "ghcr.io/example/adaptive-miner",
             "VALIDATOR_DIGEST": "sha256:" + "a" * 64,
             "MINER_DIGEST": "sha256:" + "a" * 64,
+            "ADAPTIVE_MINER_DIGEST": "sha256:" + "a" * 64,
             "RETAG_LOG": str(log),
         },
     )
@@ -484,6 +503,7 @@ else:
     assert log.read_text().splitlines() == [
         "ghcr.io/example/validator",
         "ghcr.io/example/miner",
+        "ghcr.io/example/adaptive-miner",
     ]
 
 
@@ -507,7 +527,9 @@ def test_prod_publish_resolves_each_soaked_digest_exactly_once() -> None:
 
     assert "VALIDATOR_DIGEST=" in resolve
     assert "MINER_DIGEST=" in resolve
+    assert "ADAPTIVE_MINER_DIGEST=" in resolve
     for later_step in (retag, verify):
         assert "sha-$TAG_SHA" not in later_step
         assert "$VALIDATOR_DIGEST" in later_step
         assert "$MINER_DIGEST" in later_step
+        assert "$ADAPTIVE_MINER_DIGEST" in later_step

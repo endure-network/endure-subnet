@@ -148,7 +148,7 @@ quote-style = "double"
 [tool.pyright]
 typeCheckingMode = "basic"
 pythonVersion = "3.12"
-include = ["endure", "neurons", "scripts", "verify"]
+include = ["custom_miner", "endure", "neurons", "scripts", "verify"]
 # Hand-curated bittensor stub lives in typings/bittensor/ — it's what
 # lets pyright catch pre-v10 lowercase-API drift (bt.wallet/bt.axon/etc.)
 # as real type errors instead of silently-Unknown returns.
