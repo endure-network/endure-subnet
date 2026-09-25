@@ -1096,20 +1096,65 @@ class Validator(BaseValidatorNeuron):
         if recipient is not None:
             # Pre-submission recheck against the exact metagraph, chain
             # identity and constraints that produced this prepared vector.
-            recheck_owner_vote(
-                recipient,
-                chain_identity=attempt.chain_identity or "",
-                netuid=attempt.netuid if attempt.netuid is not None else -1,
-                hotkeys=attempt.hotkeys,
-                uint_uids=attempt.uint_uids,
-                uint_weights=attempt.uint_weights,
-                min_allowed_weights=attempt.min_allowed_weights,
-                max_weight_limit=attempt.max_weight_limit,
-            )
+            try:
+                recheck_owner_vote(
+                    recipient,
+                    chain_identity=attempt.chain_identity or "",
+                    netuid=attempt.netuid if attempt.netuid is not None else -1,
+                    hotkeys=attempt.hotkeys,
+                    uint_uids=attempt.uint_uids,
+                    uint_weights=attempt.uint_weights,
+                    min_allowed_weights=attempt.min_allowed_weights,
+                    max_weight_limit=attempt.max_weight_limit,
+                )
+            except EmissionBlocked:
+                self._record_refused_weight_attempt(attempt)
+                raise
         self._set_emission_observation(self._observed_emission_mode(), "prepared")
         storage = getattr(self, "_storage", None)
         if storage is None:
             return None
+        return self._record_emission_batch(
+            storage,
+            attempt,
+            status="error",
+            confirmation_state="prepared",
+            confirmation_deadline_block=attempt.confirmation_deadline_block,
+        )
+
+    def _record_refused_weight_attempt(self, attempt: WeightEmissionAttempt) -> None:
+        """Leave a durable failed record of a vector the recheck refused to send.
+
+        The refusal must survive a restart in the emission history and in
+        ``failed_weight_submissions_total``; no submission exists, so no
+        confirmation deadline does either.
+        """
+        storage = getattr(self, "_storage", None)
+        if storage is None:
+            return
+        try:
+            self._record_emission_batch(
+                storage,
+                attempt,
+                status="failed",
+                confirmation_state="failed",
+                confirmation_deadline_block=None,
+            )
+        except Exception as error:  # noqa: BLE001 — the refusal itself must still surface
+            bt.logging.error(
+                "could not record the refused weight attempt: "
+                f"{type(error).__name__}: {safe_error(error)}"
+            )
+
+    def _record_emission_batch(
+        self,
+        storage: Storage,
+        attempt: WeightEmissionAttempt,
+        *,
+        status: str,
+        confirmation_state: str | None,
+        confirmation_deadline_block: int | None,
+    ) -> int:
         return storage.record_weight_emission(
             schema_id=self._schema_id,
             round_id=None,
@@ -1118,10 +1163,10 @@ class Validator(BaseValidatorNeuron):
             min_allowed_weights=attempt.min_allowed_weights,
             max_weight_limit=attempt.max_weight_limit,
             metagraph_size=len(attempt.hotkeys),
-            status="error",
+            status=status,
             rows=self._emission_rows(attempt),
             submission_block=attempt.submission_block,
-            confirmation_state="prepared",
+            confirmation_state=confirmation_state,
             baseline_last_update_block=attempt.baseline_last_update_block,
             period_blocks=attempt.period_blocks,
             chain_identity=attempt.chain_identity,
@@ -1133,7 +1178,7 @@ class Validator(BaseValidatorNeuron):
             protocol_version_key=attempt.protocol_version_key,
             commitment_hash=attempt.commitment_hash,
             reveal_round=attempt.reveal_round,
-            confirmation_deadline_block=attempt.confirmation_deadline_block,
+            confirmation_deadline_block=confirmation_deadline_block,
             cr4_reveal_deadline_block=attempt.cr4_reveal_deadline_block,
         )
 
@@ -1171,31 +1216,12 @@ class Validator(BaseValidatorNeuron):
         confirmation_state = attempt.confirmation_state
         if confirmation_state is None and attempt.status != "submitted":
             confirmation_state = "failed"
-        storage.record_weight_emission(
-            schema_id=self._schema_id,
-            round_id=None,
-            emitted_at_iso=_utc_now().isoformat(),
-            block=attempt.block,
-            min_allowed_weights=attempt.min_allowed_weights,
-            max_weight_limit=attempt.max_weight_limit,
-            metagraph_size=len(attempt.hotkeys),
+        self._record_emission_batch(
+            storage,
+            attempt,
             status=attempt.status,
-            rows=self._emission_rows(attempt),
-            submission_block=attempt.submission_block,
             confirmation_state=confirmation_state,
-            baseline_last_update_block=attempt.baseline_last_update_block,
-            period_blocks=attempt.period_blocks,
-            chain_identity=attempt.chain_identity,
-            netuid=attempt.netuid,
-            validator_uid=attempt.validator_uid,
-            validator_hotkey=attempt.validator_hotkey,
-            submission_mode=attempt.submission_mode,
-            intent_hash=attempt.intent_hash,
-            protocol_version_key=attempt.protocol_version_key,
-            commitment_hash=attempt.commitment_hash,
-            reveal_round=attempt.reveal_round,
             confirmation_deadline_block=attempt.confirmation_deadline_block,
-            cr4_reveal_deadline_block=attempt.cr4_reveal_deadline_block,
         )
 
     def _on_metagraph_synced(self) -> None:

@@ -69,8 +69,10 @@ key-2041 images and chain parameters are not changed by this source update.
   `no_validator_permit`) instead of recording a failed submission.
 - The pre-submission recheck re-resolves the snapshot's owner against the exact
   metagraph, chain identity, and constraints the vector was prepared from; a
-  failure aborts before sending, counts as one failed attempt, and retries at
-  the next epoch, not in a hot loop.
+  failure aborts before sending, counts as one failed attempt, is recorded in
+  the weight-emission history as a never-sent `failed` batch (so it survives a
+  restart in `failed_weight_submissions_total`), and retries at the next epoch,
+  not in a hot loop.
 - Mode is a pure function of current scores and network, with no latch or
   retained history decision. Scores are rebuilt from durable EMAs at startup,
   after every metagraph resync, and at the start of every weight attempt, so a

@@ -577,6 +577,40 @@ def test_owner_vote_obeys_permit_strict_rate_limit_and_rejects_constraint_change
     assert chain.submissions == [OWNER_VOTE_176]
 
 
+def test_refused_recheck_is_durable_across_a_restart(
+    storage: Storage, mock_validator_config: bt.Config
+) -> None:
+    chain = ReplayChain(storage)
+    validator = replay_validator(storage, mock_validator_config, chain)
+    advance_past_startup_fence(validator, chain)
+    chain.minimum = 2
+
+    validator.set_weights()
+
+    assert chain.submissions == []
+    assert validator._emission_reason == "owner_vote_vector_invalid"
+    restarted = Storage.from_url(str(storage._engine.url))
+    try:
+        [batch] = restarted.weight_emission_history(RISK_SCHEMA_ID)
+        assert (batch["status"], batch["confirmation_state"]) == ("failed", "failed")
+        assert batch["confirmation_deadline_block"] is None
+        # The refused vector is recorded as prepared, and none of it was sent.
+        assert max(row["weight_u16"] for row in batch["rows"]) == 65535
+        assert not any(row["emitted"] for row in batch["rows"])
+        health = restarted.weight_emission_confirmation_health(
+            schema_id=RISK_SCHEMA_ID, current_block=chain.block
+        )
+        assert health.failed_submissions_total == 1
+        assert health.open_submissions == 0
+        # The refusal holds no confirmation slot: the next attempt sends.
+        chain.minimum = 1
+        rerun = replay_validator(restarted, mock_validator_config, chain)
+        rerun.set_weights()
+        assert chain.submissions == [OWNER_VOTE_176]
+    finally:
+        restarted.close()
+
+
 def test_prepared_before_send_restart_waits_for_expiry_then_recovers(
     storage: Storage, mock_validator_config: bt.Config
 ) -> None:

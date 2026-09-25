@@ -209,7 +209,9 @@ failure, `owner_vote_vector_invalid` (chain `min_allowed_weights` or
 `max_weight_limit` is not `1`) or `owner_snapshot_inconsistent` (the owner UID
 moved), aborts before sending, counts as one failed `set_weights` attempt so
 health degrades through the failure counter, sets `emission_blocked_reason`,
-and is retried at the next epoch, not in a hot loop. The plain all-zero case on
+and is retried at the next epoch, not in a hot loop. The refused vector is
+recorded in the weight-emission history as a `failed` batch that was never
+sent, so it survives a restart and counts in `failed_weight_submissions_total`. The plain all-zero case on
 mock/local chains reports `abstain` / `no_positive_scores`. Abstention leaves
 previously submitted on-chain weights untouched.
 

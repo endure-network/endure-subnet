@@ -200,7 +200,9 @@ from; it does not re-read the on-chain owner. A recheck failure
 `max_weight_limit` not `1`, or `owner_snapshot_inconsistent` if the owner UID
 moved) aborts before sending, counts as one failed `set_weights` attempt so
 health degrades through the failure counter, sets `emission_blocked_reason`,
-and retries at the next epoch rather than in a hot loop. Abstention does not
+and retries at the next epoch rather than in a hot loop. The refused vector is
+recorded in the weight-emission history as a `failed` batch that was never
+sent, so it survives a restart and counts in `failed_weight_submissions_total`. Abstention does not
 clear previously submitted on-chain weights.
 
 Mode has no latch: scores are rebuilt from durable EMAs at startup, after every
