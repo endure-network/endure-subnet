@@ -2,11 +2,38 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from endure.protocol.version_contract import CURRENT_VERSION_KEY
 from scripts.quality_gates import checks
 from scripts.quality_gates.checks import (
     compute_protocol_digest,
     find_protocol_version_failures,
 )
+
+# Runtime modules the mining guide sends miners to for scoring semantics.
+_MINING_GUIDE_SCORING_MODULES = (
+    "endure/scoring/risk/orchestrator.py",
+    "endure/scoring/assessment_orchestrator.py",
+    "endure/scoring/eligibility.py",
+    "endure/scoring/weight_processing.py",
+    "endure/publication/risk_tier.py",
+    "endure/protocol/version_contract.py",
+)
+
+
+def test_public_protocol_key_mentions_match_contract() -> None:
+    for path in (
+        Path("README.md"),
+        Path("docs/running_on_testnet.md"),
+        Path("docs/running_on_mainnet.md"),
+    ):
+        assert f"`{CURRENT_VERSION_KEY}`" in path.read_text(encoding="utf-8"), path
+
+
+def test_mining_guide_points_to_runtime_scoring_modules() -> None:
+    mining = Path("docs/mining.md").read_text(encoding="utf-8")
+    for module in _MINING_GUIDE_SCORING_MODULES:
+        assert Path(module).is_file(), module
+        assert f"(../{module})" in mining, module
 
 
 def test_protocol_version_fails_when_digest_drifts(tmp_path: Path) -> None:

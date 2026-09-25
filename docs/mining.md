@@ -141,8 +141,9 @@ validator remain authoritative.
 
 The schema defines the outputs, horizons, units, validation, and all numerical
 scoring definitions: [subnet_alpha_risk.py](../endure/assessment/schemas/subnet_alpha_risk.py).
-Validators resolve the observable coordinates and aggregate assessment scoring
-in [assessment_orchestrator.py](../endure/scoring/assessment_orchestrator.py).
+Validators resolve the observable coordinates in
+[orchestrator.py](../endure/scoring/risk/orchestrator.py) and aggregate assessment
+scoring in [assessment_orchestrator.py](../endure/scoring/assessment_orchestrator.py).
 Risk tiers are derived in [risk_tier.py](../endure/publication/risk_tier.py),
 and compatibility is enforced by [version_contract.py](../endure/protocol/version_contract.py).
 
@@ -152,11 +153,13 @@ Bittensor emission. Alpha Risk is absence-aware: any hotkey with active EMA
 state that misses a resolved coordinate receives a zero observation, which
 decays that coordinate's EMA. A never-active expected miner has no EMA state
 to decay. The scoring-set and zero-fill rules are defined by
+[eligibility.py](../endure/scoring/eligibility.py),
 [assessment_orchestrator.py](../endure/scoring/assessment_orchestrator.py) and
 [the scoring fairness deltas](specs/2026-07-20-scoring-fairness-deltas.md#1--absence-aware-scoring).
 The shared scoring policy is defined by
 [policy.py](../endure/scoring/policy.py) and the EMA/normalization helpers by
-[weights.py](../endure/scoring/weights.py). Code, not this guide, remains
+[weights.py](../endure/scoring/weights.py), and the chain weight vector by
+[weight_processing.py](../endure/scoring/weight_processing.py). Code, not this guide, remains
 canonical.
 
 In plain terms, earned miner weights reward scored prediction accuracy; the
