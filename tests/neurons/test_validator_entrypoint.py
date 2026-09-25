@@ -765,6 +765,40 @@ def test_main_exits_nonzero_and_cleans_up_on_watchdog_failure() -> None:
     forced_exit.assert_called_once()
 
 
+def test_watchdog_forced_exit_uses_this_neurons_teardown_grace() -> None:
+    from endure.base.shutdown import schedule_forced_exit_after_grace
+    from neurons.validator import main
+
+    validator = MagicMock()
+    validator.chain_rpc_restart_required.return_value = False
+    context = MagicMock()
+    context.chain_rpc_restart_required.return_value = False
+    context.watchdog_exit_reason.return_value = "validator loop thread exited"
+    context.__enter__.return_value = validator
+    timers: list[threading.Timer] = []
+
+    def arm(*args: float) -> threading.Timer:
+        timer = schedule_forced_exit_after_grace(*args)
+        timer.cancel()
+        timers.append(timer)
+        return timer
+
+    with (
+        patch(
+            "neurons.validator.install_shutdown_handlers",
+            return_value=threading.Event(),
+        ),
+        patch("neurons.validator.Validator", return_value=context),
+        patch("neurons.validator._WATCHDOG_TEARDOWN_GRACE_SECONDS", 5),
+        patch("neurons.validator._schedule_forced_exit_after_grace", arm),
+        pytest.raises(SystemExit),
+    ):
+        main()
+
+    # The patched per-neuron grace bounds the teardown, not the shared default.
+    assert [timer.interval for timer in timers] == [5]
+
+
 def test_main_hard_exits_when_rpc_abandonment_capacity_is_reached() -> None:
     from neurons.validator import main
 

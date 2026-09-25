@@ -116,6 +116,39 @@ def test_main_arms_forced_exit_when_miner_loop_thread_dies() -> None:
     forced_exit.assert_called_once()
 
 
+def test_watchdog_forced_exit_uses_this_neurons_teardown_grace() -> None:
+    from endure.base.shutdown import schedule_forced_exit_after_grace
+    from neurons.miner import main
+
+    miner = MagicMock()
+    miner.chain_rpc_restart_required.return_value = False
+    miner.thread = None
+    context = MagicMock()
+    context.__enter__.return_value = miner
+    timers: list[threading.Timer] = []
+
+    def arm(*args: float) -> threading.Timer:
+        timer = schedule_forced_exit_after_grace(*args)
+        timer.cancel()
+        timers.append(timer)
+        return timer
+
+    with (
+        patch(
+            "neurons.miner.install_shutdown_handlers",
+            return_value=threading.Event(),
+        ),
+        patch("neurons.miner.Miner", return_value=context),
+        patch("neurons.miner._WATCHDOG_TEARDOWN_GRACE_SECONDS", 5),
+        patch("neurons.miner._schedule_forced_exit_after_grace", arm),
+        pytest.raises(SystemExit),
+    ):
+        main()
+
+    # The patched per-neuron grace bounds the teardown, not the shared default.
+    assert [timer.interval for timer in timers] == [5]
+
+
 def test_forced_exit_after_grace_arms_a_daemon_timer() -> None:
     import os
 

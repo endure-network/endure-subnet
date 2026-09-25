@@ -188,7 +188,7 @@ class NeuronLifecycle[N: ChainRpcRestartLatch]:
 
     name: str
     terminate: ProcessTerminator
-    schedule_forced_exit: Callable[[], object]
+    schedule_forced_exit: Callable[[float], object]
     startup_grace_seconds: float
     teardown_grace_seconds: float
 
@@ -232,7 +232,7 @@ class NeuronLifecycle[N: ChainRpcRestartLatch]:
                 # the normal exit the latch exists to prevent.
                 self.force_restart_if_rpc_abandoned(neuron)
                 bt.logging.error(f"{self.name} watchdog exiting: {reason}")
-                self.schedule_forced_exit()
+                self.schedule_forced_exit(self.teardown_grace_seconds)
                 raise SystemExit(1)
             bt.logging.info(f"{self.name.capitalize()} running... {time.time()}")
             stop.wait(_WATCHDOG_POLL_SECONDS)
