@@ -63,6 +63,8 @@ class FakeSubnetFetcher:
     calls: list[tuple[int, int | None]] = field(default_factory=list)
     current_calls: int = 0
     genesis: str | None = MAINNET_GENESIS_HASH
+    genesis_answers: list[str | None] = field(default_factory=list)
+    genesis_calls: int = 0
     timestamp_calls: list[int] = field(default_factory=list)
 
     def subnet(self, *, netuid: int, block: int | None = None) -> FakeDynamicInfo:
@@ -84,6 +86,9 @@ class FakeSubnetFetcher:
         return self.current
 
     def genesis_hash(self) -> str | None:
+        self.genesis_calls += 1
+        if self.genesis_answers:
+            return self.genesis_answers.pop(0)
         return self.genesis
 
     def finalized_block(self) -> int:
@@ -235,7 +240,9 @@ def _archive_probe_fetcher() -> FakeSubnetFetcher:
     )
 
 
-def _archive_probe_provider(fetcher: FakeSubnetFetcher) -> LiveAlphaPriceProvider:
+def _archive_probe_provider(
+    fetcher: FakeSubnetFetcher, *, max_attempts: int = 1
+) -> LiveAlphaPriceProvider:
     # Backoff sleeps advance a virtual clock, so deadline-bounded probe retries
     # finish instantly instead of spinning for the real 120-second budget.
     clock = [0.0]
@@ -247,7 +254,7 @@ def _archive_probe_provider(fetcher: FakeSubnetFetcher) -> LiveAlphaPriceProvide
         config=LiveAlphaPriceProviderConfig(
             endpoint="wss://archive.example/private-key?token=secret",
             request_pause_seconds=Decimal("1"),
-            max_attempts=1,
+            max_attempts=max_attempts,
         ),
         fetcher=fetcher,
         sleep=sleep,
@@ -267,16 +274,45 @@ def test_archive_readiness_uses_deep_history_and_timestamp_lookback() -> None:
     assert fetcher.current_calls == 0
 
 
-@pytest.mark.parametrize("genesis", ["0xwrong-chain", None])
+@pytest.mark.parametrize(
+    "genesis", [MAINNET_GENESIS_HASH.upper(), MAINNET_GENESIS_HASH[2:]]
+)
+def test_archive_readiness_compares_normalized_genesis(genesis: str) -> None:
+    # Given: a node rendering the mainnet genesis in uppercase or without 0x.
+    fetcher = _archive_probe_fetcher()
+    fetcher.genesis = genesis
+
+    # When / Then: the archive is still recognized as mainnet.
+    _archive_probe_provider(fetcher).validate_archive(netuid=30)
+    assert fetcher.calls == [(30, 70)]
+
+
+def test_archive_readiness_retries_a_missing_genesis() -> None:
+    # Given: a node that answers no genesis once, then the mainnet genesis.
+    fetcher = _archive_probe_fetcher()
+    fetcher.genesis_answers = [None]
+
+    # When / Then: the empty answer is retried instead of refusing mainnet.
+    _archive_probe_provider(fetcher, max_attempts=3).validate_archive(netuid=30)
+    assert fetcher.genesis_calls == 2
+    assert fetcher.calls == [(30, 70)]
+
+
+@pytest.mark.parametrize(
+    ("genesis", "genesis_calls"), [("0xwrong-chain", 1), (None, 3)]
+)
 def test_archive_readiness_rejects_wrong_or_missing_genesis(
-    genesis: str | None,
+    genesis: str | None, genesis_calls: int
 ) -> None:
+    # Given: a different chain (refused at once) or a node that never answers
+    # a genesis (refused once its retries are spent).
     fetcher = _archive_probe_fetcher()
     fetcher.genesis = genesis
 
     with pytest.raises(AlphaMarketDataUnavailable):
-        _archive_probe_provider(fetcher).validate_archive(netuid=30)
+        _archive_probe_provider(fetcher, max_attempts=3).validate_archive(netuid=30)
 
+    assert fetcher.genesis_calls == genesis_calls
     assert fetcher.calls == []
     assert fetcher.timestamp_calls == []
 

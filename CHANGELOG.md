@@ -32,6 +32,8 @@ key-2041 images and chain parameters are not changed by this source update.
 - Read the startup chain genesis with a lightweight client, retrying an HTTP
   429, DNS failure or booting node with capped backoff for up to 30 seconds;
   each attempt is time-bounded, so a hung connect cannot stall startup.
+- Compare the archive probe's genesis as normalized hex, and retry an empty
+  genesis answer instead of refusing the archive as not mainnet.
 - Digest-cover storage selection, the score-to-chain composition (abstain on no
   positive score, chain limits, u16 encoding), miner axon admission (registered
   hotkey and stake floor), two-resync deregistration confirmation, emission

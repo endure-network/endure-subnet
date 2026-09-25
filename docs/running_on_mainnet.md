@@ -84,10 +84,12 @@ them at the next protocol key change. Their values never apply:
 | `--neuron.moving_average_alpha` | Scores come from durable EMAs. |
 
 Before transport startup, a read-only market-data preflight verifies Finney's
-genesis identity, deep finalized timestamp history used by boundary search, and
-positive Alpha/TAO reserves for subnet 30 at least 30 days before the finalized
-head. A reachable non-archive endpoint is insufficient. Transient transport
-failures, including an HTTP 429 cooldown during a coordinated restart, are
+genesis identity (compared as normalized hex; an empty genesis answer is
+retried like other missing data), deep finalized timestamp history used by
+boundary search, and positive Alpha/TAO reserves for subnet 30 at least 30
+days before the finalized head. A reachable non-archive endpoint is
+insufficient. Transient transport failures, including an HTTP 429 cooldown
+during a coordinated restart, are
 retried until the probe's 120-second deadline; missing historical data,
 including a pruned node's `UnknownBlock: State already discarded` error, fails
 promptly. The SQLite database URL/path and the mainnet hotkey file are checked

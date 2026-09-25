@@ -29,7 +29,10 @@ from async_substrate_interface.errors import (
 from async_substrate_interface.sync_substrate import SubstrateInterface
 
 from endure.live.sleeping import sleep_decimal
-from endure.protocol.consensus_policy import MAINNET_GENESIS_HASH
+from endure.protocol.consensus_policy import (
+    MAINNET_GENESIS_HASH,
+    normalize_genesis_hash,
+)
 from endure.protocol.risk_miner import LatestPoolObservation
 from endure.scoring.assessment_orchestrator import ResolutionDeadlineExceeded
 from endure.scoring.market_data import (
@@ -519,7 +522,14 @@ class LiveAlphaPriceProvider:
     def _validate_archive(self, *, netuid: int) -> None:
         if netuid <= 0:
             raise AlphaMarketDataUnavailable("archive probe requires an Alpha subnet")
-        if self._with_retry(self._fetcher.genesis_hash) != MAINNET_GENESIS_HASH:
+        # A node that answers no genesis yet is retried like any missing
+        # read; only a genesis that differs after normalization is refused.
+        genesis = self._with_retry(
+            lambda: require_archive_value(
+                self._fetcher.genesis_hash(), "returned no genesis hash"
+            )
+        )
+        if normalize_genesis_hash(genesis) != MAINNET_GENESIS_HASH:
             raise AlphaMarketDataUnavailable("archive is not Bittensor mainnet")
         finalized = self._with_retry(self._fetcher.finalized_block)
         if finalized <= 0:
