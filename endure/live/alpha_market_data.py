@@ -818,9 +818,11 @@ def read_chain_genesis(  # noqa: PLR0913 — keyword-only test-injection seams
     """Read-only startup chain identity; ``None`` once the deadline is spent.
 
     A 429, a DNS blip or a node still booting is retried with capped
-    exponential backoff. Every attempt uses a fresh client that is always
-    closed, and runs on a daemon thread so a connect or RPC that never
-    returns cannot hold startup past the deadline or keep the process alive.
+    exponential backoff. Every attempt uses a fresh client, closed once it is
+    built; a client whose constructor fails after connecting is released with
+    its attempt, and its finalizer closes the socket. Each attempt runs on a
+    daemon thread so a connect or RPC that never returns cannot hold startup
+    past the deadline or keep the process alive.
     """
     label = safe_endpoint_label(endpoint)
     deadline = now_fn() + deadline_seconds
@@ -834,6 +836,8 @@ def read_chain_genesis(  # noqa: PLR0913 — keyword-only test-injection seams
             genesis = _bounded_genesis_attempt(
                 partial(client_factory, endpoint, timeout), timeout_seconds=timeout
             )
+        except GenesisAttemptFailed as failed:
+            reason = str(failed)
         except Exception as error:  # noqa: BLE001 — any failure is retried
             reason = f"{type(error).__name__}: {safe_error(error)}"
         else:
@@ -855,11 +859,15 @@ def read_chain_genesis(  # noqa: PLR0913 — keyword-only test-injection seams
     return None
 
 
+class GenesisAttemptFailed(Exception):
+    """One genesis read attempt failed; carries only a redacted description."""
+
+
 def _bounded_genesis_attempt(
     make_client: Callable[[], GenesisClient], *, timeout_seconds: float
 ) -> str | None:
     outcome: list[str | None] = []
-    failure: list[Exception] = []
+    failure: list[str] = []
     finished = Event()
 
     def attempt() -> None:
@@ -868,10 +876,16 @@ def _bounded_genesis_attempt(
             try:
                 outcome.append(client.get_block_hash(0))
             finally:
-                # An abandoned attempt still closes its client once unblocked.
+                # A built client is closed here, even by an abandoned attempt
+                # once it unblocks.
                 _close_archive_clients(client)
         except Exception as error:  # noqa: BLE001 — reported to the caller
-            failure.append(error)
+            # Keep only a description: the exception's traceback holds the
+            # frames of a client whose constructor failed after connecting.
+            # Holding it would leave that client (and its socket, closed by
+            # its finalizer) alive until cyclic GC instead of releasing it
+            # when this attempt ends.
+            failure.append(f"{type(error).__name__}: {safe_error(error)}")
         finally:
             finished.set()
 
@@ -881,7 +895,7 @@ def _bounded_genesis_attempt(
     if not finished.wait(timeout_seconds):
         raise TimeoutError("chain genesis read timed out")
     if failure:
-        raise failure[0]
+        raise GenesisAttemptFailed(failure[0])
     return outcome[0]
 
 

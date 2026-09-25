@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import gc
 import threading
 import time
+import weakref
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -1884,3 +1886,35 @@ def test_chain_genesis_read_does_not_hang_past_its_deadline() -> None:
         thread.join(timeout=2.0)
     assert clients
     assert all(client.closed for client in clients)
+
+
+def test_a_half_built_genesis_client_is_finalized_when_its_attempt_fails() -> None:
+    """A client whose constructor fails after connecting must not outlive the
+    attempt waiting for cyclic GC: its finalizer is what closes the socket."""
+    finalized = threading.Event()
+
+    class HalfBuiltClient:
+        def __init__(self, _endpoint: str, _timeout: float) -> None:
+            # The websocket handshake succeeded; the init RPC then times out.
+            weakref.finalize(self, finalized.set)
+            raise TimeoutError("runtime metadata read timed out")
+
+        def get_block_hash(self, block_id: int) -> str | None:
+            raise AssertionError(block_id)
+
+        def close(self) -> None:
+            raise AssertionError("never built")
+
+    gc.disable()
+    try:
+        genesis = read_chain_genesis(
+            "ws://node.invalid:9944",
+            deadline_seconds=1.0,
+            client_factory=HalfBuiltClient,
+            sleep=lambda _seconds: None,
+        )
+        assert genesis is None
+        # Reference counting alone must release it once the attempt ends.
+        assert finalized.wait(2), "the half-built client waits for cyclic GC"
+    finally:
+        gc.enable()

@@ -31,7 +31,10 @@ key-2041 images and chain parameters are not changed by this source update.
   and genesis is compared as normalized hex. Refuse mainnet time compression before the archive probe.
 - Read the startup chain genesis with a lightweight client, retrying an HTTP
   429, DNS failure or booting node with capped backoff for up to 30 seconds;
-  each attempt is time-bounded, so a hung connect cannot stall startup. 
+  each attempt is time-bounded, so a hung connect cannot stall startup. A
+  built client is closed after its attempt; a client whose constructor fails
+  after connecting is released when the attempt ends (no retained traceback),
+  so its finalizer closes the socket without waiting for cyclic GC.
 - Compare the archive probe's genesis as normalized hex, and retry an empty
   genesis answer instead of refusing the archive as not mainnet.
 - Digest-cover storage selection, the score-to-chain composition (abstain on no
