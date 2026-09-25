@@ -14,6 +14,7 @@ import copy
 import threading
 import time
 from collections.abc import Iterator
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -188,6 +189,14 @@ def _require_hotkey(config: bt.Config) -> None:
         raise RuntimeError("the configured validator hotkey has no address")
 
 
+@dataclass(frozen=True, slots=True)
+class _ConfirmationSummaryCache:
+    read_at: float
+    block: int | None
+    generation: int
+    summary: WeightEmissionConfirmationHealth
+
+
 class Validator(BaseValidatorNeuron):
     """Schema-routed validator round loop."""
 
@@ -329,21 +338,26 @@ class Validator(BaseValidatorNeuron):
         if storage is None:
             return None
         now = time.monotonic()
-        cached = getattr(self, "_confirmation_summary_cache", None)
+        cached: _ConfirmationSummaryCache | None = getattr(
+            self, "_confirmation_summary_cache", None
+        )
+        # A cached read is served only if no emission event has happened since
+        # it began: the generation it started under travels with it, so an
+        # invalidation is honoured however it interleaves with the store.
         if (
             cached is not None
-            and cached[1] == current_block
-            and 0 <= now - cached[0] < _CONFIRMATION_SUMMARY_TTL_SECONDS
+            and cached.generation == getattr(self, "_confirmation_generation", 0)
+            and cached.block == current_block
+            and 0 <= now - cached.read_at < _CONFIRMATION_SUMMARY_TTL_SECONDS
         ):
-            return cached[2]
+            return cached.summary
         generation = getattr(self, "_confirmation_generation", 0)
         summary = storage.weight_emission_confirmation_health(
             schema_id=self._schema_id, current_block=current_block
         )
-        # A read that straddled an emission event may predate it: serve it
-        # once, but cache only a read no event has invalidated.
-        if getattr(self, "_confirmation_generation", 0) == generation:
-            self._confirmation_summary_cache = (now, current_block, summary)
+        self._confirmation_summary_cache = _ConfirmationSummaryCache(
+            read_at=now, block=current_block, generation=generation, summary=summary
+        )
         return summary
 
     def _load_startup_fence(self) -> None:

@@ -635,3 +635,39 @@ def test_a_health_summary_read_racing_an_invalidation_is_not_cached(
     health = validator.runtime_health()  # same block, inside the TTL
     assert health["open_weight_submissions"] == 1
     assert health["emission_reason"] == "confirmation_pending"
+
+
+class _StoreHookValidator(Validator):
+    """Runs a hook immediately before the next confirmation-summary store."""
+
+    @property
+    def _confirmation_summary_cache(self) -> object:
+        return self.__dict__.get("_summary_cache_value")
+
+    @_confirmation_summary_cache.setter
+    def _confirmation_summary_cache(self, value: object) -> None:
+        hook = self.__dict__.pop("_before_summary_store", None)
+        if hook is not None and value is not None:
+            hook()
+        self.__dict__["_summary_cache_value"] = value
+
+
+def test_an_invalidation_just_before_the_summary_store_is_honoured(
+    validator: Validator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("neurons.validator.time.monotonic", lambda: 10000.0)
+    validator.__class__ = _StoreHookValidator
+    validator._mark_tick_progress()
+
+    def run_loop_event() -> None:
+        # Lands after any check of the read and before its result is stored.
+        _record_open_batch(validator._storage)
+        validator._note_confirmation_state(True)
+
+    validator.__dict__["_before_summary_store"] = run_loop_event
+    validator.runtime_health()
+    assert "_before_summary_store" not in validator.__dict__, "hook never ran"
+
+    health = validator.runtime_health()  # same block, inside the TTL
+    assert health["open_weight_submissions"] == 1
+    assert health["emission_reason"] == "confirmation_pending"

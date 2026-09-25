@@ -107,8 +107,10 @@ key-2041 images and chain parameters are not changed by this source update.
   starts; a `/health` read that finds no fence yet is never cached, so it
   cannot overwrite the fence the run loop just recorded and re-fence emission.
   A `/health` confirmation summary read that straddles an emission event is
-  served once but not cached, so `/health` never shows pre-event counters for
-  the rest of the 5 s window.
+  never served from the cache: each cached summary carries the event
+  generation it was read under and is served only while that generation is
+  current, so `/health` never shows pre-event counters for the rest of the
+  5 s window, however the event interleaves with the store.
 - `/live` is served on the API event loop instead of the 40-thread worker pool
   shared with `/health` and the public read endpoints. Before, 40 slow
   `/health` requests made `/live` time out, so a container healthcheck (5 s
