@@ -92,6 +92,14 @@ key-2041 images and chain parameters are not changed by this source update.
   `owner_vote_chain_mismatch`) keeps `/health` at 503 when a durable
   score-read failure interrupts it, instead of waiting out the 2-epoch
   transient clock.
+- No database read happens while the process-wide emission lock is held:
+  `/health` reads its confirmation summary (cached for 5 s) and the startup
+  fence before taking the lock, the startup fence is read once (it is immutable
+  once written), and open-confirmation state is tracked in memory at
+  prepare/submit/fail and re-read from the database at startup, before each
+  write and after every reconciliation. A run-loop pass now makes no database
+  query (before: 2), so a stalled `/health` read can no longer delay weight
+  setting.
 - The pre-submission recheck re-resolves the snapshot's owner against the exact
   metagraph, chain identity, and constraints the vector was prepared from; a
   failure aborts before sending, counts as one failed attempt, is recorded in

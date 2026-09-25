@@ -102,9 +102,11 @@ from endure.scoring.policy import DEFAULT_PAYOUT_HALF_LIFE_ROUNDS
 from endure.scoring.risk.orchestrator import RiskScoringOrchestrator
 from endure.storage.repository import (
     CR4_REVEAL_SCAN_BATCH_BLOCKS,
+    OPEN_WEIGHT_EMISSION_CONFIRMATION_STATES,
     Storage,
     WeightCommitEvidence,
     WeightEmissionChainSnapshot,
+    WeightEmissionConfirmationHealth,
     WeightEmissionRow,
     WeightRevealEvidence,
     ensure_sqlite_parent_dir,
@@ -134,6 +136,9 @@ _IMMEDIATE_EMISSION_BLOCKS: Final = frozenset(
     {"owner_hotkey_mismatch", "owner_unregistered", "owner_vote_chain_mismatch"}
 )
 _TRANSIENT_EMISSION_BLOCK_EPOCHS: Final = 2
+# /health reuses the durable confirmation summary this long, so public polling
+# cannot turn into one database query per request; emission events drop it.
+_CONFIRMATION_SUMMARY_TTL_SECONDS: Final = 5.0
 
 
 def _cr4_reveal_scan_batch_budget(epoch_length: int) -> int:
@@ -302,23 +307,86 @@ class Validator(BaseValidatorNeuron):
         failed open is swallowed there but must still surface as degraded).
 
         The API thread and the run loop both touch emission bookkeeping; one
-        lock gives every response a consistent emission snapshot.
+        lock gives every response a consistent emission snapshot. Durable
+        reads happen before the lock is taken, so a stalled database delays
+        only this response, never the run loop's emission checks.
         """
+        current_block = _cached_block_number(vars(self.metagraph).get("block"))
+        confirmation = self._confirmation_summary(current_block)
+        startup_fence = self._startup_fence()
         with self._emission_state():
-            return self._runtime_health_snapshot()
+            return self._runtime_health_snapshot(
+                confirmation, current_block, startup_fence
+            )
 
-    def _runtime_health_snapshot(self) -> RuntimeHealth:
-        gate = self.rpc_gate.snapshot()
+    def _confirmation_summary(
+        self, current_block: int | None
+    ) -> WeightEmissionConfirmationHealth | None:
+        """Durable confirmation counters, cached briefly to bound /health load."""
         storage = getattr(self, "_storage", None)
-        metagraph_block = vars(self.metagraph).get("block")
-        current_block = _cached_block_number(metagraph_block)
-        confirmation = (
+        if storage is None:
+            return None
+        now = time.monotonic()
+        cached = getattr(self, "_confirmation_summary_cache", None)
+        if (
+            cached is not None
+            and cached[1] == current_block
+            and 0 <= now - cached[0] < _CONFIRMATION_SUMMARY_TTL_SECONDS
+        ):
+            return cached[2]
+        summary = storage.weight_emission_confirmation_health(
+            schema_id=self._schema_id, current_block=current_block
+        )
+        self._confirmation_summary_cache = (now, current_block, summary)
+        return summary
+
+    def _startup_fence(self) -> int | None:
+        """The key's startup fence, read once: it is immutable once written.
+
+        Only this process writes it (in ``_weight_emission_ready``), which
+        updates the cached value, so one durable read at first use suffices.
+        """
+        if getattr(self, "_startup_fence_loaded", False):
+            return self._startup_fence_block
+        storage = getattr(self, "_storage", None)
+        fence = (
             None
             if storage is None
-            else storage.weight_emission_confirmation_health(
-                schema_id=self._schema_id, current_block=current_block
+            else storage.weight_emission_startup_fence(
+                schema_id=self._schema_id, protocol_version_key=CURRENT_VERSION_KEY
             )
         )
+        self._startup_fence_block: int | None = fence
+        self._startup_fence_loaded = storage is not None
+        return fence
+
+    def _open_confirmation(self) -> bool:
+        """In-memory single-flight state; the database is read at first use and
+        again at every reconciliation, and events update it in between."""
+        known: bool | None = getattr(self, "_open_confirmation_known", None)
+        if known is None:
+            known = self._reload_open_confirmation()
+        return known
+
+    def _reload_open_confirmation(self) -> bool:
+        storage = getattr(self, "_storage", None)
+        is_open = storage is not None and storage.has_open_weight_emission_confirmation(
+            schema_id=self._schema_id
+        )
+        self._note_confirmation_state(is_open)
+        return is_open
+
+    def _note_confirmation_state(self, is_open: bool) -> None:
+        self._open_confirmation_known = is_open
+        self._confirmation_summary_cache = None
+
+    def _runtime_health_snapshot(
+        self,
+        confirmation: WeightEmissionConfirmationHealth | None,
+        current_block: int | None,
+        startup_fence: int | None,
+    ) -> RuntimeHealth:
+        gate = self.rpc_gate.snapshot()
         latest_unconfirmed = (
             None
             if confirmation is None
@@ -357,6 +425,7 @@ class Validator(BaseValidatorNeuron):
             open_confirmation=(
                 confirmation is not None and confirmation.open_submissions > 0
             ),
+            startup_fence=startup_fence,
         )
         submission_overdue = (
             self._emission_deadline is not None
@@ -750,8 +819,13 @@ class Validator(BaseValidatorNeuron):
                 self._emission_head_block = block
 
     def _refresh_emission_health(
-        self, current_block: int | None, *, open_confirmation: bool
+        self,
+        current_block: int | None,
+        *,
+        open_confirmation: bool,
+        startup_fence: int | None,
     ) -> None:
+        """Update in-memory emission health; callers read durable state first."""
         with self._emission_state():
             # The cached metagraph block can trail the live head the plan's
             # chain due block came from by up to an epoch; judging a due
@@ -766,7 +840,9 @@ class Validator(BaseValidatorNeuron):
                 self._emission_expected_since = None
                 self._emission_deadline = None
             self._emission_next_eligible_block = None
-            reason = self._emission_wait_reason(mode, current_block, open_confirmation)
+            reason = self._emission_wait_reason(
+                mode, current_block, open_confirmation, startup_fence
+            )
             if reason is not None:
                 self._defer_emission(reason)
                 return
@@ -790,7 +866,11 @@ class Validator(BaseValidatorNeuron):
             self._set_emission_observation(mode, reason)
 
     def _emission_wait_reason(  # noqa: PLR0911 — explicit, ordered eligibility gates.
-        self, mode: str, block: int | None, open_confirmation: bool
+        self,
+        mode: str,
+        block: int | None,
+        open_confirmation: bool,
+        fence: int | None,
     ) -> str | None:
         if mode == "disabled":
             return "disabled"
@@ -800,15 +880,7 @@ class Validator(BaseValidatorNeuron):
             return "confirmation_pending"
         if block is None:
             return "chain_state_unavailable"
-        storage = getattr(self, "_storage", None)
         if str(self.config.runtime.mode) != "mock":
-            fence = (
-                storage.weight_emission_startup_fence(
-                    schema_id=self._schema_id, protocol_version_key=CURRENT_VERSION_KEY
-                )
-                if storage is not None
-                else None
-            )
             if fence is None or block <= fence:
                 self._emission_next_eligible_block = (
                     None if fence is None else fence + 1
@@ -852,15 +924,12 @@ class Validator(BaseValidatorNeuron):
         if due:
             # The base just paced this attempt on the live head (TTL-cached).
             self._note_head_block(self._safe_block())
-        storage = getattr(self, "_storage", None)
+        # Every loop pass runs this: it reads only in-memory state, so it makes
+        # no database query and never waits behind a /health response.
         self._refresh_emission_health(
             _cached_block_number(vars(self.metagraph).get("block")),
-            open_confirmation=(
-                storage is not None
-                and storage.has_open_weight_emission_confirmation(
-                    schema_id=self._schema_id
-                )
-            ),
+            open_confirmation=self._open_confirmation(),
+            startup_fence=self._startup_fence(),
         )
         return due
 
@@ -976,10 +1045,7 @@ class Validator(BaseValidatorNeuron):
         """Keep startup fencing and durable single-flight common to both modes."""
         if str(self.config.runtime.mode) != "mock":
             startup_fence = (
-                storage.weight_emission_startup_fence(
-                    schema_id=self._schema_id,
-                    protocol_version_key=CURRENT_VERSION_KEY,
-                )
+                self._startup_fence()
                 if storage is not None
                 else getattr(self, "_weight_emission_startup_fence_block", 0)
             )
@@ -1007,6 +1073,8 @@ class Validator(BaseValidatorNeuron):
                         protocol_version_key=CURRENT_VERSION_KEY,
                         fence_block=startup_fence,
                     )
+                    self._startup_fence_block = startup_fence
+                    self._startup_fence_loaded = True
                 self._defer_emission("startup_fence")
                 return False
             if startup_fence > 0:
@@ -1014,9 +1082,8 @@ class Validator(BaseValidatorNeuron):
                 if current_block is None or current_block <= startup_fence:
                     self._defer_emission("startup_fence")
                     return False
-        if storage is not None and storage.has_open_weight_emission_confirmation(
-            schema_id=self._schema_id
-        ):
+        # Single flight is decided on durable state right before a write.
+        if storage is not None and self._reload_open_confirmation():
             self._defer_emission("confirmation_pending")
             return False
         return True
@@ -1147,13 +1214,15 @@ class Validator(BaseValidatorNeuron):
         storage = getattr(self, "_storage", None)
         if storage is None:
             return None
-        return self._record_emission_batch(
+        batch_id = self._record_emission_batch(
             storage,
             attempt,
             status="error",
             confirmation_state="prepared",
             confirmation_deadline_block=attempt.confirmation_deadline_block,
         )
+        self._note_confirmation_state(True)
+        return batch_id
 
     def _record_refused_weight_attempt(self, attempt: WeightEmissionAttempt) -> None:
         """Leave a durable failed record of a vector the recheck refused to send.
@@ -1245,6 +1314,9 @@ class Validator(BaseValidatorNeuron):
                 confirmation_deadline_block=attempt.confirmation_deadline_block,
                 cr4_reveal_deadline_block=attempt.cr4_reveal_deadline_block,
             )
+            self._note_confirmation_state(
+                confirmation_state in OPEN_WEIGHT_EMISSION_CONFIRMATION_STATES
+            )
             return
         confirmation_state = attempt.confirmation_state
         if confirmation_state is None and attempt.status != "submitted":
@@ -1256,6 +1328,12 @@ class Validator(BaseValidatorNeuron):
             confirmation_state=confirmation_state,
             confirmation_deadline_block=attempt.confirmation_deadline_block,
         )
+        if confirmation_state is None:
+            self._reload_open_confirmation()
+        else:
+            self._note_confirmation_state(
+                confirmation_state in OPEN_WEIGHT_EMISSION_CONFIRMATION_STATES
+            )
 
     def _on_metagraph_synced(self) -> None:
         if getattr(self, "_durable_scores_loaded", False):
@@ -1264,7 +1342,13 @@ class Validator(BaseValidatorNeuron):
             # reads the zeroed vector as owner_vote and a miner that
             # re-registered at a new UID keeps its earned weight.
             self._refresh_scores_from_durable_state()
-        self._resolve_weight_confirmations()
+        try:
+            self._resolve_weight_confirmations()
+        finally:
+            # Reconciliation can confirm, expire or fail batches: the next
+            # check re-reads open confirmations from the database.
+            self._open_confirmation_known = None
+            self._confirmation_summary_cache = None
 
     def _resolve_weight_confirmations(self) -> None:
         """Resolve every restart-surviving submitted weight batch from chain state."""

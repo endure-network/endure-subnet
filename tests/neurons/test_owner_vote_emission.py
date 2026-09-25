@@ -44,6 +44,7 @@ from endure.scoring.risk.orchestrator import RiskScoringOrchestrator, risk_coord
 from endure.scoring.weights import ema_update
 from endure.storage.repository import Storage, WeightEmissionChainSnapshot
 from neurons.validator import Validator
+from tests.neurons.test_emission_health import _check_storage_calls
 
 NOW = "2026-09-24T20:00:00+00:00"
 TESTNET_GENESIS = "0xtestnet-genesis"
@@ -870,3 +871,23 @@ def test_scored_weight_never_follows_a_uid_reregistered_on_chain(
 
     assert chain.submissions == []
     assert validator._emission_reason == "chain_snapshot_inconsistent"
+
+
+def test_emission_cycle_never_touches_storage_under_the_emission_lock(
+    storage: Storage, mock_validator_config: bt.Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = _check_storage_calls(storage, monkeypatch)
+    chain = ReplayChain(storage)
+    record_resolved_scores(storage, chain)
+    validator = replay_validator(storage, mock_validator_config, chain)
+    advance_past_startup_fence(validator, chain)
+
+    validator.set_weights()  # prepare, submit
+    chain.confirm_and_pace()
+    validator.set_weights()  # the next attempt
+    chain.confirm_and_pace()
+
+    assert chain.submissions == [EARNED, EARNED]
+    assert {"record_weight_emission", "transition_weight_emission_attempt"} <= set(
+        calls
+    )

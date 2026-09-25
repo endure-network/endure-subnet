@@ -1,6 +1,7 @@
 """Consumer-facing emission expectedness without a first audit batch or health RPC."""
 
 import threading
+from collections.abc import Callable
 from decimal import Decimal
 from unittest.mock import MagicMock
 
@@ -452,3 +453,107 @@ def test_emission_transitions_log_only_after_releasing_the_health_lock(
     )
 
     assert lock_free_while_logging == [True]
+
+
+def _held_by_another_thread_or_caller() -> bool:
+    """True when some thread holds the emission lock (probed from outside)."""
+    acquired: list[bool] = []
+
+    def probe() -> None:
+        got = Validator._emission_state_lock.acquire(blocking=False)
+        if got:
+            Validator._emission_state_lock.release()
+        acquired.append(got)
+
+    worker = threading.Thread(target=probe)
+    worker.start()
+    worker.join()
+    return not acquired[0]
+
+
+def _check_storage_calls(
+    storage: Storage, monkeypatch: pytest.MonkeyPatch
+) -> list[str]:
+    """Fail any durable read or write made while a thread holds the lock."""
+    calls: list[str] = []
+
+    def checked(name: str, target: Callable[..., object]) -> Callable[..., object]:
+        def call(*args: object, **kwargs: object) -> object:
+            assert not _held_by_another_thread_or_caller(), (
+                f"storage.{name} called while the emission lock is held"
+            )
+            calls.append(name)
+            return target(*args, **kwargs)
+
+        return call
+
+    for name in dir(Storage):
+        target = getattr(storage, name)
+        if not name.startswith("_") and callable(target):
+            monkeypatch.setattr(storage, name, checked(name, target))
+    return calls
+
+
+def test_emission_checks_never_touch_storage_under_the_lock_or_every_pass(
+    validator: Validator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("neurons.validator.time.monotonic", lambda: 10000.0)
+    validator.config.runtime.mode = "live"
+    calls = _check_storage_calls(validator._storage, monkeypatch)
+    validator._storage.record_weight_emission_startup_fence(
+        schema_id=RISK_SCHEMA_ID,
+        protocol_version_key=CURRENT_VERSION_KEY,
+        fence_block=900,
+    )
+    validator._mark_tick_progress()
+
+    validator.should_set_weights()  # first pass loads fence and open state
+    validator.runtime_health()
+    assert calls, "the instrumented storage saw the first pass"
+    calls.clear()
+    for _ in range(5):
+        validator.should_set_weights()
+
+    # Steady-state loop passes answer from memory: no durable query at all.
+    assert calls == []
+    assert validator._emission_reason == "ready"
+
+
+def test_a_stalled_health_read_never_delays_the_run_loop_or_live(
+    validator: Validator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    validator._mark_tick_progress()
+    validator.should_set_weights()  # load in-memory emission state
+    stalled = threading.Event()
+    release = threading.Event()
+    summary = validator._storage.weight_emission_confirmation_health
+
+    def stall(*, schema_id: str, current_block: int | None) -> object:
+        stalled.set()
+        release.wait(30)
+        return summary(schema_id=schema_id, current_block=current_block)
+
+    monkeypatch.setattr(
+        validator._storage, "weight_emission_confirmation_health", stall
+    )
+    health_status: list[int] = []
+    poll = threading.Thread(
+        target=lambda: health_status.append(
+            _client(validator).get("/health").status_code
+        )
+    )
+    poll.start()
+    try:
+        assert stalled.wait(10), "the /health read never reached storage"
+        # The run loop's emission check must not queue behind the stalled read.
+        loop_done = threading.Event()
+        loop = threading.Thread(
+            target=lambda: (validator.should_set_weights(), loop_done.set())
+        )
+        loop.start()
+        assert loop_done.wait(5), "should_set_weights waited behind /health"
+        assert _client(validator).get("/live").status_code == 200
+    finally:
+        release.set()
+        poll.join(30)
+    assert health_status == [200]

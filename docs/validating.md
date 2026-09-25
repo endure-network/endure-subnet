@@ -132,7 +132,10 @@ describes current policy, not proof that its vector is finalized on-chain.
 Stable wait reasons distinguish `startup_fence`, `epoch_pacing`,
 `no_validator_permit`, `chain_rate_limit`, `score_state_unavailable`, and
 `confirmation_pending` from `rpc_deferred` or retained safety failures.
-Mode/reason transitions also log.
+Mode/reason transitions also log. `/health` reuses its durable confirmation
+counters for up to 5 seconds, and no database read happens while emission state
+is locked, so a slow database delays only `/health` responses, never the run
+loop's weight setting or `/live`.
 Health reads cached chain state and local SQLite; it makes no chain RPC calls.
 
 The scheduler tracks expected submission progress without requiring `/health`
