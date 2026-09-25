@@ -267,8 +267,8 @@
     }
   ],
   "current_lease": {
-    "authority_sha256": "18da71c341e745b09de3c6533353a90e3c517b51c081ce1f8fb4c3e04e9d5058",
-    "digest": "bb1ebeb3fd82cd1084a2505e5b59ff8efc80e4d8402a6be68c8b7a5cd78be24f",
+    "authority_sha256": "bf6e2d6b4c21e0b2568db7253ebcfd43c5a8422f2f8dbcf6dfebf4294c4b6714",
+    "digest": "224eebd7dfcaa588c0a6aa94116d95a7851e44cb7c3a2e3260046de354f2b4a2",
     "holder": "fix/sn30-consensus-config-divergence",
     "key": 2042
   },
