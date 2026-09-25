@@ -69,9 +69,10 @@ enable it automatically.
 
 ### Ignored options
 
-These options no longer have any effect on any network. Key 2042 still accepts
-them so existing start scripts keep working, logs a `WARNING` for each one
-supplied, and deletes them at the next protocol key change:
+These options no longer have any effect on any network. Key 2042 registers them
+so that each one supplied logs a `WARNING` instead of being silently dropped
+(without `--strict`, `bt.Config` ignores unregistered options), and deletes
+them at the next protocol key change. Their values never apply:
 
 | Option | Why it does nothing |
 | --- | --- |

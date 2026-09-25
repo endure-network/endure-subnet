@@ -44,8 +44,11 @@ key-2041 images and chain parameters are not changed by this source update.
   scheduler `resolution_due()` methods are deleted), `--neuron.dont_save_events`
   and `--neuron.events_retention_size` (the events logger nothing wrote to is
   deleted, so no empty `events.log` is created), and the already-removed
-  `--neuron.moving_average_alpha`, which argparse no longer refuses. They are
-  deleted at the next protocol key change.
+  `--neuron.moving_average_alpha`. Without `--strict`, `bt.Config` silently
+  drops an unregistered option, so a leftover `--neuron.moving_average_alpha`
+  was never refused, only ignored without a trace; it now logs a warning. None
+  of these values applies on any network. They are deleted at the next
+  protocol key change.
 - Add a standing owner-vote fallback for served Alpha Risk on mainnet SN30 and
   Bittensor testnet: whenever the score vector has no positive entry (cold
   start, or after every scored miner is archived), submit the whole vote to the

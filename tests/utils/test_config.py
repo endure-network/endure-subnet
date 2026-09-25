@@ -112,11 +112,13 @@ class TestAddArgs:
             (add_validator_args, ["--neuron.vpermit_tao_limit", "4096"]),
         ),
     )
-    def test_removed_cli_options_are_rejected(
+    def test_removed_cli_options_are_not_registered(
         self,
         add_options: Callable[[object, argparse.ArgumentParser], None],
         removed_argv: list[str],
     ) -> None:
+        # Plain argparse proves the option is unregistered. A neuron's
+        # bt.Config drops unregistered options silently unless --strict.
         parser = argparse.ArgumentParser()
         add_options(_FakeCls, parser)
 
@@ -562,7 +564,7 @@ class TestCheckConfig:
         bt.logging.add_args(parser)
         add_args(_FakeCls, parser)
         add_validator_args(_FakeCls, parser)
-        # Values the removed options once refused (a negative delay) parse too.
+        # A negative delay, once refused by the option's type check, parses too.
         cfg = bt.Config(
             parser,
             args=[
