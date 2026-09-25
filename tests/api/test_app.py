@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
@@ -1038,3 +1039,46 @@ def test_risk_leaderboard_filters_active_memory_but_raw_scores_preserve_it(
         )
     assert len(client.get("/miners/mixed/scores").json()["emas"]) == 2
     assert client.get("/miners/retired/scores").status_code == 200
+
+
+def test_live_answers_while_every_worker_thread_is_blocked_in_health(
+    storage: Storage,
+) -> None:
+    # Starlette runs sync handlers on anyio's 40-token thread limiter; fill it.
+    saturating = 40
+    entered = threading.Semaphore(0)
+    release = threading.Event()
+
+    def blocking_health() -> RuntimeHealth:
+        entered.release()
+        release.wait(30)
+        return _runtime()
+
+    app = build_app(
+        storage=storage,
+        schema_id=RISK_SCHEMA_ID,
+        publisher="risk",
+        runtime_health=blocking_health,
+    )
+    with TestClient(app) as client:
+        polls = [
+            threading.Thread(target=client.get, args=("/health",))
+            for _ in range(saturating)
+        ]
+        for poll in polls:
+            poll.start()
+        try:
+            for _ in range(saturating):
+                assert entered.acquire(timeout=10), "a /health request never started"
+            live: list[int] = []
+            probe = threading.Thread(
+                target=lambda: live.append(client.get("/live").status_code),
+                daemon=True,
+            )
+            probe.start()
+            probe.join(5)
+            assert live == [200], "/live queued behind blocked /health requests"
+        finally:
+            release.set()
+            for poll in polls:
+                poll.join(30)

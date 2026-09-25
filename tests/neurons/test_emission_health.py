@@ -523,7 +523,7 @@ def test_emission_checks_never_touch_storage_under_the_lock_or_every_pass(
     assert validator._emission_reason == "ready"
 
 
-def test_a_stalled_health_read_never_delays_the_run_loop_or_live(
+def test_a_stalled_health_read_never_delays_the_run_loop(
     validator: Validator, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     validator._mark_tick_progress()
@@ -556,7 +556,6 @@ def test_a_stalled_health_read_never_delays_the_run_loop_or_live(
         )
         loop.start()
         assert loop_done.wait(5), "should_set_weights waited behind /health"
-        assert _client(validator).get("/live").status_code == 200
     finally:
         release.set()
         poll.join(30)

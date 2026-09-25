@@ -135,7 +135,9 @@ Stable wait reasons distinguish `startup_fence`, `epoch_pacing`,
 Mode/reason transitions also log. `/health` reuses its durable confirmation
 counters for up to 5 seconds, and no database read happens while emission state
 is locked, so a slow database delays only `/health` responses, never the run
-loop's weight setting or `/live`.
+loop's weight setting. `/live` runs on the API's event loop rather than the
+40-thread worker pool that `/health` and the public read endpoints share, so it
+still answers when every worker is blocked in a slow `/health`.
 Health reads cached chain state and local SQLite; it makes no chain RPC calls.
 
 The scheduler tracks expected submission progress without requiring `/health`

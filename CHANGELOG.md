@@ -31,7 +31,7 @@ key-2041 images and chain parameters are not changed by this source update.
   and genesis is compared as normalized hex. Refuse mainnet time compression before the archive probe.
 - Read the startup chain genesis with a lightweight client, retrying an HTTP
   429, DNS failure or booting node with capped backoff for up to 30 seconds;
-  each attempt is time-bounded, so a hung connect cannot stall startup.
+  each attempt is time-bounded, so a hung connect cannot stall startup. 
 - Compare the archive probe's genesis as normalized hex, and retry an empty
   genesis answer instead of refusing the archive as not mainnet.
 - Digest-cover storage selection, the score-to-chain composition (abstain on no
@@ -106,6 +106,10 @@ key-2041 images and chain parameters are not changed by this source update.
   A `/health` confirmation summary read that straddles an emission event is
   served once but not cached, so `/health` never shows pre-event counters for
   the rest of the 5 s window.
+- `/live` is served on the API event loop instead of the 40-thread worker pool
+  shared with `/health` and the public read endpoints. Before, 40 slow
+  `/health` requests made `/live` time out, so a container healthcheck (5 s
+  timeout) could restart a validator whose only fault was a slow database.
 - The pre-submission recheck re-resolves the snapshot's owner against the exact
   metagraph, chain identity, and constraints the vector was prepared from; a
   failure aborts before sending, counts as one failed attempt, is recorded in

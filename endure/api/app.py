@@ -342,7 +342,11 @@ def _register_core_routes(  # noqa: PLR0913 — explicit read API dependencies
     active_coordinates: frozenset[AssessmentCoordinate] | None,
 ) -> None:
     @app.get("/live")
-    def live() -> dict[str, str]:
+    async def live() -> dict[str, str]:
+        # Runs on the event loop, not the 40-token worker pool shared with
+        # /health and the public read endpoints: blocked /health requests
+        # can never starve the container healthcheck. Keep it trivial: no
+        # database, no lock, no await on anything that can block.
         return {"status": "live"}
 
     @app.get("/health")
