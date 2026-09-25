@@ -171,8 +171,9 @@ first-parent staging lineage in commit
 The published `v0.1.0` images retain that assignment.
 
 Key `2042` is leased to the SN30 correctness and owner-vote fallback cutover.
-It pins mainnet admission to zero additional miner stake, commit/reveal caps of
-10, and a 100-block metagraph/weight-attempt epoch. Admission and snapshot closure
+It pins admission on served testnet and mainnet to zero additional miner stake,
+commit/reveal caps of 10, and a 100-block metagraph/weight-attempt epoch; other
+operator values are ignored with a startup warning. Admission and snapshot closure
 serialize in SQLite, empty frozen snapshots never backfill during reads, and
 commit retries validate the key and window. Storage admission/selection, miner
 axon admission (registered hotkey and stake floor, in

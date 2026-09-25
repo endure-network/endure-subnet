@@ -2,11 +2,12 @@
 and owner-vote identity.
 
 These values are protocol-digest inputs, not deployment tuning controls.
-Local and testnet runtimes may override the admission settings for
-development; mainnet validators must reject conflicting configuration before
-opening transport.
+Served Alpha Risk on mainnet and testnet always runs the protocol values and
+ignores operator overrides; mock and local chains keep them configurable for
+development.
 """
 
+from dataclasses import dataclass
 from decimal import Decimal
 from typing import Final, Literal
 from urllib.parse import urlparse
@@ -36,30 +37,64 @@ SN30_NETUID: Final = 30
 SN30_OWNER_HOTKEY: Final = "5HW12NvEZoGz8ZzcWMh4xyDUy6H1Af85m5LB8V1L11erK1S1"
 
 
-def require_canonical_mainnet_policy(  # noqa: PLR0913 — every pinned setting
-    *,
-    min_miner_stake: Decimal,
-    max_commits_per_round: int,
-    max_reveals_per_round: int,
-    epoch_length: int,
-    axon_off: bool,
-    disable_set_weights: bool,
-) -> None:
-    """Reject effective overrides instead of silently changing admission.
+@dataclass(frozen=True, slots=True)
+class PinnedConsensusSettings:
+    """The consensus settings an operator could once tune per process."""
 
-    An emitting mainnet validator must serve its axon: without it, it scores
-    every miner absent while still setting weights.
+    min_miner_stake: Decimal
+    max_commits_per_round: int
+    max_reveals_per_round: int
+    epoch_length: int
+
+
+PROTOCOL_CONSENSUS_SETTINGS: Final = PinnedConsensusSettings(
+    min_miner_stake=MIN_MINER_STAKE,
+    max_commits_per_round=MAX_COMMITS_PER_ROUND,
+    max_reveals_per_round=MAX_REVEALS_PER_ROUND,
+    epoch_length=EPOCH_LENGTH_BLOCKS,
+)
+
+
+@dataclass(frozen=True, slots=True)
+class IgnoredConsensusSetting:
+    option: str
+    given: Decimal | int
+    protocol: Decimal | int
+
+
+def ignored_consensus_settings(
+    given: PinnedConsensusSettings,
+) -> tuple[IgnoredConsensusSetting, ...]:
+    """Every operator value that differs from the protocol value it yields to."""
+    protocol = PROTOCOL_CONSENSUS_SETTINGS
+    return tuple(
+        IgnoredConsensusSetting(option=option, given=actual, protocol=canonical)
+        for option, actual, canonical in (
+            ("endure.min_miner_stake", given.min_miner_stake, protocol.min_miner_stake),
+            (
+                "endure.max_commits_per_round",
+                given.max_commits_per_round,
+                protocol.max_commits_per_round,
+            ),
+            (
+                "endure.max_reveals_per_round",
+                given.max_reveals_per_round,
+                protocol.max_reveals_per_round,
+            ),
+            ("neuron.epoch_length", given.epoch_length, protocol.epoch_length),
+        )
+        if actual != canonical
+    )
+
+
+def require_emitting_validator_serves_axon(
+    *, axon_off: bool, disable_set_weights: bool
+) -> None:
+    """An emitting mainnet validator must serve its axon.
+
+    Without it, it scores every miner absent while still setting weights, so
+    this is refused rather than ignored.
     """
-    for option, actual, canonical in (
-        ("endure.min_miner_stake", min_miner_stake, MIN_MINER_STAKE),
-        ("endure.max_commits_per_round", max_commits_per_round, MAX_COMMITS_PER_ROUND),
-        ("endure.max_reveals_per_round", max_reveals_per_round, MAX_REVEALS_PER_ROUND),
-        ("neuron.epoch_length", epoch_length, EPOCH_LENGTH_BLOCKS),
-    ):
-        if actual != canonical:
-            raise RuntimeError(
-                f"--{option} must be {canonical} under the mainnet consensus policy"
-            )
     if axon_off and not disable_set_weights:
         raise RuntimeError(
             "--neuron.axon_off on mainnet requires --neuron.disable_set_weights"
@@ -156,8 +191,17 @@ def serves_alpha_risk(*, schema_id: str, serving_status: str) -> bool:
 
 
 def mainnet_policy_applies(chain: ChainClass, *, served: bool) -> bool:
-    """Served Alpha Risk on mainnet runs the pinned mainnet consensus policy."""
+    """Served Alpha Risk on mainnet runs the mainnet-only refusals."""
     return served and chain == "mainnet"
+
+
+def consensus_settings_pinned(chain: ChainClass, *, served: bool) -> bool:
+    """Served Alpha Risk on mainnet or testnet runs the protocol settings.
+
+    Mock and local chains keep them configurable: a devnet run sets its own
+    epoch length.
+    """
+    return served and chain in ("mainnet", "testnet")
 
 
 def chain_owner_vote_network(

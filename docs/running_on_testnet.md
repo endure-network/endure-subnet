@@ -43,12 +43,10 @@ hotkeys, then check the prompted fee and chain state before confirming:
   --hotkey <your-role-hotkey> --network test
 ```
 
-The commands apply to your chosen role. Validators may enforce a
-minimum miner stake (`MIN_MINER_STAKE`) and reject commits from under-staked
-hotkeys with `Insufficient stake`; the public testnet soak validator's floor is
-deployment-configured (`0.3` at the time of writing) and can change without a
-release, so stake the miner hotkey above the current floor or its submissions
-will never be accepted — the rejection reason appears in the miner log.
+The commands apply to your chosen role. A registered miner hotkey needs no
+additional stake: on served testnet, as on mainnet, the miner stake floor is the
+protocol value `0` and validators ignore any configured floor (see the
+[release-pinned consensus policy](running_on_mainnet.md#release-pinned-consensus-policy-key-2042)).
 
 ## Run a validator
 

@@ -11,6 +11,7 @@ from endure.protocol.consensus_policy import (
     chain_needs_genesis,
     chain_owner_vote_network,
     classify_chain,
+    consensus_settings_pinned,
     mainnet_policy_applies,
 )
 
@@ -63,18 +64,19 @@ def test_only_live_non_aliased_endpoints_read_genesis(
 
 
 @pytest.mark.parametrize(
-    ("chain", "served", "policy", "vote"),
+    ("chain", "served", "policy", "pinned", "vote"),
     [
-        ("mainnet", True, True, "mainnet"),
-        ("testnet", True, False, "testnet"),
-        ("dev", True, False, None),
-        ("unrecognized", True, False, None),
-        ("mainnet", False, False, None),
-        ("testnet", False, False, None),
+        ("mainnet", True, True, True, "mainnet"),
+        ("testnet", True, False, True, "testnet"),
+        ("dev", True, False, False, None),
+        ("unrecognized", True, False, False, None),
+        ("mainnet", False, False, False, None),
+        ("testnet", False, False, False, None),
     ],
 )
 def test_served_mainnet_and_testnet_alone_get_policy_and_owner_vote(
-    chain: ChainClass, served: bool, policy: bool, vote: str | None
+    chain: ChainClass, served: bool, policy: bool, pinned: bool, vote: str | None
 ) -> None:
     assert mainnet_policy_applies(chain, served=served) is policy
+    assert consensus_settings_pinned(chain, served=served) is pinned
     assert chain_owner_vote_network(chain, served=served) == vote

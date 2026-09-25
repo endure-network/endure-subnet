@@ -122,8 +122,8 @@ prefix and stop each process manually.
 
 Use the [standalone miner image](docs/deploy/operator-node.md#run-a-miner)
 or follow the [mining guide](docs/mining.md) for source installation. Acceptance requires
-hotkey registration. Key `2042` mainnet validators use a canonical zero additional
-stake floor; testnet floors remain configurable. Covering the
+hotkey registration. Key `2042` validators on testnet and mainnet use the
+protocol's zero additional stake floor. Covering the
 [full round universe](docs/mining.md#cover-the-full-universe) is the dominant
 earnings lever — skipped coordinates score zero. Never share a mnemonic, coldkey,
 hotkey file, seed, wallet archive, or endpoint credential in a public report.

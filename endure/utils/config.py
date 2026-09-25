@@ -37,14 +37,18 @@ from endure.protocol.consensus_policy import (
     MAX_COMMITS_PER_ROUND,
     MAX_REVEALS_PER_ROUND,
     MIN_MINER_STAKE,
+    PROTOCOL_CONSENSUS_SETTINGS,
     ChainClass,
     OwnerVoteNetwork,
+    PinnedConsensusSettings,
     chain_needs_genesis,
     chain_owner_vote_network,
     classify_chain,
+    consensus_settings_pinned,
+    ignored_consensus_settings,
     mainnet_policy_applies,
     normalize_genesis_hash,
-    require_canonical_mainnet_policy,
+    require_emitting_validator_serves_axon,
     serves_alpha_risk,
 )
 
@@ -146,15 +150,39 @@ def owner_vote_network(config: "bt.Config") -> OwnerVoteNetwork | None:
     )
 
 
-def require_mainnet_validator_policy(config: "bt.Config") -> None:
-    """Fail before transport startup if mainnet policy or serving is unsafe."""
-    if not uses_mainnet_consensus_policy(config):
+def apply_consensus_settings(config: "bt.Config") -> None:
+    """Normalize the effective config to the protocol consensus settings.
+
+    On served mainnet and testnet an operator value is ignored with a warning
+    instead of refused: v0.1.0 advised a positive stake floor on live networks,
+    and a refusal would crash-loop those operators on the next image pull.
+    """
+    chain = chain_class(config)
+    if not consensus_settings_pinned(chain, served=requires_serving_stage_gate(config)):
         return
-    require_canonical_mainnet_policy(
-        min_miner_stake=config.endure.min_miner_stake,
+    given = PinnedConsensusSettings(
+        min_miner_stake=Decimal(str(config.endure.min_miner_stake)),
         max_commits_per_round=int(config.endure.max_commits_per_round),
         max_reveals_per_round=int(config.endure.max_reveals_per_round),
         epoch_length=int(config.neuron.epoch_length),
+    )
+    for ignored in ignored_consensus_settings(given):
+        bt.logging.warning(
+            f"--{ignored.option} {ignored.given} is ignored on {chain}; "
+            f"running the protocol value {ignored.protocol}"
+        )
+    protocol = PROTOCOL_CONSENSUS_SETTINGS
+    config.endure.min_miner_stake = protocol.min_miner_stake
+    config.endure.max_commits_per_round = protocol.max_commits_per_round
+    config.endure.max_reveals_per_round = protocol.max_reveals_per_round
+    config.neuron.epoch_length = protocol.epoch_length
+
+
+def require_mainnet_validator_policy(config: "bt.Config") -> None:
+    """Fail before transport startup on a mainnet option that cannot be ignored."""
+    if not uses_mainnet_consensus_policy(config):
+        return
+    require_emitting_validator_serves_axon(
         axon_off=bool(config.neuron.axon_off),
         disable_set_weights=bool(config.neuron.disable_set_weights),
     )
@@ -401,7 +429,7 @@ def add_args(cls, parser):
     parser.add_argument(
         "--neuron.epoch_length",
         type=_positive_int,
-        help="Metagraph refresh and weight-attempt interval in blocks; mainnet validators use the release-pinned value.",
+        help="Metagraph refresh and weight-attempt interval in blocks; served testnet/mainnet ignore it and run the protocol value.",
         default=EPOCH_LENGTH_BLOCKS,
     )
 
@@ -562,21 +590,21 @@ def add_args(cls, parser):
         default=MIN_MINER_STAKE,
         help=(
             "Minimum miner metagraph stake weight S to accept commits/reveals "
-            "(not a TAO balance). Mainnet requires the canonical zero floor; "
-            "testnet/local validators may configure a positive floor."
+            "(not a TAO balance). Served testnet/mainnet ignore it and run the "
+            "protocol zero floor; only mock/local chains honor it."
         ),
     )
     parser.add_argument(
         "--endure.max_commits_per_round",
         type=_positive_int,
         default=MAX_COMMITS_PER_ROUND,
-        help="Per-miner commit rate limit per round; release-pinned on mainnet.",
+        help="Per-miner commit rate limit per round; served testnet/mainnet run the protocol value.",
     )
     parser.add_argument(
         "--endure.max_reveals_per_round",
         type=_positive_int,
         default=MAX_REVEALS_PER_ROUND,
-        help="Per-miner reveal rate limit per round; release-pinned on mainnet.",
+        help="Per-miner reveal rate limit per round; served testnet/mainnet run the protocol value.",
     )
     parser.add_argument(
         "--endure.api_port",

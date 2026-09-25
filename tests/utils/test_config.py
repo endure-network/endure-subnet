@@ -32,6 +32,7 @@ from endure.utils.config import (
     add_args,
     add_miner_args,
     add_validator_args,
+    apply_consensus_settings,
     check_config,
     config,
     owner_vote_network,
@@ -757,30 +758,68 @@ class TestRequireExplicitNetuid:
         require_explicit_netuid(built)
 
 
-class TestMainnetValidatorPolicy:
-    @pytest.mark.parametrize(
-        ("section", "option", "value"),
-        (
-            ("endure", "min_miner_stake", Decimal("0.1")),
-            ("endure", "max_commits_per_round", 11),
-            ("endure", "max_reveals_per_round", 9),
-            ("neuron", "epoch_length", 101),
-        ),
+class TestPinnedConsensusSettings:
+    _STALE = (
+        ("endure", "min_miner_stake", Decimal("1"), Decimal("0")),
+        ("endure", "max_commits_per_round", 1000, 10),
+        ("endure", "max_reveals_per_round", 1000, 10),
+        ("neuron", "epoch_length", 360, 100),
     )
-    def test_mainnet_rejects_effective_policy_overrides(
-        self,
-        production_validator_config: bt.Config,
-        section: str,
-        option: str,
-        value: Decimal | int,
+
+    @classmethod
+    def _stale(cls, cfg: bt.Config) -> bt.Config:
+        for section, option, given, _protocol in cls._STALE:
+            setattr(getattr(cfg, section), option, given)
+        return cfg
+
+    @pytest.mark.parametrize(
+        ("network", "stage"), (("finney", "mainnet"), ("test", "testnet"))
+    )
+    def test_served_networks_ignore_stale_values_and_warn(
+        self, production_validator_config: bt.Config, network: str, stage: str
+    ) -> None:
+        cfg = self._stale(production_validator_config)
+        cfg.subtensor.network = network
+        cfg.endure.serving_stage = stage
+
+        with patch.object(bt.logging, "warning") as warning:
+            apply_consensus_settings(cfg)
+            require_mainnet_validator_policy(cfg)
+
+        messages = [call.args[0] for call in warning.call_args_list]
+        assert len(messages) == len(self._STALE)
+        for (section, option, given, protocol), message in zip(
+            self._STALE, messages, strict=True
+        ):
+            assert getattr(getattr(cfg, section), option) == protocol
+            assert f"--{section}.{option} {given} is ignored" in message
+            assert f"protocol value {protocol}" in message
+
+    def test_protocol_values_log_nothing(
+        self, production_validator_config: bt.Config
     ) -> None:
         cfg = production_validator_config
         cfg.subtensor.network = "finney"
         cfg.endure.serving_stage = "mainnet"
-        setattr(getattr(cfg, section), option, value)
 
-        with pytest.raises(RuntimeError, match=rf"--{section}\.{option}"):
-            require_mainnet_validator_policy(cfg)
+        with patch.object(bt.logging, "warning") as warning:
+            apply_consensus_settings(cfg)
+
+        warning.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "network", ("ws://127.0.0.1:9944", "local"), ids=("loopback", "local")
+    )
+    def test_local_chains_keep_custom_values(
+        self, production_validator_config: bt.Config, network: str
+    ) -> None:
+        cfg = self._stale(production_validator_config)
+        cfg.subtensor.network = network
+
+        apply_consensus_settings(cfg)
+
+        for section, option, given, _protocol in self._STALE:
+            assert getattr(getattr(cfg, section), option) == given
 
     def test_axon_off_requires_emission_disabled_on_mainnet(
         self, production_validator_config: bt.Config
@@ -795,21 +834,6 @@ class TestMainnetValidatorPolicy:
         cfg.neuron.disable_set_weights = False
 
         with pytest.raises(RuntimeError, match="disable_set_weights"):
-            require_mainnet_validator_policy(cfg)
-
-    def test_testnet_override_cannot_carry_over_to_mainnet(
-        self, production_validator_config: bt.Config
-    ) -> None:
-        cfg = production_validator_config
-        cfg.subtensor.network = "test"
-        cfg.endure.serving_stage = "testnet"
-        cfg.endure.min_miner_stake = Decimal("1")
-        require_mainnet_validator_policy(cfg)
-
-        cfg.subtensor.network = "finney"
-        cfg.endure.serving_stage = "mainnet"
-
-        with pytest.raises(RuntimeError, match="min_miner_stake"):
             require_mainnet_validator_policy(cfg)
 
 
@@ -848,8 +872,8 @@ class TestChainIdentityByGenesis:
         assert not permits_dev_only_runtime(cfg)
         assert uses_mainnet_consensus_policy(cfg)
         assert owner_vote_network(cfg) == "mainnet"
-        with pytest.raises(RuntimeError, match="min_miner_stake"):
-            require_mainnet_validator_policy(cfg)
+        apply_consensus_settings(cfg)
+        assert cfg.endure.min_miner_stake == Decimal("0")
         cfg.endure.serving_stage = "testnet"
         with pytest.raises(DevOnlyConfigError):
             require_serving_stage_allowed(cfg)

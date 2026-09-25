@@ -8,9 +8,15 @@ key-2041 images and chain parameters are not changed by this source update.
 - Serialize commit/reveal persistence with round closure; acknowledge only
   durable accepted reveals and preserve frozen empty snapshots.
 - Validate protocol keys and windows on capped commit retries.
-- Pin mainnet admission to zero additional miner stake, 10 commit/reveal
-  attempts, and a 100-block metagraph/weight-attempt epoch; refuse conflicting
-  overrides and unsafe axon-off emission.
+- Pin admission on served testnet and mainnet to zero additional miner stake,
+  10 commit/reveal attempts, and a 100-block metagraph/weight-attempt epoch.
+  Any other `--endure.min_miner_stake`, `--endure.max_commits_per_round`,
+  `--endure.max_reveals_per_round` or `--neuron.epoch_length` value is ignored
+  with a warning naming the option, the given value and the protocol value
+  (v0.1.0 advised a positive stake floor on live networks; a refusal would
+  crash-loop those operators). Mock/local chains keep them configurable. Unsafe
+  axon-off emission on mainnet is still refused. The operator templates no
+  longer carry `MIN_MINER_STAKE` or `EPOCH_LENGTH`.
 - Validate mainnet archive identity and historical timestamp/reserve availability
   before transport startup; transient transport failures such as an HTTP 429
   cooldown are retried until the probe's 120-second deadline, while missing

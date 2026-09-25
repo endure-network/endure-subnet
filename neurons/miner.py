@@ -49,6 +49,7 @@ from endure.runtime.resolve import resolve_runtime_provider
 from endure.scoring.market_data import recorded_mainnet_fixture_provider
 from endure.utils.config import (
     active_runtime_schema_id,
+    apply_consensus_settings,
     permits_dev_only_runtime,
     require_compression_runtime_allowed,
     require_explicit_netuid,
@@ -135,6 +136,7 @@ class Miner(BaseMinerNeuron):
             resolved_config.blacklist.force_validator_permit = True
             resolved_config.blacklist.allow_non_registered = False
         require_explicit_netuid(resolved_config)
+        apply_consensus_settings(resolved_config)
         super().__init__(
             config=resolved_config,
             runtime_provider=resolve_runtime_provider(resolved_config),

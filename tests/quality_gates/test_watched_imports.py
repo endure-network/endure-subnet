@@ -23,8 +23,10 @@ from endure.protocol.consensus_policy import (
     chain_needs_genesis,
     chain_owner_vote_network,
     classify_chain,
+    consensus_settings_pinned,
+    ignored_consensus_settings,
     mainnet_policy_applies,
-    require_canonical_mainnet_policy,
+    require_emitting_validator_serves_axon,
     serves_alpha_risk,
 )
 from endure.protocol.version_contract import WATCHED_PATHS
@@ -63,7 +65,9 @@ _POLICY: tuple[Callable[..., object] | type, ...] = (
     chain_needs_genesis,
     chain_owner_vote_network,
     mainnet_policy_applies,
-    require_canonical_mainnet_policy,
+    consensus_settings_pinned,
+    ignored_consensus_settings,
+    require_emitting_validator_serves_axon,
     serves_alpha_risk,
     DeregistrationTracker,
     scoring_set,

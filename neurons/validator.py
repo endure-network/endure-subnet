@@ -109,6 +109,7 @@ from endure.storage.repository import (
 from endure.utils.config import (
     DevOnlyConfigError,
     active_runtime_schema_id,
+    apply_consensus_settings,
     owner_vote_network,
     permits_dev_only_runtime,
     require_compression_runtime_allowed,
@@ -192,6 +193,7 @@ class Validator(BaseValidatorNeuron):
         resolve_chain_identity(resolved_config, read_genesis=read_chain_genesis)
         require_serving_stage_allowed(resolved_config)
         require_explicit_netuid(resolved_config)
+        apply_consensus_settings(resolved_config)
         require_mainnet_validator_policy(resolved_config)
         if compression_enabled(resolved_config):
             # Refuse offline before the network-bound archive probe below.

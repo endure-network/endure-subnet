@@ -56,12 +56,7 @@ There is no minimum runtime, warm-up round count, or registration-age gate.
 Qualification is event-driven:
 
 1. Register the hotkey on netuid `504`.
-2. On testnet, clear the receiving validator's configured stake floor
-   (`--endure.min_miner_stake`, measured in metagraph total stake weight `S`,
-   not a TAO balance). Key `2042` mainnet validators require a canonical zero
-   additional floor; registration is still required. See the
-   [mainnet cutover](running_on_mainnet.md#coordinated-cutover).
-3. Land one valid commit and matching reveal in the same round.
+2. Land one valid commit and matching reveal in the same round.
 
 Your first accepted round enters you into the scoring set defined by
 [the fairness deltas](specs/2026-07-20-scoring-fairness-deltas.md#1--absence-aware-scoring):
@@ -195,7 +190,7 @@ see [economic limitations](economic-limitations.md).
 | `NO_COMMIT` or `HASH_MISMATCH` | Confirm durable state, the same nonce, and the exact committed bundle. |
 | Late commit/reveal | Synchronize the host clock and read the round windows from the validator. |
 | No validator axons | Confirm registration/permit state, validator health, and any `--endure.min_validator_stake_weight` floor, then allow metagraph synchronization. |
-| Pushes go out but no commit is ever acked (`0 validators hold it`) | On testnet, inspect the validator's configured `S` floor and the rejection reason. Key `2042` mainnet validators require a zero additional stake floor; verify registration, matching protocol keys, reachability, and round windows rather than adding stake to cure a protocol rejection. |
+| Pushes go out but no commit is ever acked (`0 validators hold it`) | Inspect the rejection reason. Key `2042` validators on testnet and mainnet admit every registered hotkey with no additional stake floor; verify registration, matching protocol keys, reachability, and round windows rather than adding stake to cure a protocol rejection. |
 
 Optional remote logging (`ENDURE_LOG_DRAIN`) and JSON console output
 (`ENDURE_LOG_FORMAT=json`) work the same as for validators — see

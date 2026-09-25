@@ -38,27 +38,34 @@ be identified refuses startup. Only a local chain with any other genesis (a
 localnet) runs as a development runtime. `--endure.devnet_time_compression` is
 refused on mainnet regardless of the acknowledgement, before the archive probe.
 
-## Release-pinned mainnet policy (key 2042)
+## Release-pinned consensus policy (key 2042)
 
 The packaged [consensus policy](../endure/protocol/consensus_policy.py) is
-protocol-digest-covered. Mainnet validators refuse conflicting effective settings
-before creating wallets, chain clients, or an axon:
+protocol-digest-covered. On served mainnet and testnet these settings are
+protocol values, not operator choices:
 
-| Setting | Required value |
+| Setting | Protocol value |
 | --- | --- |
 | `--endure.min_miner_stake` | `0` — registered miners need no additional stake floor |
 | `--endure.max_commits_per_round` | `10` |
 | `--endure.max_reveals_per_round` | `10` |
 | `--neuron.epoch_length` | `100` blocks |
 
-The stake option measures metagraph total stake weight `S`, not a TAO balance.
-Only testnet/local validators may vary these settings. Commit caps count
-changed commitments; exact retries do not spend another slot. Reveal caps bound
-admitted attempts; exact accepted retries remain idempotent inside the window.
+A validator or miner given any other value still starts: it logs a `WARNING`
+naming the option, the given value and the protocol value, and runs the
+protocol value. Only mock and local chains honor these options. The stake
+setting measures metagraph total stake weight `S`, not a TAO balance. Commit
+caps count changed commitments; exact retries do not spend another slot. Reveal
+caps bound admitted attempts; exact accepted retries remain idempotent inside
+the window.
 
-`--neuron.axon_off` is refused on mainnet unless
-`--neuron.disable_set_weights` is also set. Disabling emission is an explicit
-operator mode, not a timer: positive scores never enable it automatically.
+Settings that cannot be safely ignored still refuse startup:
+`--neuron.axon_off` on mainnet without `--neuron.disable_set_weights`, a
+non-archive `MARKET_DATA_ENDPOINT` (the preflight below),
+`--endure.devnet_time_compression` on mainnet, a chain that cannot be
+identified, and `--neuron.num_concurrent_forwards` other than `1`. Disabling
+emission is an explicit operator mode, not a timer: positive scores never
+enable it automatically.
 
 Before transport startup, a read-only market-data preflight verifies Finney's
 genesis identity, deep finalized timestamp history used by boundary search, and
@@ -232,6 +239,13 @@ validator already approaching inactivity.
    while WAL writes are live. A restored backup reproduces its own scoring
    state: one with positive EMAs resumes earned weights, one without resumes
    the owner vote. Stop the process before restoring.
+   Delete `--endure.min_miner_stake`, `--endure.max_commits_per_round`,
+   `--endure.max_reveals_per_round` and `--neuron.epoch_length` (the
+   `MIN_MINER_STAKE` and `EPOCH_LENGTH` template variables) from start scripts.
+   The v0.1.0 validator logged advice to pass `--endure.min_miner_stake` with a
+   positive TAO floor on live networks; key 2042 ignores that value with a
+   warning and runs the protocol floor `0`, so leftover values are harmless but
+   misleading.
    Remove `--neuron.moving_average_alpha` from start scripts: key 2042 no
    longer accepts it (scores come from durable EMAs), and argparse refuses it.
 3. Stop the old weight writer before starting Endure. Keep exactly one writer

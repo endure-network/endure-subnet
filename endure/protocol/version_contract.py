@@ -125,11 +125,13 @@ PREVIOUS_VERSION_DIGEST = (
 # must deploy together. This shared release key clears the SN30 chain floor.
 # Includes the 15-netuid mainnet universe refresh; mainnet serving opens
 # behind the explicit --endure.serving_stage mainnet acknowledgement.
-# 2042: release-pinned mainnet admission (including axon-off emission),
-# atomic reveal/snapshot closure and immutable empty snapshots. Watched
+# 2042: release-pinned admission on served testnet and mainnet (operator values
+# ignored with a warning; axon-off emission refused on mainnet), atomic
+# reveal/snapshot closure and immutable empty snapshots. Watched
 # decisions: storage admission/selection; miner axon admission; the scoring set
 # (expected miners, archival) and deregistration confirmation; which schema is
-# served, genesis-based chain classification, mainnet-policy applicability and
+# served, genesis-based chain classification, where the consensus settings are
+# pinned, mainnet-policy applicability and
 # the owner-vote network; emission planning from one chain snapshot (identity,
 # permit, strict rate limit, scored UIDs matching the snapshot, the on-chain
 # SubnetOwnerHotkey recipient pinned to the SN30 owner on mainnet) and its

@@ -85,7 +85,7 @@ inclusion, and finalized confirmation remain separate; independent validators
 may enter or leave the owner vote at different times because their accepted
 submissions, resolution timing, and durable histories differ.
 
-Key `2042` pins mainnet admission settings and digest-covers storage
+Key `2042` pins admission settings on served testnet and mainnet and digest-covers storage
 admission/selection, miner axon admission (registered hotkey and stake floor),
 two-resync deregistration confirmation, and the pure score-to-u16
 transformation. This prevents silent policy overrides and closes the

@@ -1124,7 +1124,7 @@ def test_operator_loopback_mainnet_node_runs_mainnet_gates_before_transport(
     cfg.subtensor.network = "local"
     cfg.subtensor.chain_endpoint = ""
     cfg.endure.serving_stage = "mainnet"
-    cfg.endure.min_miner_stake = Decimal("5")
+    cfg.neuron.axon_off = True
     probe = MagicMock(side_effect=RuntimeError("archive probe reached"))
     transport = MagicMock(side_effect=AssertionError("transport opened"))
 
@@ -1136,14 +1136,80 @@ def test_operator_loopback_mainnet_node_runs_mainnet_gates_before_transport(
         patch("neurons.validator.resolve_runtime_provider", transport),
         patch("neurons.validator._require_hotkey"),
     ):
-        with pytest.raises(RuntimeError, match="min_miner_stake"):
+        with pytest.raises(RuntimeError, match="disable_set_weights"):
             Validator(config=cfg)
-        cfg.endure.min_miner_stake = Decimal("0")
+        cfg.neuron.axon_off = False
         with pytest.raises(RuntimeError, match="archive probe reached"):
             Validator(config=cfg)
 
     probe.assert_called_once()
     transport.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("network", "stage"), (("local", "mainnet"), ("test", "testnet"))
+)
+def test_stale_consensus_overrides_start_and_run_protocol_values(
+    production_validator_config: bt.Config, network: str, stage: str
+) -> None:
+    """v0.1.0 advised a positive stake floor; those operators must keep running."""
+    from endure.protocol.consensus_policy import MAINNET_GENESIS_HASH
+    from neurons.validator import Validator
+
+    cfg = production_validator_config
+    cfg.netuid = 30
+    cfg.subtensor.network = network
+    cfg.subtensor.chain_endpoint = ""
+    cfg.endure.serving_stage = stage
+    cfg.endure.min_miner_stake = Decimal("1")
+    cfg.endure.max_commits_per_round = 1000
+    cfg.endure.max_reveals_per_round = 1000
+    cfg.neuron.epoch_length = 360
+    effective: list[bt.Config] = []
+
+    def transport(config: bt.Config) -> None:
+        effective.append(config)
+        raise RuntimeError("transport reached")
+
+    with (
+        patch(
+            "neurons.validator.read_chain_genesis", return_value=MAINNET_GENESIS_HASH
+        ),
+        patch("neurons.validator.validate_mainnet_archive"),
+        patch("neurons.validator.resolve_runtime_provider", transport),
+        patch("neurons.validator._require_hotkey"),
+        patch.object(bt.logging, "warning") as warning,
+        pytest.raises(RuntimeError, match="transport reached"),
+    ):
+        Validator(config=cfg)
+
+    (started,) = effective
+    assert started.endure.min_miner_stake == Decimal("0")
+    assert started.endure.max_commits_per_round == 10
+    assert started.endure.max_reveals_per_round == 10
+    assert started.neuron.epoch_length == 100
+    logged = "\n".join(call.args[0] for call in warning.call_args_list)
+    assert "--endure.min_miner_stake 1 is ignored" in logged
+    assert "--endure.max_commits_per_round 1000 is ignored" in logged
+    assert "--endure.max_reveals_per_round 1000 is ignored" in logged
+    assert "--neuron.epoch_length 360 is ignored" in logged
+
+
+def test_local_chain_keeps_custom_consensus_values(
+    mock_validator_config: bt.Config,
+) -> None:
+    from neurons.validator import Validator
+
+    cfg = mock_validator_config
+    cfg.neuron.axon_off = True
+    cfg.neuron.disable_set_weights = True
+    cfg.endure.max_commits_per_round = 3
+    cfg.neuron.epoch_length = 7
+
+    validator = Validator(config=cfg)
+
+    assert validator.config.endure.max_commits_per_round == 3
+    assert validator.config.neuron.epoch_length == 7
 
 
 def test_mainnet_compression_is_refused_before_the_archive_probe(

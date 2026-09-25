@@ -44,8 +44,10 @@ Both applications require:
 - `WALLETS_TAR_B64` — a base64-encoded, uncompressed tar containing only the
   testnet wallet's `coldkeypub.txt` and required hotkey files.
 
-Optional settings are `CHAIN` (default `test`), `MARKET_DATA_ENDPOINT`,
-`EPOCH_LENGTH`, and the validator's `MIN_MINER_STAKE`. A credential-bearing RPC
+Optional settings are `CHAIN` (default `test`) and `MARKET_DATA_ENDPOINT`.
+The miner stake floor, per-round commit/reveal caps and epoch length are
+protocol values on served testnet and mainnet; `MIN_MINER_STAKE` and
+`EPOCH_LENGTH` are no longer read and can be deleted. A credential-bearing RPC
 URL must be stored as a Coolify secret and must use a host accepted by the
 runtime serving-stage guard.
 
@@ -114,10 +116,8 @@ The active schema defaults to `risk.v1.subnet_alpha`. Alpha Risk miners use
 `RiskBaselineAssembler` and the configured archive endpoint; do not pass legacy
 fixture, strategy, or validator-API options.
 
-`MIN_MINER_STAKE=0` accepts any registered hotkey and is suitable only while
-the testnet miners are unstaked. A positive Decimal threshold bounds submission
-load but rejects miners below that current metagraph stake. Check chain state
-before selecting a value.
+Every registered miner hotkey is admitted: the stake floor is the protocol
+value `0`, the same on testnet and mainnet.
 
 The validator read API must expose:
 

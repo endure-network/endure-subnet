@@ -223,7 +223,10 @@ earned emission indefinitely; positive scores never enable it automatically.
 
 An archive outage delays new scores; it does not erase previously earned scores
 or independently disable their emission. Mainnet startup requires the
-[archive preflight and canonical policy](running_on_mainnet.md#release-pinned-mainnet-policy-key-2042).
+[archive preflight](running_on_mainnet.md#release-pinned-consensus-policy-key-2042).
+On served testnet and mainnet the miner stake floor, per-round commit/reveal
+caps and epoch length are protocol values: other values are ignored with a
+startup warning, and only mock/local chains honor them.
 After startup, transient archive failures use the resolution grace path;
 definitive missing data can void a coordinate immediately.
 
