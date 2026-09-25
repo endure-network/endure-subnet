@@ -45,10 +45,7 @@ DOMAIN_PATHS = (
     Path("endure/publication"),
     Path("endure/storage"),
 )
-DECIMAL_POLICY_PATHS = DOMAIN_PATHS + (
-    Path("endure/base/validator.py"),
-    Path("endure/base/utils/weight_utils.py"),
-)
+DECIMAL_POLICY_PATHS = DOMAIN_PATHS + (Path("endure/base/validator.py"),)
 JSON_PATHS = (Path("."),)
 IGNORED_JSON_FILES = {"coverage.json"}
 MARKDOWN_PATHS = (Path("."),)
@@ -384,7 +381,9 @@ def iter_watched_files(
 ) -> list[Path]:
     files: list[Path] = []
     for watched_path in watched_paths:
-        for path in sorted((repo_root / watched_path).rglob("*.py")):
+        root = repo_root / watched_path
+        candidates = (root,) if root.is_file() else sorted(root.rglob("*.py"))
+        for path in candidates:
             if path.is_file() and path.name != "version_contract.py":
                 files.append(path)
     return files

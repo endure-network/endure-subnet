@@ -295,7 +295,7 @@ class TestValidatorRoundService:
         assert storage.round_state("2023-03-06", FORGE_LENDING_SCHEMA_ID) == "closed"
         assert weights is not None and "hk-a" in weights
 
-    def test_scoring_excludes_reveal_persisted_after_consensus(
+    def test_scoring_excludes_reveal_rejected_after_consensus(
         self, storage: Storage
     ) -> None:
         class _ConsensusScoringAssessment(_RecordingAssessmentOrchestrator):
@@ -364,14 +364,14 @@ class TestValidatorRoundService:
         service.tick(expected_miners=("hk-early", "hk-late"))
         late_nonce = b"\x02" * COMMIT_NONCE_BYTES
         late_hash = commit_hash(early_json.encode(), late_nonce, miner_hotkey="hk-late")
-        storage.record_commit(
+        assert not storage.record_commit(
             round_id,
             FORGE_LENDING_SCHEMA_ID,
             "hk-late",
             late_hash,
             now_iso=now_holder["now"].isoformat(),
         )
-        storage.record_reveal(
+        assert not storage.record_reveal(
             round_id,
             FORGE_LENDING_SCHEMA_ID,
             "hk-late",
@@ -914,14 +914,14 @@ class TestValidatorRoundService:
         assert not storage.assessment_realized_targets_for(
             round_id, FORGE_LENDING_SCHEMA_ID
         )
-        storage.record_commit(
+        assert not storage.record_commit(
             round_id,
             FORGE_LENDING_SCHEMA_ID,
             "hk-late",
             "ab" * 32,
             now_iso=now_holder["now"].isoformat(),
         )
-        storage.record_reveal(
+        assert not storage.record_reveal(
             round_id,
             FORGE_LENDING_SCHEMA_ID,
             "hk-late",

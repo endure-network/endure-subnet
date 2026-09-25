@@ -5,8 +5,9 @@
 > mainnet only behind the explicit `--endure.serving_stage mainnet`
 > acknowledgement, on releases promoted to the `:prod` image channel after the
 > owner release decision ([running_on_mainnet.md](docs/running_on_mainnet.md)).
-> The current protocol key is `2041` ([contract](endure/protocol/version_contract.py));
-> activated and retired leases are tracked in the [version registry](docs/protocol_versions.md).
+> This source candidate uses protocol key `2042` ([contract](endure/protocol/version_contract.py));
+> published `v0.1.0` images use key `2041`; adopting `2042` requires a coordinated release.
+> Activated and retired leases are tracked in the [version registry](docs/protocol_versions.md).
 
 Endure is a Bittensor risk-intelligence subnet: miners submit falsifiable
 assessments, validators resolve and score them, and consumers read signed risk
@@ -35,9 +36,21 @@ and emit Bittensor weights. The signed read API publishes the resulting A–E
 risk tier. See [mining](docs/mining.md) for the protocol and [the current
 scope](docs/specs/2026-07-06-alpha-risk-v1-scope.md) for the product contract.
 There is no minimum runtime: a miner enters scoring with its first accepted
-round, sees its first weights once that round's 5-day horizon resolves, and is
-paid from a decaying accuracy record rather than single rounds — see
+round and becomes eligible for earned weights after positive scores resolve,
+typically from that round's 5-day horizon. Earned weights follow a decaying
+accuracy record rather than single rounds; submission and finalized confirmation
+remain separate — see
 [eligibility and the earnings timeline](docs/mining.md#eligibility-and-the-earnings-timeline).
+
+Key `2042` adds a standing owner-vote fallback for served Alpha Risk on mainnet
+SN30 and Bittensor testnet: whenever a validator's score vector has no positive
+entry — at cold start, including when there are no miners, and again after every
+scored miner is archived — it submits its whole vote to the UID of the on-chain
+subnet owner hotkey. This is a fallback allocation, not earned miner reputation
+or proof of model accuracy. As soon as any score is positive the same process
+submits earned score-derived weights, with no flag change or restart in either
+direction. Mock and local chains keep all-zero abstention. See the
+[identity and emission safety gates](docs/running_on_mainnet.md#weights-and-abstention).
 
 Known limitations: this is a testnet soak with one public validator endpoint;
 outcomes and feeds can diverge between validators; interfaces and
@@ -108,8 +121,9 @@ prefix and stop each process manually.
 ## Run a miner
 
 Use the [standalone miner image](docs/deploy/operator-node.md#run-a-miner)
-or follow the [mining guide](docs/mining.md) for source installation. Acceptance is gated by hotkey
-registration and each validator's configured stake floor, and covering the
+or follow the [mining guide](docs/mining.md) for source installation. Acceptance requires
+hotkey registration. Key `2042` validators on testnet and mainnet use the
+protocol's zero additional stake floor. Covering the
 [full round universe](docs/mining.md#cover-the-full-universe) is the dominant
 earnings lever — skipped coordinates score zero. Never share a mnemonic, coldkey,
 hotkey file, seed, wallet archive, or endpoint credential in a public report.
@@ -121,6 +135,13 @@ or follow [validating](docs/validating.md) for source installation. Validators
 need durable database storage, backed-up state, a registered hotkey, and an
 archive market-data endpoint. Mainnet requires a qualified production release
 and the explicit acknowledgement described in [the mainnet guide](docs/running_on_mainnet.md).
+For the key-`2042` cutover, stop the old writer before starting one final Endure
+process with the axon on and `disable_set_weights` omitted/default-false.
+Explicitly setting the flag true disables both the owner vote and earned
+emission indefinitely; scores never auto-enable it. Keep the mainnet database
+durable and back it up consistently (SQLite backup API, or a copy taken while
+stopped); a restored backup reproduces its own scoring state. Never copy a
+testnet database into mainnet.
 
 ## Register on testnet
 

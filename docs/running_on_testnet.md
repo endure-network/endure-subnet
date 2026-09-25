@@ -1,7 +1,8 @@
 # Running Endure on Testnet
 
-> **Experimental testnet alpha, `v0.1.0-rc.3` candidate, protocol key `2041`.** This is
-> not a mainnet guide. The authoritative compatibility value is
+> **Experimental testnet alpha.** This source candidate uses protocol key `2042`;
+> published `v0.1.0` images use key `2041`; adopting `2042` requires a coordinated release.
+> This is not a mainnet guide. The authoritative source compatibility value is
 > [version_contract.py](../endure/protocol/version_contract.py).
 
 Choose your role: [run a miner image](deploy/operator-node.md#run-a-miner) or
@@ -42,12 +43,10 @@ hotkeys, then check the prompted fee and chain state before confirming:
   --hotkey <your-role-hotkey> --network test
 ```
 
-The commands apply to your chosen role. Validators may enforce a
-minimum miner stake (`MIN_MINER_STAKE`) and reject commits from under-staked
-hotkeys with `Insufficient stake`; the public testnet soak validator's floor is
-deployment-configured (`0.3` at the time of writing) and can change without a
-release, so stake the miner hotkey above the current floor or its submissions
-will never be accepted — the rejection reason appears in the miner log.
+The commands apply to your chosen role. A registered miner hotkey needs no
+additional stake: on served testnet, as on mainnet, the miner stake floor is the
+protocol value `0` and validators ignore any configured floor (see the
+[release-pinned consensus policy](running_on_mainnet.md#release-pinned-consensus-policy-key-2042)).
 
 ## Run a validator
 
@@ -68,6 +67,11 @@ appropriate TLS and rate limits. Confirm `/health` and `/schemas` before
 accepting submissions; `/live` is process liveness only and must not replace the
 operational `/health` check. Back up and restore-test the persistent database; restart
 behavior depends on retained durable state. See [validating](validating.md).
+
+With key `2042`, a served Alpha Risk validator on testnet submits the owner
+vote — its whole vote to the UID of the on-chain subnet owner hotkey — whenever
+no miner has a positive score, and earned weights as soon as one does. See the
+[owner-vote fallback](running_on_mainnet.md#weights-and-abstention).
 
 The Endure-operated testnet read API is
 `https://api.testnet.endure.network`, signed by validator hotkey

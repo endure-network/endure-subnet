@@ -12,8 +12,10 @@ def _wired_validator(service: MagicMock) -> Validator:
     validator = Validator.__new__(Validator)
     validator._service = service
     validator._blended_snapshot = {}
-    validator._dereg_missing_counts = {"hk-gone": 2}
-    validator._dereg_last_registered = {"hk-a"}
+    tracker = validator._deregistration_tracker()
+    tracker.advance({"hk-a", "hk-gone"})
+    tracker.advance({"hk-a"})
+    tracker.advance({"hk-a"})
     metagraph = MagicMock()
     metagraph.hotkeys = ["hk-a"]
     validator.metagraph = metagraph
@@ -84,7 +86,7 @@ class TestForwardWiring:
 
         asyncio.run(validator.forward())
 
-        assert validator._confirmed_deregistered() == ["hk-gone"]
+        assert validator._deregistration_tracker().confirmed() == ["hk-gone"]
 
 
 def test_empty_fresh_weights_clear_cached_scores_and_snapshot() -> None:

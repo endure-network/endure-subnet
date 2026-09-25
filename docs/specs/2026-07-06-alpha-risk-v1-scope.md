@@ -146,11 +146,46 @@ and frozen at it.
 **Coverage penalty**: a resolved coordinate the miner's accepted bundle
 skipped scores 0, so cherry-picking easy assets cannot beat full coverage.
 
-**EMA and weights**: one EMA per (hotkey, netuid, output, horizon)
+**EMA and earned weights**: one EMA per (hotkey, netuid, output, horizon)
 coordinate on the existing spine; blended score = equal-weight mean of a
-miner's scored-coordinate EMAs; weights via the existing sharpened
-normalization with all-zero → abstain. Output/horizon weighting in the blend
-is deferred.
+miner's scored-coordinate EMAs; earned weights use the existing sharpened
+normalization. Output/horizon weighting in the blend is deferred. Key `2042`
+does not change scoring coefficients or the mainnet target universe.
+
+**SN30 owner-vote fallback (key `2042`)**: served Alpha Risk on mainnet SN30
+and Bittensor testnet submits the whole vote (u16 `65535`) to the UID of the
+on-chain `SubnetOwnerHotkey` whenever the validator's score vector has no
+positive entry — at cold start, including when no miners have submitted, and
+again whenever every scored miner has been archived (EMA below the archive
+epsilon, or deregistration confirmed over 2 consecutive metagraph resyncs).
+This is a fallback allocation, not earned miner reputation or proof of model
+accuracy. The owner UID is resolved in the same metagraph snapshot used for the
+attempt, at selection and at the pre-submission recheck; no UID is fixed.
+Mainnet additionally requires the mainnet genesis, netuid `30`, and the pinned
+owner hotkey. Validator permit, chain weight constraints, rate limits, startup
+fencing, one-in-flight submission, and finalized confirmation remain safety
+gates. The owner vote uses the normal durable prepare/submit/confirm pipeline,
+not an external setter. It creates no synthetic scores or EMA writes, and its
+audit rows have null earned-score and precap provenance.
+
+As soon as any score is positive, the running process switches to earned
+score-derived weights; no flag change or restart is required in either
+direction. Mock and local chains abstain in the all-zero case. Unsafe owner
+state (mainnet pin mismatch, unregistered owner, inconsistent snapshot, or
+invalid validator identity) abstains with a distinct `emission_reason`, is
+retried each epoch, and clears automatically. Abstention leaves prior on-chain
+weights untouched.
+
+Mode is a pure function of current scores and network, with no latch and no
+schema migration. Scores are rebuilt from durable EMAs at startup and a failed
+scoring tick keeps the previous vector, so neither reads as zero scores. A
+restored consistent SQLite backup reproduces its own scoring state; mainnet
+state must persist, and testnet state must never be copied into mainnet.
+The final emission-enabled configuration keeps the axon
+on and `disable_set_weights` absent/default-false. Explicitly setting it true
+disables both modes indefinitely; neither positive scores nor elapsed time
+automatically enables emission. See the
+[mainnet cutover](../running_on_mainnet.md#coordinated-cutover).
 
 ### Round lifecycle and per-horizon resolution
 

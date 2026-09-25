@@ -11,8 +11,6 @@
 # Optional environment:
 #   CHAIN                     network name or accepted testnet RPC URL
 #   MARKET_DATA_ENDPOINT      mainnet archive used for Alpha observations
-#   MIN_MINER_STAKE           validator admission floor (default 0)
-#   EPOCH_LENGTH              blocks between weight attempts (default 100)
 #   VALIDATOR_AXON_OVERRIDES  hotkey=host:port mappings for trusted local peers
 #   *_WALLET / *_HOTKEY       local testnet wallet aliases
 #
@@ -73,10 +71,8 @@ services:
       "--endure.database_url", "sqlite:////data/validator-live.db",
       "--endure.api_port", "8714",
       "--endure.api_host", "0.0.0.0",
-      "--endure.min_miner_stake", "${MIN_MINER_STAKE:-0}",
       "--axon.port", "8091",
       "--axon.external_ip", "${EXTERNAL_IP:?set EXTERNAL_IP}",
-      "--neuron.epoch_length", "${EPOCH_LENGTH:-100}",
       "--logging.info",
     ]
 

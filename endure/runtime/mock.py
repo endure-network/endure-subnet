@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import random
 import time
+from dataclasses import dataclass
 from typing import List
 from unittest.mock import patch
 
@@ -15,6 +16,20 @@ from bittensor_wallet.mock import get_mock_wallet
 from endure.runtime.types import BaseRuntimeComponents
 
 MOCK_AXON_IP = "127.0.0.1"
+MOCK_BLOCK_SECONDS = 12
+
+
+@dataclass(frozen=True, slots=True)
+class MockMetagraphInfo:
+    """The ``MetagraphInfo`` fields the emission plan selects."""
+
+    netuid: int
+    block: int
+    owner_hotkey: str
+    hotkeys: list[str]
+    validator_permit: list[bool]
+    last_update: list[int]
+    weights_rate_limit: int
 
 
 def build_mock_axon(wallet: bt.Wallet, config: bt.Config) -> bt.Axon:
@@ -59,6 +74,30 @@ class MockSubtensor(bt.MockSubtensor):
                 balance=100000,
                 stake=100000,
             )
+
+        # The mock validator holds a permit, as a staked validator would, so
+        # emission planning can reach set_weights in scored mode.
+        if wallet is not None:
+            state = self.chain_state["SubtensorModule"]
+            uid = self._get_most_recent_storage(
+                state["Uids"][netuid][wallet.hotkey.ss58_address]
+            )
+            state["ValidatorPermit"][netuid][uid][self.block_number] = True
+
+        # The mock chain advances on the wall clock like a real one, so epoch
+        # pacing and the strict weights rate limit can come due.
+        self._clock_origin = time.monotonic()
+        self._clock_block = self.block_number
+        # Every mock block is final at once.
+        self.substrate.get_block_number = lambda _block_hash: self.get_current_block()
+
+    def get_current_block(self) -> int:
+        target = self._clock_block + int(
+            (time.monotonic() - self._clock_origin) // MOCK_BLOCK_SECONDS
+        )
+        while self.block_number < target:
+            self.do_block_step()
+        return self.block_number
 
     def serve_axon(
         self,
@@ -115,15 +154,90 @@ class MockSubtensor(bt.MockSubtensor):
                 error=error,
             )
 
+    def set_weights(
+        self,
+        wallet: bt.Wallet,
+        netuid: int,
+        uids: list[int],
+        weights: list[int],
+        version_key: int = version_as_int,
+        **kwargs: object,
+    ) -> ExtrinsicResponse:
+        """Include a direct weight submission in the mock chain state."""
+        del version_key
+        del kwargs
+        state = self.chain_state["SubtensorModule"]
+        # Inclusion lands in the next block, strictly after the submission
+        # block the validator prepared at, as on a real chain.
+        block = self.get_current_block() + 1
+        uid = self._get_most_recent_storage(
+            state["Uids"][netuid][wallet.hotkey.ss58_address]
+        )
+        state["Weights"][netuid][uid][block] = list(zip(uids, weights, strict=True))
+        state["LastUpdate"][netuid][uid][block] = block
+        return ExtrinsicResponse(True, "Mock weights included")
+
+    def neurons_lite(
+        self, netuid: int, block: int | None = None
+    ) -> list[bt.NeuronInfo]:
+        # Upstream's lite path reads the removed NeuronInfo.rank (see
+        # MockMetagraph.sync); the full records carry the same uid/hotkey.
+        return self.neurons(netuid=netuid, block=block)
+
+    def get_hyperparameter(
+        self, param_name: str, netuid: int, block: int | None = None
+    ) -> object:
+        if param_name != "LastUpdate":
+            return super().get_hyperparameter(
+                param_name=param_name, netuid=netuid, block=block
+            )
+        return [int(neuron.last_update) for neuron in self.neurons(netuid, block)]
+
+    def weights(
+        self, netuid: int, mechid: int = 0, block: int | None = None
+    ) -> list[tuple[int, list[tuple[int, int]]]]:
+        del mechid
+        state = self.chain_state["SubtensorModule"]["Weights"][netuid]
+        return [
+            (uid, list(self._get_most_recent_storage(state[uid], block) or []))
+            for uid in sorted(state)
+        ]
+
+    def commit_reveal_enabled(self, netuid: int, block: int | None = None) -> bool:
+        """The mock chain sets weights directly; it has no CR4 epoch state."""
+        del netuid
+        del block
+        return False
+
     def get_metagraph_info(
         self,
         netuid: int,
         mechid: int = 0,
-        block=None,
-    ):
-        del netuid
+        selected_indices: list[int] | None = None,
+        block: int | None = None,
+    ) -> MockMetagraphInfo | None:
+        """Serve the emission plan's selective snapshot from the mock chain.
+
+        A full fetch (``Metagraph.sync``'s extra-info pass) stays ``None``: the
+        mock chain cannot populate every ``MetagraphInfo`` field.
+        """
         del mechid
-        del block
+        if selected_indices is None:
+            return None
+        at = self.get_current_block() if block is None else block
+        neurons = self.neurons(netuid=netuid, block=at)
+        owner = self._get_most_recent_storage(
+            self.chain_state["SubtensorModule"]["SubnetOwner"].get(netuid, {}), at
+        )
+        return MockMetagraphInfo(
+            netuid=netuid,
+            block=at,
+            owner_hotkey=str(owner or ""),
+            hotkeys=[neuron.hotkey for neuron in neurons],
+            validator_permit=[bool(neuron.validator_permit) for neuron in neurons],
+            last_update=[int(neuron.last_update) for neuron in neurons],
+            weights_rate_limit=int(self.weights_rate_limit(netuid=netuid)),
+        )
 
 
 class MockMetagraph(bt.Metagraph):
@@ -132,19 +246,28 @@ class MockMetagraph(bt.Metagraph):
 
         if subtensor is not None:
             self.subtensor = subtensor
-        # Force lite=False: upstream bittensor 10.x MockSubtensor has an
-        # unfixed bug where neuron_for_uid_lite() reads NeuronInfo.rank
-        # (removed by PR #3214 / commit d1f5e50). The non-lite path goes
-        # through neurons() -> neuron_for_uid() which does not touch the
-        # missing attribute. Tracked upstream; drop this override once
-        # opentensor/bittensor ships the fix.
-        self.sync(subtensor=subtensor, lite=False)
+        self.sync(subtensor=subtensor)
 
         for axon in self.axons:
             axon.ip = "127.0.0.0"
             axon.port = 8091
 
         bt.logging.info("Mock metagraph initialized.")
+
+    def sync(
+        self,
+        block: int | None = None,
+        lite: bool | None = None,
+        subtensor: bt.Subtensor | None = None,
+    ) -> None:
+        # Always lite=False, including the validator's periodic resync:
+        # upstream bittensor 10.x MockSubtensor has an unfixed bug where
+        # neuron_for_uid_lite() reads NeuronInfo.rank (removed by PR #3214 /
+        # commit d1f5e50). The non-lite path goes through neurons() ->
+        # neuron_for_uid(), which does not touch the missing attribute. Drop
+        # this override once opentensor/bittensor ships the fix.
+        del lite
+        super().sync(block=block, lite=False, subtensor=subtensor)
 
 
 class MockDendrite(bt.Dendrite):

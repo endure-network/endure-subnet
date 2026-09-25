@@ -123,7 +123,7 @@ max-complexity = 15  # Reviewed complexity ceiling for production code.
 "neurons/**" = ["S101", "F821", "PLR0912", "PLR0915"]
 # Transport lifecycle methods take explicit SDK parameters.
 "endure/base/**" = ["PLR1722", "PLR0913"]
-"endure/base/utils/weight_utils.py" = ["B007", "PLR0911", "PLR0913", "PLR0915", "PLR0917"]
+"endure/scoring/weight_processing.py" = ["PLR0911", "PLR0913", "PLR0915"]
 "endure/utils/__init__.py" = ["F401"]
 # Verdict functions inject clock/window/state as explicit keyword args by
 # design (clock-free purity); each rejection path is its own return.
