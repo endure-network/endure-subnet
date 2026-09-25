@@ -103,6 +103,9 @@ key-2041 images and chain parameters are not changed by this source update.
   The startup fence is loaded once at construction, before the API thread
   starts; a `/health` read that finds no fence yet is never cached, so it
   cannot overwrite the fence the run loop just recorded and re-fence emission.
+  A `/health` confirmation summary read that straddles an emission event is
+  served once but not cached, so `/health` never shows pre-event counters for
+  the rest of the 5 s window.
 - The pre-submission recheck re-resolves the snapshot's owner against the exact
   metagraph, chain identity, and constraints the vector was prepared from; a
   failure aborts before sending, counts as one failed attempt, is recorded in

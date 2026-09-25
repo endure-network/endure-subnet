@@ -336,10 +336,14 @@ class Validator(BaseValidatorNeuron):
             and 0 <= now - cached[0] < _CONFIRMATION_SUMMARY_TTL_SECONDS
         ):
             return cached[2]
+        generation = getattr(self, "_confirmation_generation", 0)
         summary = storage.weight_emission_confirmation_health(
             schema_id=self._schema_id, current_block=current_block
         )
-        self._confirmation_summary_cache = (now, current_block, summary)
+        # A read that straddled an emission event may predate it: serve it
+        # once, but cache only a read no event has invalidated.
+        if getattr(self, "_confirmation_generation", 0) == generation:
+            self._confirmation_summary_cache = (now, current_block, summary)
         return summary
 
     def _load_startup_fence(self) -> None:
@@ -395,6 +399,10 @@ class Validator(BaseValidatorNeuron):
 
     def _note_confirmation_state(self, is_open: bool) -> None:
         self._open_confirmation_known = is_open
+        self._invalidate_confirmation_summary()
+
+    def _invalidate_confirmation_summary(self) -> None:
+        self._confirmation_generation = getattr(self, "_confirmation_generation", 0) + 1
         self._confirmation_summary_cache = None
 
     def _runtime_health_snapshot(
@@ -1365,7 +1373,7 @@ class Validator(BaseValidatorNeuron):
             # Reconciliation can confirm, expire or fail batches: the next
             # check re-reads open confirmations from the database.
             self._open_confirmation_known = None
-            self._confirmation_summary_cache = None
+            self._invalidate_confirmation_summary()
 
     def _resolve_weight_confirmations(self) -> None:
         """Resolve every restart-surviving submitted weight batch from chain state."""

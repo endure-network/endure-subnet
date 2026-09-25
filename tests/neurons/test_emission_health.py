@@ -604,3 +604,35 @@ def test_a_health_fence_read_racing_the_first_fence_write_keeps_the_fence(
     # Past the durable fence, emission is ready; it is not re-fenced.
     assert validator._weight_emission_ready(storage) is True
     assert validator._startup_fence_block == durable
+
+
+def test_a_health_summary_read_racing_an_invalidation_is_not_cached(
+    validator: Validator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("neurons.validator.time.monotonic", lambda: 10000.0)
+    validator._mark_tick_progress()
+    storage = validator._storage
+    read = storage.weight_emission_confirmation_health
+    in_read = threading.Event()
+    release = threading.Event()
+
+    def slow(*, schema_id: str, current_block: int | None) -> object:
+        summary = read(schema_id=schema_id, current_block=current_block)
+        if threading.current_thread().name == "api-poll":
+            in_read.set()
+            release.wait(10)
+        return summary
+
+    monkeypatch.setattr(storage, "weight_emission_confirmation_health", slow)
+    poll = threading.Thread(target=validator.runtime_health, name="api-poll")
+    poll.start()
+    assert in_read.wait(10)
+    # A run-loop event opens a batch and drops the cache mid-read.
+    _record_open_batch(storage)
+    validator._note_confirmation_state(True)
+    release.set()
+    poll.join(10)
+
+    health = validator.runtime_health()  # same block, inside the TTL
+    assert health["open_weight_submissions"] == 1
+    assert health["emission_reason"] == "confirmation_pending"
