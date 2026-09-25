@@ -19,6 +19,8 @@ from websockets.exceptions import InvalidStatus
 from websockets.http11 import Response
 
 from endure.live.alpha_market_data import (
+    CHAIN_GENESIS_MAX_BACKOFF_SECONDS,
+    CHAIN_GENESIS_READ_DEADLINE_SECONDS,
     LIVE_MARKET_DATA_MAX_ABANDONED_WORKERS,
     LIVE_MARKET_DATA_RATE_LIMIT_COOLDOWN_SECONDS,
     LIVE_MARKET_DATA_REQUEST_PAUSE_SECONDS,
@@ -26,6 +28,7 @@ from endure.live.alpha_market_data import (
     BittensorSubnetInfoFetcher,
     LiveAlphaPriceProvider,
     LiveAlphaPriceProviderConfig,
+    read_chain_genesis,
     validate_mainnet_archive,
 )
 from endure.protocol.consensus_policy import MAINNET_GENESIS_HASH
@@ -1716,3 +1719,132 @@ def test_live_provider_is_window_explicit_and_reentrant() -> None:
     assert long is not None
     assert tuple(snapshot.block for snapshot in short.snapshots) == blocks[:5]
     assert tuple(snapshot.block for snapshot in long.snapshots) == blocks[:10]
+
+
+@dataclass(slots=True)
+class FakeGenesisClient:
+    result: str | None | Exception
+    closed: bool = False
+
+    def get_block_hash(self, block_id: int) -> str | None:
+        assert block_id == 0
+        if isinstance(self.result, Exception):
+            raise self.result
+        return self.result
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def test_chain_genesis_read_retries_transient_failures_and_closes_each_client() -> None:
+    # Given: a throttled handshake, a DNS blip, a booting node answering None,
+    # then a healthy node.
+    clock = [0.0]
+    sleeps: list[float] = []
+    outcomes: list[str | None | Exception] = [
+        OSError("[Errno -3] Temporary failure in name resolution"),
+        None,
+        MAINNET_GENESIS_HASH,
+    ]
+    handshakes: list[str] = []
+    clients: list[FakeGenesisClient] = []
+
+    def make_client(endpoint: str, timeout: float) -> FakeGenesisClient:
+        assert 0 < timeout <= CHAIN_GENESIS_READ_DEADLINE_SECONDS
+        handshakes.append(endpoint)
+        if len(handshakes) == 1:
+            raise InvalidStatus(Response(429, "Too Many Requests", Headers()))
+        client = FakeGenesisClient(outcomes[len(clients)])
+        clients.append(client)
+        return client
+
+    def sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+        clock[0] += seconds
+
+    # When: startup reads the chain identity.
+    genesis = read_chain_genesis(
+        "ws://127.0.0.1:9944",
+        client_factory=make_client,
+        now_fn=lambda: clock[0],
+        sleep=sleep,
+    )
+
+    # Then: the hash is returned after exponential backoff, and every client
+    # that was built was closed.
+    assert genesis == MAINNET_GENESIS_HASH
+    assert sleeps == [0.5, 1.0, 2.0]
+    assert handshakes == ["ws://127.0.0.1:9944"] * 4
+    assert len(clients) == 3
+    assert all(client.closed for client in clients)
+
+
+def test_chain_genesis_read_refuses_within_its_deadline_on_persistent_failure() -> None:
+    # Given: an endpoint that never answers and a virtual clock.
+    clock = [0.0]
+    sleeps: list[float] = []
+    clients: list[FakeGenesisClient] = []
+
+    def make_client(endpoint: str, timeout: float) -> FakeGenesisClient:
+        client = FakeGenesisClient(ConnectionError(f"{endpoint} refused"))
+        clients.append(client)
+        return client
+
+    def sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+        clock[0] += seconds
+
+    # When: startup reads the chain identity.
+    genesis = read_chain_genesis(
+        "wss://node.example:443",
+        client_factory=make_client,
+        now_fn=lambda: clock[0],
+        sleep=sleep,
+    )
+
+    # Then: it gives up (caller refuses startup) within the deadline, after
+    # several capped-backoff attempts, each on a fresh closed client.
+    assert genesis is None
+    assert clock[0] <= CHAIN_GENESIS_READ_DEADLINE_SECONDS
+    assert len(clients) > 1
+    assert len(clients) == len(sleeps) + 1
+    assert max(sleeps) == CHAIN_GENESIS_MAX_BACKOFF_SECONDS
+    assert all(client.closed for client in clients)
+
+
+def test_chain_genesis_read_does_not_hang_past_its_deadline() -> None:
+    # Given: a connect that blocks until the test releases it.
+    release = threading.Event()
+    clients: list[FakeGenesisClient] = []
+
+    def make_client(endpoint: str, timeout: float) -> FakeGenesisClient:
+        release.wait()
+        client = FakeGenesisClient(MAINNET_GENESIS_HASH)
+        clients.append(client)
+        return client
+
+    # When: startup reads the chain identity with a short deadline.
+    started = time.monotonic()
+    try:
+        genesis = read_chain_genesis(
+            "ws://127.0.0.1:9944", deadline_seconds=0.3, client_factory=make_client
+        )
+        elapsed = time.monotonic() - started
+        hung = [
+            thread
+            for thread in threading.enumerate()
+            if thread.name == "chain-genesis-read"
+        ]
+    finally:
+        release.set()
+
+    # Then: the read gives up at the deadline, the wedged attempt cannot keep
+    # the process alive, and it closes its client once it unblocks.
+    assert genesis is None
+    assert elapsed < 2.0
+    assert hung
+    assert all(thread.daemon for thread in hung)
+    for thread in hung:
+        thread.join(timeout=2.0)
+    assert clients
+    assert all(client.closed for client in clients)

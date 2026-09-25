@@ -17,7 +17,8 @@ from concurrent.futures import TimeoutError as FuturesTimeoutError
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from threading import Condition
+from functools import partial
+from threading import Condition, Event, Thread
 from typing import Final, Protocol
 
 import bittensor as bt
@@ -53,7 +54,7 @@ from endure.scoring.market_sampling import (
     snapshot_failure_is_outage,
 )
 from endure.scoring.risk.observables import BLOCK_SECONDS
-from endure.utils.logging import safe_error
+from endure.utils.logging import safe_endpoint_label, safe_error
 
 MAINNET_ARCHIVE_ENDPOINT: Final = "wss://archive.chain.opentensor.ai:443"
 LIVE_MARKET_DATA_REQUEST_PAUSE_SECONDS: Final = Decimal("0.25")
@@ -71,6 +72,12 @@ LIVE_MARKET_DATA_ARCHIVE_PROBE_TIMEOUT_SECONDS: Final = 120.0
 # first attempt after the cooldown lands soon after it ends.
 LIVE_MARKET_DATA_ARCHIVE_PROBE_MAX_BACKOFF_SECONDS: Final = Decimal("5")
 LIVE_MARKET_DATA_ARCHIVE_LOOKBACK: Final = timedelta(days=30)
+# Startup chain identity: a 429, a DNS blip or a devnet node still booting is
+# retried with exponential backoff until the deadline; each attempt is bounded.
+CHAIN_GENESIS_READ_DEADLINE_SECONDS: Final = 30.0
+CHAIN_GENESIS_ATTEMPT_TIMEOUT_SECONDS: Final = 10.0
+CHAIN_GENESIS_INITIAL_BACKOFF_SECONDS: Final = 0.5
+CHAIN_GENESIS_MAX_BACKOFF_SECONDS: Final = 5.0
 
 _HTTP_TOO_MANY_REQUESTS: Final = 429
 _JSONRPC_RATE_LIMIT_CODE: Final = -32029
@@ -775,13 +782,97 @@ def validate_mainnet_archive(endpoint: str, *, netuid: int) -> None:
         fetcher.close()
 
 
-def read_chain_genesis(endpoint: str) -> str | None:
-    """Read-only startup chain identity; release its SDK client before returning."""
-    fetcher = BittensorSubnetInfoFetcher(endpoint)
-    try:
-        return fetcher.genesis_hash()
-    finally:
-        fetcher.close()
+class GenesisClient(Protocol):
+    def get_block_hash(self, block_id: int) -> str | None: ...
+
+    def close(self) -> None: ...
+
+
+def _substrate_genesis_client(endpoint: str, timeout_seconds: float) -> GenesisClient:
+    # One RPC attempt per client: the SDK's own reconnect ladder (5 x 60 s by
+    # default) would outlast the startup deadline.
+    return SubstrateInterface(
+        url=endpoint, max_retries=1, retry_timeout=timeout_seconds
+    )
+
+
+def read_chain_genesis(  # noqa: PLR0913 — keyword-only test-injection seams
+    endpoint: str,
+    *,
+    deadline_seconds: float = CHAIN_GENESIS_READ_DEADLINE_SECONDS,
+    attempt_timeout_seconds: float = CHAIN_GENESIS_ATTEMPT_TIMEOUT_SECONDS,
+    client_factory: Callable[[str, float], GenesisClient] = _substrate_genesis_client,
+    now_fn: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
+) -> str | None:
+    """Read-only startup chain identity; ``None`` once the deadline is spent.
+
+    A 429, a DNS blip or a node still booting is retried with capped
+    exponential backoff. Every attempt uses a fresh client that is always
+    closed, and runs on a daemon thread so a connect or RPC that never
+    returns cannot hold startup past the deadline or keep the process alive.
+    """
+    label = safe_endpoint_label(endpoint)
+    deadline = now_fn() + deadline_seconds
+    backoff = CHAIN_GENESIS_INITIAL_BACKOFF_SECONDS
+    attempt = 0
+    reason = "deadline reached before the first attempt"
+    while (remaining := deadline - now_fn()) > 0:
+        attempt += 1
+        timeout = min(attempt_timeout_seconds, remaining)
+        try:
+            genesis = _bounded_genesis_attempt(
+                partial(client_factory, endpoint, timeout), timeout_seconds=timeout
+            )
+        except Exception as error:  # noqa: BLE001 — any failure is retried
+            reason = f"{type(error).__name__}: {safe_error(error)}"
+        else:
+            if genesis:
+                return genesis
+            reason = "node returned no genesis hash"
+        if now_fn() + backoff >= deadline:
+            break
+        bt.logging.warning(
+            f"chain genesis read at {label} attempt {attempt} failed; "
+            f"retrying in {backoff:.1f}s: {reason}"
+        )
+        sleep(backoff)
+        backoff = min(backoff * 2, CHAIN_GENESIS_MAX_BACKOFF_SECONDS)
+    bt.logging.error(
+        f"chain genesis read at {label} failed after {attempt} attempts "
+        f"within {deadline_seconds:.0f}s: {reason}"
+    )
+    return None
+
+
+def _bounded_genesis_attempt(
+    make_client: Callable[[], GenesisClient], *, timeout_seconds: float
+) -> str | None:
+    outcome: list[str | None] = []
+    failure: list[Exception] = []
+    finished = Event()
+
+    def attempt() -> None:
+        try:
+            client = make_client()
+            try:
+                outcome.append(client.get_block_hash(0))
+            finally:
+                # An abandoned attempt still closes its client once unblocked.
+                _close_archive_clients(client)
+        except Exception as error:  # noqa: BLE001 — reported to the caller
+            failure.append(error)
+        finally:
+            finished.set()
+
+    # Daemon: an attempt wedged in DNS or the handshake must never keep the
+    # process alive; the SDK client has no connect timeout covering DNS.
+    Thread(target=attempt, name="chain-genesis-read", daemon=True).start()
+    if not finished.wait(timeout_seconds):
+        raise TimeoutError("chain genesis read timed out")
+    if failure:
+        raise failure[0]
+    return outcome[0]
 
 
 def _utc_timestamp_milliseconds(value: datetime) -> int:

@@ -29,6 +29,9 @@ key-2041 images and chain parameters are not changed by this source update.
   chain identity is derived on every start, from a named endpoint or by reading
   the genesis of any non-aliased endpoint, is never taken from a config file,
   and genesis is compared as normalized hex. Refuse mainnet time compression before the archive probe.
+- Read the startup chain genesis with a lightweight client, retrying an HTTP
+  429, DNS failure or booting node with capped backoff for up to 30 seconds;
+  each attempt is time-bounded, so a hung connect cannot stall startup.
 - Digest-cover storage selection, the score-to-chain composition (abstain on no
   positive score, chain limits, u16 encoding), miner axon admission (registered
   hotkey and stake floor), two-resync deregistration confirmation, emission

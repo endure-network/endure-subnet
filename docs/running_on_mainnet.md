@@ -33,8 +33,10 @@ A testnet acknowledgement on a mainnet endpoint is refused, and so is the
 reverse. Before any gate runs, a live neuron whose endpoint is not one of the
 named aliases above reads the chain's genesis hash and is classified by it: an
 operator's own Finney node gets every mainnet gate, the archive probe, live
-market data, and the owner vote, never dev-only fixtures. A chain that cannot
-be identified refuses startup. Only a local chain with any other genesis (a
+market data, and the owner vote, never dev-only fixtures. The genesis read is
+retried with capped backoff for up to 30 seconds, so an HTTP 429, a DNS blip or
+a node still booting does not abort startup; a chain that still cannot be
+identified refuses startup. Only a local chain with any other genesis (a
 localnet) runs as a development runtime. `--endure.devnet_time_compression` is
 refused on mainnet regardless of the acknowledgement, before the archive probe.
 
