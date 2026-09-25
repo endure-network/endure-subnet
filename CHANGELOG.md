@@ -83,6 +83,10 @@ key-2041 images and chain parameters are not changed by this source update.
   plan's selective `MetagraphInfo`, direct (non-CR4) submission, and the
   confirmation reads. Before, the mock block never advanced, so a mock
   validator never came due. Mock stays abstaining for the owner vote.
+- An immediate-severity block (`owner_hotkey_mismatch`, `owner_unregistered`,
+  `owner_vote_chain_mismatch`) keeps `/health` at 503 when a durable
+  score-read failure interrupts it, instead of waiting out the 2-epoch
+  transient clock.
 - The pre-submission recheck re-resolves the snapshot's owner against the exact
   metagraph, chain identity, and constraints the vector was prepared from; a
   failure aborts before sending, counts as one failed attempt, is recorded in

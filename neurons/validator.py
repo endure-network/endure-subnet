@@ -721,7 +721,13 @@ class Validator(BaseValidatorNeuron):
         block = getattr(self, "_emission_block", None)
         if block is None or self.config.neuron.disable_set_weights:
             return False
-        if block in _IMMEDIATE_EMISSION_BLOCKS:
+        underlying = getattr(self, "_emission_block_underlying", None)
+        # A score-read failure can interrupt an immediate-severity fault; the
+        # parked fault still pages at once.
+        if (
+            block in _IMMEDIATE_EMISSION_BLOCKS
+            or underlying in _IMMEDIATE_EMISSION_BLOCKS
+        ):
             return True
         # Transient reasons page only once the condition has been re-observed
         # for two epochs; a stale first observation alone never pages.

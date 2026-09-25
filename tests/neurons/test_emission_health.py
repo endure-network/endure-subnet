@@ -351,6 +351,26 @@ def test_a_score_read_failure_does_not_restart_the_interrupted_fault_clock(
     assert _client(validator).get("/health").status_code == 503
 
 
+def test_a_score_read_failure_keeps_an_immediate_fault_paging(
+    validator: Validator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("neurons.validator.time.monotonic", lambda: 10000.0)
+    validator.scores = [Decimal(0)]
+    validator._mark_tick_progress()
+    validator._block_emission(
+        EmissionBlocked("owner_hotkey_mismatch", "owner rotated"), 1000
+    )
+    assert _client(validator).get("/health").status_code == 503
+
+    # A score-read failure one block later parks the owner fault underneath.
+    validator._block_emission(
+        EmissionBlocked("score_state_unavailable", "database is locked"), 1001
+    )
+
+    assert validator._emission_block == "score_state_unavailable"
+    assert _client(validator).get("/health").status_code == 503
+
+
 def test_confirmation_deadline_still_degrades_while_emission_is_disabled(
     validator: Validator,
     monkeypatch: pytest.MonkeyPatch,
