@@ -39,6 +39,13 @@ key-2041 images and chain parameters are not changed by this source update.
   `market_sampling.py` (old-vs-new differentials: 0 mismatches); which schema
   is served (`consensus_policy.py`);
   remove the unused `moving_average_alpha`/`update_scores` path.
+- Accept, ignore and warn on options that no longer do anything, on every
+  network: `--endure.fetch_delay_seconds` (its plumbing and the never-called
+  scheduler `resolution_due()` methods are deleted), `--neuron.dont_save_events`
+  and `--neuron.events_retention_size` (the events logger nothing wrote to is
+  deleted, so no empty `events.log` is created), and the already-removed
+  `--neuron.moving_average_alpha`, which argparse no longer refuses. They are
+  deleted at the next protocol key change.
 - Add a standing owner-vote fallback for served Alpha Risk on mainnet SN30 and
   Bittensor testnet: whenever the score vector has no positive entry (cold
   start, or after every scored miner is archived), submit the whole vote to the

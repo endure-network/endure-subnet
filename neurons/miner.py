@@ -192,10 +192,7 @@ class Miner(BaseMinerNeuron):
             scheduler = risk_runtime.scheduler
             provider = risk_runtime.price_provider
         else:
-            scheduler = scheduler_for_schema(
-                self._schema_id,
-                fetch_delay_seconds=int(self.config.endure.fetch_delay_seconds),
-            )
+            scheduler = scheduler_for_schema(self._schema_id)
             if permits_dev_only_runtime(self.config):
                 provider = recorded_mainnet_fixture_provider()
             else:
@@ -230,10 +227,7 @@ class Miner(BaseMinerNeuron):
 
         bt.logging.info("Forge lending reference miner (dormant, dev-only)")
         return MinerRoundService(
-            scheduler=scheduler_for_schema(
-                self._schema_id,
-                fetch_delay_seconds=int(self.config.endure.fetch_delay_seconds),
-            ),
+            scheduler=scheduler_for_schema(self._schema_id),
             assemble=LendingBaselineAssembler(
                 netuids=FORGE_LENDING_WHITELISTED_NETUIDS,
                 miner_hotkey=str(self.wallet.hotkey.ss58_address),

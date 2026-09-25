@@ -217,7 +217,7 @@ def replay_validator(
     validator._vertical_runtime = VerticalRuntime(
         round_program=program,
         publisher="risk",
-        scheduler=FixedUtcScheduler(fetch_delay_seconds=0),
+        scheduler=FixedUtcScheduler(),
     )
     validator._reconstruct_scores()
     return validator

@@ -52,7 +52,7 @@ from endure.protocol.consensus_policy import (
     serves_alpha_risk,
 )
 
-from .logging import safe_endpoint_label, setup_events_logger
+from .logging import safe_endpoint_label
 
 # bittensor >=10.3 disabled bt.Config CLI/arg parsing by default
 # (BT_NO_PARSE_CLI_ARGS defaults to "true"), so bt.Config(parser, args=...)
@@ -401,12 +401,48 @@ def check_config(cls, config: "bt.Config"):
     ):
         require_compression_runtime_allowed(config)
 
-    if not config.neuron.dont_save_events:
-        # Add custom event logger for the events.
-        events_logger = setup_events_logger(
-            config.neuron.full_path, config.neuron.events_retention_size
+    warn_ignored_options(config)
+
+
+# Options that no longer do anything. Each stays accepted so an existing start
+# script keeps working, is ignored with a warning, and is deleted at the next
+# protocol key change.
+_IGNORED_VALUE_OPTIONS = (
+    "endure.fetch_delay_seconds",
+    "neuron.events_retention_size",
+    "neuron.moving_average_alpha",
+)
+_IGNORED_FLAG_OPTIONS = ("neuron.dont_save_events",)
+_IGNORED_OPTION_HELP = "Ignored; removed at the next protocol key change."
+
+
+def _add_ignored_options(parser, options: tuple[str, ...]) -> None:
+    for option in options:
+        if option in _IGNORED_FLAG_OPTIONS:
+            parser.add_argument(
+                f"--{option}",
+                action="store_true",
+                default=None,
+                help=_IGNORED_OPTION_HELP,
+            )
+        else:
+            parser.add_argument(
+                f"--{option}", type=str, default=None, help=_IGNORED_OPTION_HELP
+            )
+
+
+def warn_ignored_options(config: "bt.Config") -> None:
+    """Warn for every supplied option that no longer has any effect."""
+    for option in (*_IGNORED_VALUE_OPTIONS, *_IGNORED_FLAG_OPTIONS):
+        section, name = option.split(".", maxsplit=1)
+        value = getattr(getattr(config, section, None), name, None)
+        if value is None:
+            continue
+        given = "" if option in _IGNORED_FLAG_OPTIONS else f" {value}"
+        bt.logging.warning(
+            f"--{option}{given} is ignored and will be removed at the next "
+            "protocol key change; delete it from start scripts"
         )
-        bt.logging.register_primary_logger(events_logger.name)
 
 
 def add_args(cls, parser):
@@ -433,18 +469,13 @@ def add_args(cls, parser):
         default=EPOCH_LENGTH_BLOCKS,
     )
 
-    parser.add_argument(
-        "--neuron.events_retention_size",
-        type=_positive_int,
-        help="Events retention size in bytes (passed to RotatingFileHandler.maxBytes).",
-        default=2 * 1024 * 1024 * 1024,  # 2 GB
-    )
-
-    parser.add_argument(
-        "--neuron.dont_save_events",
-        action="store_true",
-        help="If set, we dont save events to a log file.",
-        default=False,
+    _add_ignored_options(
+        parser,
+        (
+            "neuron.events_retention_size",
+            "neuron.dont_save_events",
+            "endure.fetch_delay_seconds",
+        ),
     )
 
     parser.add_argument(
@@ -527,12 +558,6 @@ def add_args(cls, parser):
             "ISO timestamp anchoring the synthetic scheduler; all neurons in a "
             "compressed run must share it."
         ),
-    )
-    parser.add_argument(
-        "--endure.fetch_delay_seconds",
-        type=_positive_int,
-        default=72000,
-        help="Settled-data delay after a horizon's close before outcome fetch.",
     )
     parser.add_argument(
         "--endure.tick_seconds",
@@ -691,6 +716,8 @@ def add_validator_args(cls, parser):
         help="Trials for this neuron go in neuron.root / (wallet_cold - wallet_hot) / neuron.name. ",
         default="validator",
     )
+
+    _add_ignored_options(parser, ("neuron.moving_average_alpha",))
 
     parser.add_argument(
         "--neuron.num_concurrent_forwards",

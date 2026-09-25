@@ -205,7 +205,6 @@ def test_validator_refuses_defaulted_netuid_on_live_network(tmp_path: Path) -> N
             "test",
             "--endure.serving_stage",
             "testnet",
-            "--neuron.dont_save_events",
         ],
     )
     config.logging.logging_dir = str(tmp_path)

@@ -1466,10 +1466,7 @@ def _build_risk_vertical_runtime(validator: Validator) -> VerticalRuntime:
         reveal_close_block = _recorded_fixture_block
         window_end_block = None
     else:
-        scheduler = scheduler_for_schema(
-            RISK_SCHEMA_ID,
-            fetch_delay_seconds=int(validator.config.endure.fetch_delay_seconds),
-        )
+        scheduler = scheduler_for_schema(RISK_SCHEMA_ID)
         if permits_dev_only_runtime(validator.config):
             price_provider = recorded_mainnet_fixture_provider()
             reveal_close_block = _recorded_fixture_block
@@ -1532,10 +1529,7 @@ def _build_forge_vertical_runtime(validator: Validator) -> VerticalRuntime:
     )
     from endure.scoring.lending.orchestrator import LendingScoringOrchestrator
 
-    scheduler = scheduler_for_schema(
-        FORGE_LENDING_SCHEMA_ID,
-        fetch_delay_seconds=int(validator.config.endure.fetch_delay_seconds),
-    )
+    scheduler = scheduler_for_schema(FORGE_LENDING_SCHEMA_ID)
     orchestrator = LendingScoringOrchestrator(
         storage=validator._storage,
         price_provider=recorded_mainnet_fixture_provider(),

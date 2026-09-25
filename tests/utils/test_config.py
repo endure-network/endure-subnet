@@ -110,7 +110,6 @@ class TestAddArgs:
             (add_miner_args, ["--wandb.project_name", "project"]),
             (add_miner_args, ["--wandb.entity", "entity"]),
             (add_validator_args, ["--neuron.vpermit_tao_limit", "4096"]),
-            (add_validator_args, ["--neuron.moving_average_alpha", "0.25"]),
         ),
     )
     def test_removed_cli_options_are_rejected(
@@ -538,7 +537,6 @@ class TestCheckConfig:
         cfg.wallet.hotkey = "test-hot"
         cfg.netuid = 7
         cfg.neuron.name = "pytest-neuron"
-        cfg.neuron.dont_save_events = True
 
         check_config(_FakeCls, cfg)
 
@@ -553,24 +551,54 @@ class TestCheckConfig:
         cfg.wallet.hotkey = "hot"
         cfg.netuid = 1
         cfg.neuron.name = "n"
-        cfg.neuron.dont_save_events = True
 
         check_config(_FakeCls, cfg)
         check_config(_FakeCls, cfg)
 
-    def test_registers_events_logger_when_enabled(self, tmp_path: Path) -> None:
+    def test_dead_options_are_accepted_ignored_and_warned(self, tmp_path: Path) -> None:
+        parser = argparse.ArgumentParser()
+        bt.Wallet.add_args(parser)
+        bt.Subtensor.add_args(parser)
+        bt.logging.add_args(parser)
+        add_args(_FakeCls, parser)
+        add_validator_args(_FakeCls, parser)
+        # Values the removed options once refused (a negative delay) parse too.
+        cfg = bt.Config(
+            parser,
+            args=[
+                "--endure.fetch_delay_seconds",
+                "-1",
+                "--neuron.events_retention_size",
+                "4096",
+                "--neuron.dont_save_events",
+                "--neuron.moving_average_alpha",
+                "0.25",
+                "--logging.logging_dir",
+                str(tmp_path),
+            ],
+        )
+
+        with patch.object(bt.logging, "warning") as warning:
+            check_config(_FakeCls, cfg)
+
+        assert sorted(
+            call.args[0].split(" is ignored")[0] for call in warning.call_args_list
+        ) == [
+            "--endure.fetch_delay_seconds -1",
+            "--neuron.dont_save_events",
+            "--neuron.events_retention_size 4096",
+            "--neuron.moving_average_alpha 0.25",
+        ]
+        assert not (Path(cfg.neuron.full_path) / "events.log").exists()
+
+    def test_absent_dead_options_log_nothing(self, tmp_path: Path) -> None:
         cfg = config(_FakeCls)
         cfg.logging.logging_dir = str(tmp_path)
-        cfg.wallet.name = "cold"
-        cfg.wallet.hotkey = "hot"
-        cfg.netuid = 1
-        cfg.neuron.name = "n"
-        cfg.neuron.dont_save_events = False
-        cfg.neuron.events_retention_size = 2048
 
-        with patch.object(bt.logging, "register_primary_logger") as registered:
+        with patch.object(bt.logging, "warning") as warning:
             check_config(_FakeCls, cfg)
-            registered.assert_called_once()
+
+        warning.assert_not_called()
 
     def test_compression_check_config_allows_testnet_with_stage_ack(
         self, tmp_path: Path
@@ -580,7 +608,6 @@ class TestCheckConfig:
         cfg.wallet.name = "cold"
         cfg.wallet.hotkey = "hot"
         cfg.neuron.name = "n"
-        cfg.neuron.dont_save_events = True
         cfg.runtime = argparse.Namespace(mode="live")
         cfg.endure.devnet_time_compression = True
         cfg.endure.serving_stage = "testnet"
@@ -598,7 +625,6 @@ class TestCheckConfig:
         cfg.wallet.name = "cold"
         cfg.wallet.hotkey = "hot"
         cfg.neuron.name = "n"
-        cfg.neuron.dont_save_events = True
         cfg.runtime = argparse.Namespace(mode="live")
         cfg.endure.devnet_time_compression = True
         cfg.endure.serving_stage = None
@@ -631,24 +657,6 @@ class TestArgValidation:
         add_args(_FakeCls, parser)
         add_miner_args(_FakeCls, parser)
         return parser
-
-    def test_events_retention_size_parses_positive_int(self) -> None:
-        ns = self._base_parser().parse_args(["--neuron.events_retention_size", "4096"])
-        value = getattr(ns, "neuron.events_retention_size")
-        assert value == 4096
-        assert isinstance(value, int)
-
-    def test_events_retention_size_default_is_positive_int(self) -> None:
-        value = getattr(
-            self._base_parser().parse_args([]), "neuron.events_retention_size"
-        )
-        assert isinstance(value, int)
-        assert value > 0
-
-    @pytest.mark.parametrize("bad", ["0", "-5", "notanint"])
-    def test_events_retention_size_rejects_invalid(self, bad: str) -> None:
-        with pytest.raises(SystemExit):
-            self._base_parser().parse_args(["--neuron.events_retention_size", bad])
 
     def test_min_miner_stake_parses_decimal(self) -> None:
         ns = self._validator_parser().parse_args(["--endure.min_miner_stake", "10"])
@@ -700,13 +708,6 @@ class TestNumericArgGuards:
         add_args(_FakeCls, parser)
         with pytest.raises(SystemExit):
             parser.parse_args(["--endure.max_commits_per_round", "0"])
-
-    def test_endure_fetch_delay_seconds_rejects_non_positive(self) -> None:
-        # Negative pulls outcome fetch before session close: unsettled data.
-        parser = argparse.ArgumentParser()
-        add_args(_FakeCls, parser)
-        with pytest.raises(SystemExit):
-            parser.parse_args(["--endure.fetch_delay_seconds", "-1"])
 
     def test_dead_template_args_are_removed(self) -> None:
         # sample_size/timeout are consumed nowhere — keeping them invites

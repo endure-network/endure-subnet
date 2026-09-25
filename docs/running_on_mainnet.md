@@ -67,6 +67,19 @@ identified, and `--neuron.num_concurrent_forwards` other than `1`. Disabling
 emission is an explicit operator mode, not a timer: positive scores never
 enable it automatically.
 
+### Ignored options
+
+These options no longer have any effect on any network. Key 2042 still accepts
+them so existing start scripts keep working, logs a `WARNING` for each one
+supplied, and deletes them at the next protocol key change:
+
+| Option | Why it does nothing |
+| --- | --- |
+| `--endure.fetch_delay_seconds` | Resolution timing comes from the stored round windows; nothing reads the delay. |
+| `--neuron.dont_save_events` | No events log is written. |
+| `--neuron.events_retention_size` | No events log is written. |
+| `--neuron.moving_average_alpha` | Scores come from durable EMAs. |
+
 Before transport startup, a read-only market-data preflight verifies Finney's
 genesis identity, deep finalized timestamp history used by boundary search, and
 positive Alpha/TAO reserves for subnet 30 at least 30 days before the finalized
@@ -246,8 +259,7 @@ validator already approaching inactivity.
    positive TAO floor on live networks; key 2042 ignores that value with a
    warning and runs the protocol floor `0`, so leftover values are harmless but
    misleading.
-   Remove `--neuron.moving_average_alpha` from start scripts: key 2042 no
-   longer accepts it (scores come from durable EMAs), and argparse refuses it.
+   Also delete the [options that no longer do anything](#ignored-options).
 3. Stop the old weight writer before starting Endure. Keep exactly one writer
    per hotkey; do not run an external weight setter beside it.
 4. Start one final emission-enabled Endure process, with the axon on and
