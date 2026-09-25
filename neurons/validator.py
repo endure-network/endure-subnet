@@ -258,6 +258,8 @@ class Validator(BaseValidatorNeuron):
         )
         self._schema_id = active_runtime_schema_id(self.config)
         self._storage = Storage.from_url(self.config.endure.database_url)
+        # Before the API thread starts: afterwards only the run loop updates it.
+        self._load_startup_fence()
         self._weight_emission_startup_fence_block: int | None = None
         self._owner_vote_recipient: OwnerVoteRecipient | None = None
         self._emission_block: EmissionBlockReason | None = None
@@ -340,24 +342,39 @@ class Validator(BaseValidatorNeuron):
         self._confirmation_summary_cache = (now, current_block, summary)
         return summary
 
-    def _startup_fence(self) -> int | None:
-        """The key's startup fence, read once: it is immutable once written.
+    def _load_startup_fence(self) -> None:
+        """Read the key's startup fence once, before any other thread runs.
 
-        Only this process writes it (in ``_weight_emission_ready``), which
-        updates the cached value, so one durable read at first use suffices.
+        The fence is immutable once written, and only the run loop writes it
+        (in ``_weight_emission_ready``, which updates this cached value).
         """
-        if getattr(self, "_startup_fence_loaded", False):
-            return self._startup_fence_block
         storage = getattr(self, "_storage", None)
-        fence = (
+        self._startup_fence_block: int | None = (
             None
             if storage is None
             else storage.weight_emission_startup_fence(
                 schema_id=self._schema_id, protocol_version_key=CURRENT_VERSION_KEY
             )
         )
-        self._startup_fence_block: int | None = fence
         self._startup_fence_loaded = storage is not None
+
+    def _startup_fence(self) -> int | None:
+        """The cached startup fence; a read that finds no fence is never cached.
+
+        A read racing the run loop's first write can see no fence yet;
+        caching that would overwrite the recorded fence and re-fence emission.
+        """
+        if getattr(self, "_startup_fence_loaded", False):
+            return self._startup_fence_block
+        storage = getattr(self, "_storage", None)
+        if storage is None:
+            return None
+        fence = storage.weight_emission_startup_fence(
+            schema_id=self._schema_id, protocol_version_key=CURRENT_VERSION_KEY
+        )
+        if fence is not None:
+            self._startup_fence_block = fence
+            self._startup_fence_loaded = True
         return fence
 
     def _open_confirmation(self) -> bool:

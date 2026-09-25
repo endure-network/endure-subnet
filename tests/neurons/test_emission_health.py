@@ -372,12 +372,8 @@ def test_a_score_read_failure_keeps_an_immediate_fault_paging(
     assert _client(validator).get("/health").status_code == 503
 
 
-def test_confirmation_deadline_still_degrades_while_emission_is_disabled(
-    validator: Validator,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr("neurons.validator.time.monotonic", lambda: 1000.0)
-    validator._storage.record_weight_emission(
+def _record_open_batch(storage: Storage) -> None:
+    storage.record_weight_emission(
         schema_id=RISK_SCHEMA_ID,
         round_id=None,
         emitted_at_iso="2026-09-24T00:00:00+00:00",
@@ -409,6 +405,14 @@ def test_confirmation_deadline_still_degrades_while_emission_is_disabled(
             )
         ),
     )
+
+
+def test_confirmation_deadline_still_degrades_while_emission_is_disabled(
+    validator: Validator,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("neurons.validator.time.monotonic", lambda: 1000.0)
+    _record_open_batch(validator._storage)
     validator._mark_tick_progress()
     client = _client(validator)
     waiting = client.get("/health")
@@ -557,3 +561,46 @@ def test_a_stalled_health_read_never_delays_the_run_loop_or_live(
         release.set()
         poll.join(30)
     assert health_status == [200]
+
+
+def test_a_health_fence_read_racing_the_first_fence_write_keeps_the_fence(
+    validator: Validator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    validator.config.runtime.mode = "live"
+    validator.gated_subtensor.commit_reveal_enabled.return_value = False
+    head = [1000]
+    monkeypatch.setattr(validator, "_safe_block", lambda: head[0])
+    storage = validator._storage
+    read = storage.weight_emission_startup_fence
+    api_threads: list[int] = []
+    in_read = threading.Event()
+    release = threading.Event()
+
+    def slow(*, schema_id: str, protocol_version_key: int) -> int | None:
+        value = read(schema_id=schema_id, protocol_version_key=protocol_version_key)
+        if threading.get_ident() in api_threads:
+            in_read.set()
+            release.wait(10)
+        return value
+
+    monkeypatch.setattr(storage, "weight_emission_startup_fence", slow)
+
+    def api() -> None:
+        api_threads.append(threading.get_ident())
+        validator.runtime_health()
+
+    poll = threading.Thread(target=api)
+    poll.start()
+    assert in_read.wait(10)
+    # The run loop's first readiness check computes and records the fence
+    # while /health's read (which saw no fence yet) is still in flight.
+    assert validator._weight_emission_ready(storage) is False
+    durable = read(schema_id=RISK_SCHEMA_ID, protocol_version_key=CURRENT_VERSION_KEY)
+    assert durable == 1140
+    release.set()
+    poll.join(10)
+
+    head[0] = durable + 1
+    # Past the durable fence, emission is ready; it is not re-fenced.
+    assert validator._weight_emission_ready(storage) is True
+    assert validator._startup_fence_block == durable

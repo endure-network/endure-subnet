@@ -100,6 +100,9 @@ key-2041 images and chain parameters are not changed by this source update.
   write and after every reconciliation. A run-loop pass now makes no database
   query (before: 2), so a stalled `/health` read can no longer delay weight
   setting.
+  The startup fence is loaded once at construction, before the API thread
+  starts; a `/health` read that finds no fence yet is never cached, so it
+  cannot overwrite the fence the run loop just recorded and re-fence emission.
 - The pre-submission recheck re-resolves the snapshot's owner against the exact
   metagraph, chain identity, and constraints the vector was prepared from; a
   failure aborts before sending, counts as one failed attempt, is recorded in
