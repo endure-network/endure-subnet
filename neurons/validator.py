@@ -11,7 +11,6 @@ EMAs whenever scoring happens.
 import asyncio
 import contextlib
 import copy
-import os
 import threading
 import time
 from collections.abc import Iterator
@@ -48,10 +47,13 @@ from endure.assessment.schemas.subnet_alpha_risk import (
 from endure.assessment.subnet_alpha_universe import StaticAlphaRiskUniverseProvider
 from endure.base.axon import authenticated_hotkey
 from endure.base.shutdown import (
-    StartupShutdownGuard,
+    STARTUP_SHUTDOWN_GRACE_SECONDS,
+    WATCHDOG_TEARDOWN_GRACE_SECONDS,
+    NeuronLifecycle,
     install_shutdown_handlers,
     join_thread_or_raise,
     run_entrypoint,
+    schedule_forced_exit_after_grace,
     terminate_process,
 )
 from endure.base.validator import (
@@ -1600,33 +1602,15 @@ def _build_forge_vertical_runtime(validator: Validator) -> VerticalRuntime:
     )
 
 
-def _force_restart_if_rpc_abandoned(validator: Validator) -> None:
-    if validator.chain_rpc_restart_required() is not True:
-        return
-    bt.logging.error(
-        "validator forcing process restart after chain RPC "
-        "abandonment capacity was reached"
-    )
-    # Drain the log queues first: the abandoned non-daemon RPC workers would
-    # hang a normal interpreter shutdown, and a raw os._exit loses this line.
-    terminate_process(1, grace_seconds=_WATCHDOG_TEARDOWN_GRACE_SECONDS)
+# Module-level seams: main() passes them at call time, so a test can patch
+# them for this neuron alone.
+_WATCHDOG_TEARDOWN_GRACE_SECONDS = WATCHDOG_TEARDOWN_GRACE_SECONDS
+_STARTUP_SHUTDOWN_GRACE_SECONDS = STARTUP_SHUTDOWN_GRACE_SECONDS
+_schedule_forced_exit_after_grace = schedule_forced_exit_after_grace
 
 
-_WATCHDOG_TEARDOWN_GRACE_SECONDS = 60
-# Within Docker's 45 s stop grace: a signal during construction waits this long
-# for construction to finish before the startup guard ends the process.
-_STARTUP_SHUTDOWN_GRACE_SECONDS = 10
-
-
-def _schedule_forced_exit_after_grace() -> threading.Timer:
-    # SystemExit only reaches the finalization-free entrypoint boundary after
-    # `with validator` teardown joins its workers — and a wedged tick worker may
-    # never return. A daemon timer bounds that teardown while it still runs
-    # with threads alive.
-    timer = threading.Timer(_WATCHDOG_TEARDOWN_GRACE_SECONDS, os._exit, args=(1,))
-    timer.daemon = True
-    timer.start()
-    return timer
+def _watchdog_exit_reason(validator: Validator) -> str | None:
+    return validator.watchdog_exit_reason()
 
 
 def main() -> None:
@@ -1640,33 +1624,22 @@ def main() -> None:
             f"protocol_version_key={CURRENT_VERSION_KEY}"
         )
         stop = install_shutdown_handlers()
-        startup = StartupShutdownGuard(
-            stop, grace_seconds=_STARTUP_SHUTDOWN_GRACE_SECONDS
+        lifecycle = NeuronLifecycle[Validator](
+            name="validator",
+            terminate=terminate_process,
+            schedule_forced_exit=_schedule_forced_exit_after_grace,
+            startup_grace_seconds=_STARTUP_SHUTDOWN_GRACE_SECONDS,
+            teardown_grace_seconds=_WATCHDOG_TEARDOWN_GRACE_SECONDS,
         )
-        validator = Validator()
-        startup.started()
+        validator = lifecycle.construct(stop, Validator)
         try:
             with validator:
-                while not stop.is_set():
-                    _force_restart_if_rpc_abandoned(validator)
-                    if (reason := validator.watchdog_exit_reason()) is not None:
-                        # The worker may have died by latching between the check
-                        # above and this liveness probe; a plain SystemExit here
-                        # would take the normal exit the latch exists to prevent.
-                        _force_restart_if_rpc_abandoned(validator)
-                        bt.logging.error(f"validator watchdog exiting: {reason}")
-                        _schedule_forced_exit_after_grace()
-                        raise SystemExit(1)
-                    bt.logging.info(f"Validator running... {time.time()}")
-                    stop.wait(5)
-                # A shutdown signal that races the latch must not fall through
-                # to the normal exit the latch exists to prevent.
-                _force_restart_if_rpc_abandoned(validator)
+                lifecycle.watch(stop, validator, exit_reason=_watchdog_exit_reason)
         finally:
             # The RPC worker can also latch while __exit__ joins it — and
             # __exit__ itself raises on incomplete cleanup, so this recheck
             # must run on the exception path too, not only after a clean exit.
-            _force_restart_if_rpc_abandoned(validator)
+            lifecycle.force_restart_if_rpc_abandoned(validator)
         bt.logging.info("validator stopped on shutdown signal")
     except DevOnlyConfigError as error:
         bt.logging.error(f"validator refused to start: {safe_error(error)}")

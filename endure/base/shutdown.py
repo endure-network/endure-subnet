@@ -7,10 +7,14 @@ import os
 import signal
 import sys
 import threading
+import time
 import traceback
 from collections.abc import Callable
+from dataclasses import dataclass
 from types import FrameType
-from typing import NoReturn
+from typing import NoReturn, Protocol
+
+import bittensor as bt
 
 SHUTDOWN_SIGNALS: tuple[signal.Signals, ...] = (signal.SIGINT, signal.SIGTERM)
 # Dendrite submissions legitimately wait up to twelve seconds. Leave enough
@@ -136,3 +140,102 @@ class StartupShutdownGuard:
             flush=True,
         )
         terminate_process(1, grace_seconds=grace_seconds)
+
+
+# Bounds both a watchdog-triggered teardown and the exit-callback drain at the
+# finalization-free entrypoint boundary.
+WATCHDOG_TEARDOWN_GRACE_SECONDS = 60
+# Within Docker's 45 s stop grace: a signal during construction waits this long
+# for construction to finish before the startup guard ends the process.
+STARTUP_SHUTDOWN_GRACE_SECONDS = 10
+_WATCHDOG_POLL_SECONDS = 5
+
+
+def schedule_forced_exit_after_grace(
+    grace_seconds: float = WATCHDOG_TEARDOWN_GRACE_SECONDS,
+) -> threading.Timer:
+    """Bound a watchdog-triggered teardown that may join a wedged worker.
+
+    SystemExit only reaches the finalization-free entrypoint boundary after the
+    neuron's ``with`` teardown joins its workers, and whatever tripped the
+    watchdog may have left one wedged. A daemon timer bounds that teardown
+    while it still runs with threads alive.
+    """
+    timer = threading.Timer(grace_seconds, os._exit, args=(1,))
+    timer.daemon = True
+    timer.start()
+    return timer
+
+
+class ChainRpcRestartLatch(Protocol):
+    """A neuron whose abandoned chain RPC workers can demand a hard exit."""
+
+    def chain_rpc_restart_required(self) -> bool: ...
+
+
+class ProcessTerminator(Protocol):
+    def __call__(self, code: int, *, grace_seconds: float) -> NoReturn: ...
+
+
+@dataclass(frozen=True, slots=True)
+class NeuronLifecycle[N: ChainRpcRestartLatch]:
+    """One neuron entrypoint's startup guard, watchdog loop and restart latch.
+
+    Each neuron builds this inside ``main`` from its own module-level seams,
+    so a test that patches one neuron's ``terminate_process`` or grace
+    constant affects only that neuron.
+    """
+
+    name: str
+    terminate: ProcessTerminator
+    schedule_forced_exit: Callable[[], object]
+    startup_grace_seconds: float
+    teardown_grace_seconds: float
+
+    def construct(self, stop: threading.Event, build: Callable[[], N]) -> N:
+        """Build the neuron under a ``StartupShutdownGuard``, then hand off."""
+        startup = StartupShutdownGuard(stop, grace_seconds=self.startup_grace_seconds)
+        neuron = build()
+        startup.started()
+        return neuron
+
+    def force_restart_if_rpc_abandoned(self, neuron: N) -> None:
+        """Hard-exit once the neuron's chain RPC restart latch has tripped.
+
+        A normal exit would join the abandoned non-daemon RPC workers at
+        interpreter shutdown and could hang forever.
+        """
+        if neuron.chain_rpc_restart_required() is not True:
+            return
+        bt.logging.error(
+            f"{self.name} forcing process restart after chain RPC "
+            "abandonment capacity was reached"
+        )
+        # Drain the log queues first: the abandoned non-daemon RPC workers
+        # would hang a normal interpreter shutdown, and a raw os._exit loses
+        # this line.
+        self.terminate(1, grace_seconds=self.teardown_grace_seconds)
+
+    def watch(
+        self,
+        stop: threading.Event,
+        neuron: N,
+        *,
+        exit_reason: Callable[[N], str | None],
+    ) -> None:
+        """Poll the running neuron until shutdown, or exit on a watchdog fault."""
+        while not stop.is_set():
+            self.force_restart_if_rpc_abandoned(neuron)
+            if (reason := exit_reason(neuron)) is not None:
+                # The worker may have died by latching between the check above
+                # and this liveness probe; a plain SystemExit here would take
+                # the normal exit the latch exists to prevent.
+                self.force_restart_if_rpc_abandoned(neuron)
+                bt.logging.error(f"{self.name} watchdog exiting: {reason}")
+                self.schedule_forced_exit()
+                raise SystemExit(1)
+            bt.logging.info(f"{self.name.capitalize()} running... {time.time()}")
+            stop.wait(_WATCHDOG_POLL_SECONDS)
+        # A shutdown signal that races the latch must not fall through to the
+        # normal exit the latch exists to prevent.
+        self.force_restart_if_rpc_abandoned(neuron)

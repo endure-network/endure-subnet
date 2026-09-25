@@ -8,9 +8,7 @@ validator axons (permit + optional stake-weight floor) via its dendrite.
 
 import asyncio
 import copy
-import os
 import threading
-import time
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -24,10 +22,13 @@ from endure.assessment.schemas.subnet_alpha_risk import RISK_SCHEMA_ID
 from endure.assessment.subnet_alpha_universe import ALPHA_RISK_WHITELISTED_NETUIDS
 from endure.base.miner import BaseMinerNeuron
 from endure.base.shutdown import (
-    StartupShutdownGuard,
+    STARTUP_SHUTDOWN_GRACE_SECONDS,
+    WATCHDOG_TEARDOWN_GRACE_SECONDS,
+    NeuronLifecycle,
     install_shutdown_handlers,
     join_thread_or_raise,
     run_entrypoint,
+    schedule_forced_exit_after_grace,
     terminate_process,
 )
 from endure.live.alpha_market_data import (
@@ -444,34 +445,17 @@ class Miner(BaseMinerNeuron):
         return priority
 
 
-def _force_restart_if_rpc_abandoned(miner: Miner) -> None:
-    if miner.chain_rpc_restart_required() is not True:
-        return
-    # A normal exit would join the abandoned non-daemon RPC workers at
-    # interpreter shutdown and could hang forever.
-    bt.logging.error(
-        "miner forcing process restart after chain RPC abandonment capacity was reached"
-    )
-    # Drain the log queues first: the abandoned non-daemon RPC workers would
-    # hang a normal interpreter shutdown, and a raw os._exit loses this line.
-    terminate_process(1, grace_seconds=_WATCHDOG_TEARDOWN_GRACE_SECONDS)
+# Module-level seams: main() passes them at call time, so a test can patch
+# them for this neuron alone.
+_WATCHDOG_TEARDOWN_GRACE_SECONDS = WATCHDOG_TEARDOWN_GRACE_SECONDS
+_STARTUP_SHUTDOWN_GRACE_SECONDS = STARTUP_SHUTDOWN_GRACE_SECONDS
+_schedule_forced_exit_after_grace = schedule_forced_exit_after_grace
 
 
-_WATCHDOG_TEARDOWN_GRACE_SECONDS = 60
-# Within Docker's 45 s stop grace: a signal during construction waits this long
-# for construction to finish before the startup guard ends the process.
-_STARTUP_SHUTDOWN_GRACE_SECONDS = 10
-
-
-def _schedule_forced_exit_after_grace() -> threading.Timer:
-    # SystemExit only reaches the finalization-free entrypoint boundary after
-    # `with Miner()` teardown joins its workers — and whatever killed the miner
-    # loop thread may have left one wedged. A daemon timer bounds that teardown
-    # while it still runs with threads alive.
-    timer = threading.Timer(_WATCHDOG_TEARDOWN_GRACE_SECONDS, os._exit, args=(1,))
-    timer.daemon = True
-    timer.start()
-    return timer
+def _watchdog_exit_reason(miner: Miner) -> str | None:
+    if miner.thread is None or not miner.thread.is_alive():
+        return "miner loop thread exited"
+    return None
 
 
 def main() -> None:
@@ -485,37 +469,24 @@ def main() -> None:
             f"protocol_version_key={CURRENT_VERSION_KEY}"
         )
         stop = install_shutdown_handlers()
-        startup = StartupShutdownGuard(
-            stop, grace_seconds=_STARTUP_SHUTDOWN_GRACE_SECONDS
+        lifecycle = NeuronLifecycle[Miner](
+            name="miner",
+            terminate=terminate_process,
+            schedule_forced_exit=_schedule_forced_exit_after_grace,
+            startup_grace_seconds=_STARTUP_SHUTDOWN_GRACE_SECONDS,
+            teardown_grace_seconds=_WATCHDOG_TEARDOWN_GRACE_SECONDS,
         )
-        constructed = Miner()
-        startup.started()
+        constructed = lifecycle.construct(stop, Miner)
         miner: Miner | None = None
         try:
             with constructed as miner:
-                while not stop.is_set():
-                    _force_restart_if_rpc_abandoned(miner)
-                    if miner.thread is None or not miner.thread.is_alive():
-                        # The worker may have died by latching between the check
-                        # above and this liveness probe; a plain SystemExit here
-                        # would take the normal exit the latch exists to prevent.
-                        _force_restart_if_rpc_abandoned(miner)
-                        bt.logging.error(
-                            "miner watchdog exiting: miner loop thread exited"
-                        )
-                        _schedule_forced_exit_after_grace()
-                        raise SystemExit(1)
-                    bt.logging.info(f"Miner running... {time.time()}")
-                    stop.wait(5)
-                # A shutdown signal that races the latch must not fall through
-                # to the normal exit the latch exists to prevent.
-                _force_restart_if_rpc_abandoned(miner)
+                lifecycle.watch(stop, miner, exit_reason=_watchdog_exit_reason)
         finally:
             # The RPC worker can also latch while __exit__ joins it — and
             # __exit__ itself raises on incomplete cleanup, so this recheck
             # must run on the exception path too, not only after a clean exit.
             if miner is not None:
-                _force_restart_if_rpc_abandoned(miner)
+                lifecycle.force_restart_if_rpc_abandoned(miner)
         bt.logging.info("miner stopped on shutdown signal")
     except Exception as error:  # noqa: BLE001 - CLI boundary must redact SDK errors.
         bt.logging.error(f"miner failed: {type(error).__name__}: {safe_error(error)}")
