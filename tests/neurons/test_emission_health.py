@@ -155,6 +155,31 @@ def test_intentional_wait_does_not_create_missing_submission_fault(
     assert runtime["emission_submission_overdue"] is False
 
 
+def test_a_due_attempt_is_judged_on_the_live_head_not_the_cached_metagraph(
+    validator: Validator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    now = [10000.0]
+    head = [1101]
+    monkeypatch.setattr("neurons.validator.time.monotonic", lambda: now[0])
+    monkeypatch.setattr(Validator, "block", property(lambda _self: head[0]))
+    # The last plan, at live head 1050, found the chain due at 1100; the
+    # metagraph was cached at the previous resync.
+    validator._last_weights_attempt = 1000
+    validator._emission_chain_due_block = 1100
+    validator.metagraph.block = 1000
+
+    assert validator.should_set_weights() is True
+
+    assert validator._emission_reason == "ready"
+    assert validator._emission_expected_since == 10000.0
+    # A later /health poll still reads the cached metagraph block; it must not
+    # restart the overdue clock of the attempt that is already due.
+    now[0] = 10500.0
+    health = validator.runtime_health()
+    assert health["emission_reason"] == "ready"
+    assert health["emission_expected_seconds"] == 500.0
+
+
 def test_startup_fence_and_following_epoch_precede_missing_progress_deadline(
     validator: Validator,
     monkeypatch: pytest.MonkeyPatch,

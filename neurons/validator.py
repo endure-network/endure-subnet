@@ -731,10 +731,26 @@ class Validator(BaseValidatorNeuron):
             >= _TRANSIENT_EMISSION_BLOCK_EPOCHS * int(self.config.neuron.epoch_length)
         )
 
+    def _note_head_block(self, block: int | None) -> None:
+        """Remember the newest live head an emission decision was taken at."""
+        if block is None:
+            return
+        with self._emission_state():
+            known = getattr(self, "_emission_head_block", None)
+            if known is None or block > known:
+                self._emission_head_block = block
+
     def _refresh_emission_health(
         self, current_block: int | None, *, open_confirmation: bool
     ) -> None:
         with self._emission_state():
+            # The cached metagraph block can trail the live head the plan's
+            # chain due block came from by up to an epoch; judging a due
+            # attempt against it would report chain_rate_limit and reset the
+            # overdue clock.
+            head = getattr(self, "_emission_head_block", None)
+            if head is not None and (current_block is None or head > current_block):
+                current_block = head
             mode = self._observed_emission_mode()
             if mode != getattr(self, "_emission_mode", None):
                 self._emission_blocked_reason = None
@@ -824,6 +840,9 @@ class Validator(BaseValidatorNeuron):
         if not getattr(self, "_durable_scores_loaded", False):
             return False
         due = super().should_set_weights()
+        if due:
+            # The base just paced this attempt on the live head (TTL-cached).
+            self._note_head_block(self._safe_block())
         storage = getattr(self, "_storage", None)
         self._refresh_emission_health(
             _cached_block_number(vars(self.metagraph).get("block")),
@@ -1001,6 +1020,7 @@ class Validator(BaseValidatorNeuron):
         """Plan identity, permit, strict rate limit and recipient in one snapshot."""
         netuid = int(self.config.netuid)
         block = int(self.subtensor.get_current_block())
+        self._note_head_block(block)
         info = self.subtensor.get_metagraph_info(netuid=netuid, block=block)
         snapshot = (
             None

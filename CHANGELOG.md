@@ -67,6 +67,9 @@ key-2041 images and chain parameters are not changed by this source update.
   and Subtensor's strict weights rate limit (SN30: 180 blocks vs a 100-block
   epoch). A not-yet-due attempt defers with `chain_rate_limit` (or
   `no_validator_permit`) instead of recording a failed submission.
+  Eligibility gates are judged on the newest live head an emission decision
+  used, not the cached metagraph block, so a due attempt is never reported as
+  `chain_rate_limit` and its overdue clock is not restarted.
 - The pre-submission recheck re-resolves the snapshot's owner against the exact
   metagraph, chain identity, and constraints the vector was prepared from; a
   failure aborts before sending, counts as one failed attempt, is recorded in
