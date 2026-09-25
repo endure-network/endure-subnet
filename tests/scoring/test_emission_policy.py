@@ -1,8 +1,14 @@
 from __future__ import annotations
 
+import dataclasses
+import re
 from decimal import Decimal
 
 import pytest
+from bittensor.core.chain_data.metagraph_info import (
+    MetagraphInfo,
+    SelectiveMetagraphIndex,
+)
 
 from endure.protocol.consensus_policy import (
     MAINNET_GENESIS_HASH,
@@ -12,6 +18,7 @@ from endure.protocol.consensus_policy import (
     OwnerVoteNetwork,
 )
 from endure.scoring.emission_policy import (
+    CHAIN_SNAPSHOT_METAGRAPH_INDICES,
     ChainSnapshot,
     EmissionBlocked,
     OwnerVoteRecipient,
@@ -22,6 +29,18 @@ from endure.scoring.emission_policy import (
     select_emission_mode,
     submission_due,
 )
+
+
+def test_selective_metagraph_indices_populate_exactly_the_snapshot_fields() -> None:
+    # Enum members name the MetagraphInfo field they populate in CamelCase.
+    selected = {
+        re.sub(r"(?<!^)(?=[A-Z])", "_", SelectiveMetagraphIndex(index).name).lower()
+        for index in CHAIN_SNAPSHOT_METAGRAPH_INDICES
+    }
+    snapshot_fields = {field.name for field in dataclasses.fields(ChainSnapshot)}
+
+    assert selected == snapshot_fields | {"netuid"}
+    assert selected <= {field.name for field in dataclasses.fields(MetagraphInfo)}
 
 
 @pytest.mark.parametrize("network", [None, "mainnet", "testnet"])

@@ -119,10 +119,12 @@ class MockSubtensor(bt.MockSubtensor):
         self,
         netuid: int,
         mechid: int = 0,
+        selected_indices: list[int] | None = None,
         block=None,
     ):
         del netuid
         del mechid
+        del selected_indices
         del block
 
 

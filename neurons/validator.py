@@ -85,6 +85,7 @@ from endure.runtime.resolve import resolve_runtime_provider
 from endure.scoring.assessment_orchestrator import ResolutionBudget
 from endure.scoring.eligibility import DeregistrationTracker, scoring_set
 from endure.scoring.emission_policy import (
+    CHAIN_SNAPSHOT_METAGRAPH_INDICES,
     ChainSnapshot,
     EmissionBlocked,
     EmissionBlockReason,
@@ -1021,7 +1022,11 @@ class Validator(BaseValidatorNeuron):
         netuid = int(self.config.netuid)
         block = int(self.subtensor.get_current_block())
         self._note_head_block(block)
-        info = self.subtensor.get_metagraph_info(netuid=netuid, block=block)
+        info = self.subtensor.get_metagraph_info(
+            netuid=netuid,
+            selected_indices=list(CHAIN_SNAPSHOT_METAGRAPH_INDICES),
+            block=block,
+        )
         snapshot = (
             None
             if info is None

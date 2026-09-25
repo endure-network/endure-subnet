@@ -17,7 +17,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Literal, NamedTuple
+from typing import Final, Literal, NamedTuple
 
 from endure.protocol.consensus_policy import (
     MAINNET_GENESIS_HASH,
@@ -67,6 +67,13 @@ class ChainSnapshot:
     validator_permit: Sequence[bool]
     last_update: Sequence[int]
     weights_rate_limit: int
+
+
+# SDK ``SelectiveMetagraphIndex`` values that populate exactly the
+# ``ChainSnapshot`` fields: Netuid 0 (always decoded), OwnerHotkey 5, Block 7,
+# WeightsRateLimit 27, Hotkeys 52, ValidatorPermit 57, LastUpdate 59. The
+# narrowed ``get_metagraph_info`` skips the stake/axon/identity vectors.
+CHAIN_SNAPSHOT_METAGRAPH_INDICES: Final[tuple[int, ...]] = (0, 5, 7, 27, 52, 57, 59)
 
 
 @dataclass(frozen=True, slots=True)

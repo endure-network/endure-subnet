@@ -70,6 +70,10 @@ key-2041 images and chain parameters are not changed by this source update.
   Eligibility gates are judged on the newest live head an emission decision
   used, not the cached metagraph block, so a due attempt is never reported as
   `chain_rate_limit` and its overdue clock is not restarted.
+- Read the immutable genesis hash once per transport generation instead of
+  twice per emission attempt and once per resync, and fetch the emission
+  plan's `MetagraphInfo` with only the six fields it uses (about 80% smaller
+  runtime-call payload on SN30; identical plans).
 - The pre-submission recheck re-resolves the snapshot's owner against the exact
   metagraph, chain identity, and constraints the vector was prepared from; a
   failure aborts before sending, counts as one failed attempt, is recorded in

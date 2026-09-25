@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import re
 import sqlite3
 from contextlib import closing
 from datetime import date
@@ -13,6 +14,7 @@ from types import SimpleNamespace
 import bittensor as bt
 import numpy as np
 import pytest
+from bittensor.core.chain_data.metagraph_info import SelectiveMetagraphIndex
 from bittensor.core.types import ExtrinsicResponse
 
 from endure.assessment.coordinates import AssessmentEmaState, AssessmentScoreHistoryRow
@@ -47,6 +49,10 @@ NOW = "2026-09-24T20:00:00+00:00"
 TESTNET_GENESIS = "0xtestnet-genesis"
 OWNER_VOTE_176 = ((176,), (65535,), CURRENT_VERSION_KEY)
 EARNED = ((1, 2), (65535, 8192), CURRENT_VERSION_KEY)
+
+
+def _snake_case(name: str) -> str:
+    return re.sub(r"(?<!^)(?=[A-Z])", "_", name).lower()
 
 
 class ReplayChain:
@@ -95,15 +101,26 @@ class ReplayChain:
     def max_weight_limit(self, *, netuid: int) -> Decimal:
         return self.maximum
 
-    def get_metagraph_info(self, netuid: int, *, block: int) -> SimpleNamespace:
+    def get_metagraph_info(
+        self, netuid: int, *, selected_indices: list[int], block: int
+    ) -> SimpleNamespace:
+        # Like the SDK's selective runtime call, unrequested fields stay None.
         assert netuid == self.netuid and block == self.block
+        fields = {
+            SelectiveMetagraphIndex.Block: block,
+            SelectiveMetagraphIndex.Hotkeys: list(self.hotkeys),
+            SelectiveMetagraphIndex.OwnerHotkey: self.owner_hotkey,
+            SelectiveMetagraphIndex.ValidatorPermit: list(self.permits),
+            SelectiveMetagraphIndex.LastUpdate: list(self.last_updates),
+            SelectiveMetagraphIndex.WeightsRateLimit: self.weights_rate_limit,
+        }
         return SimpleNamespace(
-            block=block,
-            hotkeys=list(self.hotkeys),
-            owner_hotkey=self.owner_hotkey,
-            validator_permit=list(self.permits),
-            last_update=list(self.last_updates),
-            weights_rate_limit=self.weights_rate_limit,
+            **{
+                _snake_case(index.name): value
+                if index.value in selected_indices
+                else None
+                for index, value in fields.items()
+            }
         )
 
     def set_weights(
@@ -455,8 +472,10 @@ def test_unsafe_owner_state_abstains_with_its_reason(
     elif change == "stale-snapshot-block":
         original = chain.get_metagraph_info
 
-        def stale(netuid: int, *, block: int) -> SimpleNamespace:
-            snapshot = original(netuid, block=block)
+        def stale(
+            netuid: int, *, selected_indices: list[int], block: int
+        ) -> SimpleNamespace:
+            snapshot = original(netuid, selected_indices=selected_indices, block=block)
             snapshot.block = block - 1
             return snapshot
 

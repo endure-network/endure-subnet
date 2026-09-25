@@ -17,7 +17,13 @@ from sqlalchemy.exc import IntegrityError
 
 import endure.storage.repository as storage_repository
 from endure.assessment.schemas.subnet_alpha_risk import RISK_SCHEMA_ID
-from endure.base.rate_gate import ChainRpcStalled, RateLimited
+from endure.base.rate_gate import (
+    AdaptiveRpcGate,
+    ChainRpcStalled,
+    GatedSubtensor,
+    RateLimited,
+    RpcPriority,
+)
 from endure.base.validator import (
     WEIGHT_EMISSION_FINALITY_MARGIN_BLOCKS,
     WEIGHT_EMISSION_PERIOD_BLOCKS,
@@ -300,13 +306,15 @@ def _durable_scored_state(validator: Validator, *, block: Callable[[], int]) -> 
     validator._durable_scores_loaded = True
     subtensor = MagicMock()
     subtensor.get_current_block.side_effect = block
-    subtensor.get_metagraph_info.side_effect = lambda netuid, block: SimpleNamespace(
-        block=block,
-        hotkeys=[VALIDATOR_HOTKEY],
-        owner_hotkey="owner",
-        validator_permit=[True],
-        last_update=[0],
-        weights_rate_limit=0,
+    subtensor.get_metagraph_info.side_effect = lambda netuid, selected_indices, block: (
+        SimpleNamespace(
+            block=block,
+            hotkeys=[VALIDATOR_HOTKEY],
+            owner_hotkey="owner",
+            validator_permit=[True],
+            last_update=[0],
+            weights_rate_limit=0,
+        )
     )
     validator.subtensor = subtensor
 
@@ -2751,6 +2759,107 @@ class TestWeightEmissionAudit:
 
         assert emit.call_count == 2
         restarted.gated_subtensor.cr4_reveal_deadline_at.assert_not_called()
+
+
+class _ChainTransport:
+    """One SDK transport generation; queued genesis failures raise in order."""
+
+    def __init__(self, *genesis_failures: Exception) -> None:
+        self.genesis_failures = list(genesis_failures)
+        self.genesis_reads = 0
+        self.substrate = MagicMock()
+        self.substrate.get_block_number.return_value = 90
+        self.substrate.query_map.return_value = []
+
+    def close(self) -> None:
+        return None
+
+    def get_current_block(self) -> int:
+        return 100
+
+    def get_metagraph_info(
+        self, netuid: int, *, selected_indices: list[int], block: int
+    ) -> SimpleNamespace:
+        return SimpleNamespace(
+            block=block,
+            hotkeys=[VALIDATOR_HOTKEY],
+            owner_hotkey="owner",
+            validator_permit=[True],
+            last_update=[0],
+            weights_rate_limit=0,
+        )
+
+    def get_block_hash(self, block: int | None = None) -> str:
+        if block != 0:
+            return f"hash-{block}"
+        self.genesis_reads += 1
+        if self.genesis_failures:
+            raise self.genesis_failures.pop(0)
+        return CHAIN_IDENTITY
+
+    def commit_reveal_enabled(self, *, netuid: int) -> bool:
+        return False
+
+    def get_hyperparameter(
+        self, *, param_name: str, netuid: int, block: int
+    ) -> list[int]:
+        return [0]
+
+    def weights(self, *, netuid: int, block: int) -> list[object]:
+        return []
+
+    def neurons_lite(self, netuid: int, block: int) -> list[SimpleNamespace]:
+        return [SimpleNamespace(uid=0, hotkey=VALIDATOR_HOTKEY)]
+
+    def get_timelocked_weight_commits(self, *, netuid: int, block: int) -> list[object]:
+        return []
+
+
+class TestGenesisReadPerTransportGeneration:
+    def test_genesis_is_read_once_per_generation_and_failures_are_retried(
+        self, storage: Storage
+    ) -> None:
+        validator = _audit_validator(storage)
+        _durable_scored_state(validator, block=lambda: 100)
+        validator.scores = [Decimal("0.5")]
+        validator.metagraph.last_update = [0]
+        first = _ChainTransport()
+        validator.rpc_gate = AdaptiveRpcGate()
+        validator.gated_subtensor = GatedSubtensor(first, validator.rpc_gate)
+        validator.subtensor = validator.gated_subtensor
+        rebuilt = _ChainTransport(ConnectionError("genesis read dropped"))
+        validator.runtime_provider = MagicMock()
+        validator.runtime_provider.create_subtensor.return_value = rebuilt
+
+        def attempt() -> None:
+            with validator.gated_subtensor.priority(RpcPriority.ESSENTIAL):
+                plan = validator._plan_emission("scored", None)
+                assert plan is not None
+                intent = validator._prepare_weight_intent([0], [65535])
+            assert intent.chain_identity == CHAIN_IDENTITY
+
+        def resync() -> None:
+            with validator.gated_subtensor.priority(RpcPriority.ESSENTIAL):
+                validator._resolve_weight_confirmations()
+
+        # Two attempts (two genesis consumers each) and two confirmation
+        # resyncs on one transport generation read genesis from chain once.
+        attempt()
+        resync()
+        attempt()
+        resync()
+        assert first.genesis_reads == 1
+
+        # A rebuilt transport re-reads genesis; its failed read is not cached.
+        validator._reconnect_subtensor(reason="test rebuild")
+        assert validator.gated_subtensor._delegate is rebuilt
+        with pytest.raises(ConnectionError):
+            attempt()
+        attempt()
+        resync()
+        attempt()
+        assert rebuilt.genesis_reads == 2
+        assert first.genesis_reads == 1
 
 
 class _RecordingNeuron(BaseValidatorNeuron):
