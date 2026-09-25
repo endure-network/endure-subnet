@@ -177,6 +177,14 @@ the chain would accept it. A not-yet-due attempt defers with `emission_reason`
 `chain_rate_limit` (or `no_validator_permit`) and is not recorded as a failed
 submission.
 
+A `chain_rate_limit` deferral consumes that epoch's attempt; the validator does
+not retry at the exact block the chain would accept. With a 100-block epoch
+(attempts come due every 101 blocks) and SN30's 180-block limit, the attempt
+one epoch after a submission is always deferred and the next one is accepted,
+so a healthy validator sets weights about every 2 epochs (~202 blocks, ~40
+minutes) rather than every 181 blocks. This is intended; it stays far inside
+SN30's 5000-block `activity_cutoff`.
+
 Unsafe chain or owner state never authorizes a replacement recipient. The
 validator abstains without submitting: `emission_mode=abstain`,
 `emission_expected=false`, and both `emission_reason` and
