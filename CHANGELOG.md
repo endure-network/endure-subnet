@@ -77,6 +77,12 @@ key-2041 images and chain parameters are not changed by this source update.
   twice per emission attempt and once per resync, and fetch the emission
   plan's `MetagraphInfo` with only the six fields it uses (about 80% smaller
   runtime-call payload on SN30; identical plans).
+- Mock mode (`make dev` / `--mock`) with weight setting on now reaches the mock
+  chain's `set_weights` in scored mode and confirms it: the mock chain advances
+  one block per 12 s, the mock validator holds a permit, and the mock serves the
+  plan's selective `MetagraphInfo`, direct (non-CR4) submission, and the
+  confirmation reads. Before, the mock block never advanced, so a mock
+  validator never came due. Mock stays abstaining for the owner vote.
 - The pre-submission recheck re-resolves the snapshot's owner against the exact
   metagraph, chain identity, and constraints the vector was prepared from; a
   failure aborts before sending, counts as one failed attempt, is recorded in
