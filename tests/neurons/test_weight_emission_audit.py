@@ -3,7 +3,9 @@ from __future__ import annotations
 import hashlib
 import inspect
 import json
+from collections.abc import Callable
 from decimal import Decimal
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import bittensor as bt
@@ -15,7 +17,13 @@ from sqlalchemy.exc import IntegrityError
 
 import endure.storage.repository as storage_repository
 from endure.assessment.schemas.subnet_alpha_risk import RISK_SCHEMA_ID
-from endure.base.rate_gate import ChainRpcStalled, RateLimited
+from endure.base.rate_gate import (
+    AdaptiveRpcGate,
+    ChainRpcStalled,
+    GatedSubtensor,
+    RateLimited,
+    RpcPriority,
+)
 from endure.base.validator import (
     WEIGHT_EMISSION_FINALITY_MARGIN_BLOCKS,
     WEIGHT_EMISSION_PERIOD_BLOCKS,
@@ -274,12 +282,41 @@ def _audit_validator(storage: Storage) -> Validator:
     validator._schema_id = RISK_SCHEMA_ID
     validator.config = MagicMock()
     validator.config.neuron.epoch_length = 60
+    validator.config.neuron.disable_set_weights = False
     validator.config.netuid = 1
+    validator.config.endure.active_schema = RISK_SCHEMA_ID
     validator._blended_snapshot = {
         VALIDATOR_HOTKEY: Decimal("0.5"),
         "hk-b": Decimal("0.25"),
     }
     return validator
+
+
+def _durable_scored_state(validator: Validator, *, block: Callable[[], int]) -> None:
+    """Durable EMAs score one miner; the chain snapshot permits submission."""
+    validator.uid = 0
+    validator.wallet = MagicMock()
+    validator.wallet.hotkey.ss58_address = VALIDATOR_HOTKEY
+    validator.metagraph = MagicMock()
+    validator.metagraph.hotkeys = [VALIDATOR_HOTKEY]
+    runtime = MagicMock()
+    runtime.round_program.weights.return_value = {VALIDATOR_HOTKEY: Decimal("0.5")}
+    runtime.round_program.blended_scores.return_value = {}
+    validator._vertical_runtime = runtime
+    validator._durable_scores_loaded = True
+    subtensor = MagicMock()
+    subtensor.get_current_block.side_effect = block
+    subtensor.get_metagraph_info.side_effect = lambda netuid, selected_indices, block: (
+        SimpleNamespace(
+            block=block,
+            hotkeys=[VALIDATOR_HOTKEY],
+            owner_hotkey="owner",
+            validator_permit=[True],
+            last_update=[0],
+            weights_rate_limit=0,
+        )
+    )
+    validator.subtensor = subtensor
 
 
 def _configure_finalized_chain(
@@ -1322,9 +1359,9 @@ class TestWeightEmissionAudit:
 
         validator = _audit_validator(storage)
         validator.config.runtime.mode = "mock"
-        validator.scores = [Decimal("1")]
+        _durable_scored_state(validator, block=lambda: 300)
         emit = MagicMock()
-        monkeypatch.setattr(BaseValidatorNeuron, "set_weights", emit)
+        monkeypatch.setattr(BaseValidatorNeuron, "_emit_weight_candidate", emit)
         validator.set_weights()
         emit.assert_not_called()
 
@@ -2630,11 +2667,49 @@ class TestWeightEmissionAudit:
         [batch] = storage.weight_emission_history(RISK_SCHEMA_ID)
         assert batch["confirmation_state"] == "prepared"
 
+    @pytest.mark.parametrize(
+        ("finalized_block", "expected"), [(136, True), (400, False)]
+    )
+    def test_previous_identity_batch_stops_blocking_after_its_deadline(
+        self, storage: Storage, finalized_block: int, expected: bool
+    ) -> None:
+        # Given: a submission recorded before the validator re-registered at a
+        # new UID with a new hotkey.
+        first_validator = _audit_validator(storage)
+        first_validator._on_weights_emitted(
+            _attempt(validator_hotkey="validator-a", confirmation_deadline_block=250)
+        )
+        restarted_validator = _audit_validator(storage)
+        restarted_validator.uid = 1
+        restarted_validator.wallet = MagicMock()
+        restarted_validator.wallet.hotkey.ss58_address = "validator-b"
+        restarted_validator.metagraph = MagicMock()
+        restarted_validator.metagraph.hotkeys = ["validator-a", "validator-b"]
+        _configure_finalized_chain(
+            restarted_validator,
+            finalized_block=finalized_block,
+            last_updates=(0, 124),
+            hotkeys=((0, "validator-a"), (1, "validator-b")),
+        )
+
+        # When: the new identity resolves confirmations.
+        restarted_validator._on_metagraph_synced()
+
+        # Then: the old batch blocks emission only until its deadline passes.
+        assert (
+            storage.has_open_weight_emission_confirmation(schema_id=RISK_SCHEMA_ID)
+            is expected
+        )
+        [batch] = storage.weight_emission_history(RISK_SCHEMA_ID)
+        assert batch["confirmation_state"] == (
+            "submitted" if expected else "unconfirmed"
+        )
+
     def test_validator_does_not_submit_while_a_batch_is_unconfirmed(
         self, storage: Storage, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         validator = _audit_validator(storage)
-        validator.scores = [Decimal("0.5")]
+        _durable_scored_state(validator, block=lambda: 200)
         _record_confirmation(
             storage,
             submission_block=122,
@@ -2644,7 +2719,7 @@ class TestWeightEmissionAudit:
             status="submitted",
         )
         emit = MagicMock()
-        monkeypatch.setattr(BaseValidatorNeuron, "set_weights", emit)
+        monkeypatch.setattr(BaseValidatorNeuron, "_emit_weight_candidate", emit)
 
         validator.set_weights()
 
@@ -2654,15 +2729,15 @@ class TestWeightEmissionAudit:
         self, storage: Storage, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         validator = _audit_validator(storage)
-        validator.scores = [Decimal("0.5")]
         validator._weight_emission_startup_fence_block = None
         validator.gated_subtensor = MagicMock()
         validator.gated_subtensor.commit_reveal_enabled.return_value = True
         validator.gated_subtensor.cr4_reveal_deadline_at.return_value = 732
         current_block = MagicMock(return_value=100)
         validator._safe_block = current_block
+        _durable_scored_state(validator, block=current_block)
         emit = MagicMock()
-        monkeypatch.setattr(BaseValidatorNeuron, "set_weights", emit)
+        monkeypatch.setattr(BaseValidatorNeuron, "_emit_weight_candidate", emit)
 
         validator.set_weights()
         current_block.return_value = 732
@@ -2670,20 +2745,121 @@ class TestWeightEmissionAudit:
         current_block.return_value += 1
         validator.set_weights()
 
-        emit.assert_called_once_with()
+        emit.assert_called_once()
 
         restarted = _audit_validator(storage)
-        restarted.scores = [Decimal("0.5")]
         restarted._weight_emission_startup_fence_block = None
         restarted.gated_subtensor = MagicMock()
         restarted.gated_subtensor.commit_reveal_enabled.return_value = True
         restarted.gated_subtensor.cr4_reveal_deadline_at.return_value = 900
         restarted._safe_block = MagicMock(return_value=733)
+        _durable_scored_state(restarted, block=lambda: 733)
 
         restarted.set_weights()
 
         assert emit.call_count == 2
         restarted.gated_subtensor.cr4_reveal_deadline_at.assert_not_called()
+
+
+class _ChainTransport:
+    """One SDK transport generation; queued genesis failures raise in order."""
+
+    def __init__(self, *genesis_failures: Exception) -> None:
+        self.genesis_failures = list(genesis_failures)
+        self.genesis_reads = 0
+        self.substrate = MagicMock()
+        self.substrate.get_block_number.return_value = 90
+        self.substrate.query_map.return_value = []
+
+    def close(self) -> None:
+        return None
+
+    def get_current_block(self) -> int:
+        return 100
+
+    def get_metagraph_info(
+        self, netuid: int, *, selected_indices: list[int], block: int
+    ) -> SimpleNamespace:
+        return SimpleNamespace(
+            block=block,
+            hotkeys=[VALIDATOR_HOTKEY],
+            owner_hotkey="owner",
+            validator_permit=[True],
+            last_update=[0],
+            weights_rate_limit=0,
+        )
+
+    def get_block_hash(self, block: int | None = None) -> str:
+        if block != 0:
+            return f"hash-{block}"
+        self.genesis_reads += 1
+        if self.genesis_failures:
+            raise self.genesis_failures.pop(0)
+        return CHAIN_IDENTITY
+
+    def commit_reveal_enabled(self, *, netuid: int) -> bool:
+        return False
+
+    def get_hyperparameter(
+        self, *, param_name: str, netuid: int, block: int
+    ) -> list[int]:
+        return [0]
+
+    def weights(self, *, netuid: int, block: int) -> list[object]:
+        return []
+
+    def neurons_lite(self, netuid: int, block: int) -> list[SimpleNamespace]:
+        return [SimpleNamespace(uid=0, hotkey=VALIDATOR_HOTKEY)]
+
+    def get_timelocked_weight_commits(self, *, netuid: int, block: int) -> list[object]:
+        return []
+
+
+class TestGenesisReadPerTransportGeneration:
+    def test_genesis_is_read_once_per_generation_and_failures_are_retried(
+        self, storage: Storage
+    ) -> None:
+        validator = _audit_validator(storage)
+        _durable_scored_state(validator, block=lambda: 100)
+        validator.scores = [Decimal("0.5")]
+        validator.metagraph.last_update = [0]
+        first = _ChainTransport()
+        validator.rpc_gate = AdaptiveRpcGate()
+        validator.gated_subtensor = GatedSubtensor(first, validator.rpc_gate)
+        validator.subtensor = validator.gated_subtensor
+        rebuilt = _ChainTransport(ConnectionError("genesis read dropped"))
+        validator.runtime_provider = MagicMock()
+        validator.runtime_provider.create_subtensor.return_value = rebuilt
+
+        def attempt() -> None:
+            with validator.gated_subtensor.priority(RpcPriority.ESSENTIAL):
+                plan = validator._plan_emission("scored", None)
+                assert plan is not None
+                intent = validator._prepare_weight_intent([0], [65535])
+            assert intent.chain_identity == CHAIN_IDENTITY
+
+        def resync() -> None:
+            with validator.gated_subtensor.priority(RpcPriority.ESSENTIAL):
+                validator._resolve_weight_confirmations()
+
+        # Two attempts (two genesis consumers each) and two confirmation
+        # resyncs on one transport generation read genesis from chain once.
+        attempt()
+        resync()
+        attempt()
+        resync()
+        assert first.genesis_reads == 1
+
+        # A rebuilt transport re-reads genesis; its failed read is not cached.
+        validator._reconnect_subtensor(reason="test rebuild")
+        assert validator.gated_subtensor._delegate is rebuilt
+        with pytest.raises(ConnectionError):
+            attempt()
+        attempt()
+        resync()
+        attempt()
+        assert rebuilt.genesis_reads == 2
+        assert first.genesis_reads == 1
 
 
 class _RecordingNeuron(BaseValidatorNeuron):
@@ -2754,6 +2930,7 @@ def _base_neuron(
     neuron.gated_subtensor = subtensor
     config = MagicMock()
     config.netuid = 1
+    config.neuron.disable_set_weights = False
     neuron.config = config
     neuron.wallet = MagicMock()
     neuron.wallet.hotkey.ss58_address = "hk-a"
@@ -2811,7 +2988,7 @@ class TestSetWeightsAttemptWrapping:
         assert batch["confirmation_state"] == "ambiguous"
         assert storage.has_open_weight_emission_confirmation(schema_id=RISK_SCHEMA_ID)
         emit = MagicMock()
-        monkeypatch.setattr(BaseValidatorNeuron, "set_weights", emit)
+        monkeypatch.setattr(BaseValidatorNeuron, "_emit_weight_candidate", emit)
         validator.set_weights()
         emit.assert_not_called()
         assert validator.subtensor.set_weights.call_count == 1

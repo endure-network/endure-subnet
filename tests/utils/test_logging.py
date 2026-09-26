@@ -1,82 +1,15 @@
-"""Tests for endure.utils.logging.setup_events_logger."""
+"""Tests for endure.utils.logging redaction and startup summaries."""
 
 from __future__ import annotations
-
-import logging
-from logging.handlers import RotatingFileHandler
-from pathlib import Path
 
 import pytest
 
 from endure.utils.logging import (
-    DEFAULT_LOG_BACKUP_COUNT,
-    EVENTS_LEVEL_NUM,
     safe_endpoint_label,
     safe_error,
     safe_remote_text,
-    setup_events_logger,
     startup_config_summary,
 )
-
-
-class TestSetupEventsLogger:
-    def test_returns_configured_logger_and_writes_record(self, tmp_path: Path) -> None:
-        max_bytes = 1024
-        logger = setup_events_logger(str(tmp_path), max_bytes)
-
-        assert logger.name == "event"
-        assert logger.level == EVENTS_LEVEL_NUM
-
-        rotating_handlers = [
-            h for h in logger.handlers if isinstance(h, RotatingFileHandler)
-        ]
-        assert rotating_handlers, "expected a RotatingFileHandler attached"
-
-        handler = rotating_handlers[-1]
-        assert handler.maxBytes == max_bytes
-        assert handler.backupCount == DEFAULT_LOG_BACKUP_COUNT
-        assert handler.level == EVENTS_LEVEL_NUM
-        assert Path(handler.baseFilename) == tmp_path / "events.log"
-
-        logger.log(EVENTS_LEVEL_NUM, "hello-event")
-        handler.flush()
-
-        events_log = tmp_path / "events.log"
-        assert events_log.exists()
-        contents = events_log.read_text(encoding="utf-8")
-        assert "hello-event" in contents
-        assert "EVENT" in contents
-
-    def test_events_level_registered_with_standard_logging(
-        self, tmp_path: Path
-    ) -> None:
-        setup_events_logger(str(tmp_path), 2048)
-        assert logging.getLevelName(EVENTS_LEVEL_NUM) == "EVENT"
-
-    def test_repeated_setup_does_not_duplicate_handler_for_same_path(
-        self, tmp_path: Path
-    ) -> None:
-        setup_events_logger(str(tmp_path), 1024)
-        logger = setup_events_logger(str(tmp_path), 2048)
-
-        target = tmp_path / "events.log"
-        matching = [
-            h
-            for h in logger.handlers
-            if isinstance(h, RotatingFileHandler) and Path(h.baseFilename) == target
-        ]
-        assert len(matching) == 1
-        assert matching[0].maxBytes == 2048
-
-    def test_setup_preserves_unrelated_handler(self, tmp_path: Path) -> None:
-        logger = logging.getLogger("event")
-        unrelated = logging.StreamHandler()
-        logger.addHandler(unrelated)
-        try:
-            setup_events_logger(str(tmp_path), 1024)
-            assert unrelated in logger.handlers
-        finally:
-            logger.removeHandler(unrelated)
 
 
 class TestSafeLogging:

@@ -10,7 +10,7 @@ Fixtures exported:
   fixtures used by base-class and production-path tests.
 - mock_wallet: fresh bt.Wallet (mock backend) per test.
 - mock_config_base: bt.Config populated with all BaseNeuron args plus
-  --netuid 1, a tmp_path logging_dir, and --neuron.dont_save_events.
+  --netuid 1 and a tmp_path logging_dir.
 - mock_miner_config: mock_config_base + miner-specific args.
 - mock_validator_config: mock_config_base + validator-specific args.
 - production_miner_config / production_validator_config: same args
@@ -100,7 +100,6 @@ def _base_config(
     cli_args = [
         "--netuid",
         "1",
-        "--neuron.dont_save_events",
         "--wallet.name",
         "test-cold",
         "--wallet.hotkey",

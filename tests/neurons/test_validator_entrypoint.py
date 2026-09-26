@@ -1,7 +1,6 @@
 import argparse
 import asyncio
 import logging
-import os
 import threading
 from collections.abc import Iterator
 from contextlib import ExitStack, contextmanager
@@ -206,7 +205,6 @@ def test_validator_refuses_defaulted_netuid_on_live_network(tmp_path: Path) -> N
             "test",
             "--endure.serving_stage",
             "testnet",
-            "--neuron.dont_save_events",
         ],
     )
     config.logging.logging_dir = str(tmp_path)
@@ -392,10 +390,8 @@ def test_forward_tracks_tick_health(
     mock_validator_config.neuron.disable_set_weights = True
     validator = Validator(config=mock_validator_config)
 
-    async def _no_sleep(seconds: float) -> None:
-        return None
-
-    monkeypatch.setattr(asyncio, "sleep", _no_sleep)
+    # forward() paces via the shutdown event; a set event returns at once.
+    validator._shutdown_event.set()
     monkeypatch.setattr(
         validator._service, "tick", lambda **_: (_ for _ in ()).throw(OSError("boom"))
     )
@@ -434,10 +430,8 @@ def test_failed_tick_refreshes_loop_heartbeat(
     validator.thread = MagicMock()
     validator.thread.is_alive.return_value = True
 
-    async def _no_sleep(seconds: float) -> None:
-        return None
-
-    monkeypatch.setattr(asyncio, "sleep", _no_sleep)
+    # forward() paces via the shutdown event; a set event returns at once.
+    validator._shutdown_event.set()
     monkeypatch.setattr(
         validator._service, "tick", lambda **_: (_ for _ in ()).throw(OSError("boom"))
     )
@@ -771,6 +765,40 @@ def test_main_exits_nonzero_and_cleans_up_on_watchdog_failure() -> None:
     forced_exit.assert_called_once()
 
 
+def test_watchdog_forced_exit_uses_this_neurons_teardown_grace() -> None:
+    from endure.base.shutdown import schedule_forced_exit_after_grace
+    from neurons.validator import main
+
+    validator = MagicMock()
+    validator.chain_rpc_restart_required.return_value = False
+    context = MagicMock()
+    context.chain_rpc_restart_required.return_value = False
+    context.watchdog_exit_reason.return_value = "validator loop thread exited"
+    context.__enter__.return_value = validator
+    timers: list[threading.Timer] = []
+
+    def arm(*args: float) -> threading.Timer:
+        timer = schedule_forced_exit_after_grace(*args)
+        timer.cancel()
+        timers.append(timer)
+        return timer
+
+    with (
+        patch(
+            "neurons.validator.install_shutdown_handlers",
+            return_value=threading.Event(),
+        ),
+        patch("neurons.validator.Validator", return_value=context),
+        patch("neurons.validator._WATCHDOG_TEARDOWN_GRACE_SECONDS", 5),
+        patch("neurons.validator._schedule_forced_exit_after_grace", arm),
+        pytest.raises(SystemExit),
+    ):
+        main()
+
+    # The patched per-neuron grace bounds the teardown, not the shared default.
+    assert [timer.interval for timer in timers] == [5]
+
+
 def test_main_hard_exits_when_rpc_abandonment_capacity_is_reached() -> None:
     from neurons.validator import main
 
@@ -786,13 +814,15 @@ def test_main_hard_exits_when_rpc_abandonment_capacity_is_reached() -> None:
             return_value=threading.Event(),
         ),
         patch("neurons.validator.Validator", return_value=context),
-        patch("neurons.validator.os._exit", side_effect=SystemExit(1)) as hard_exit,
+        patch(
+            "neurons.validator.terminate_process", side_effect=SystemExit(1)
+        ) as hard_exit,
         pytest.raises(SystemExit) as exit_info,
     ):
         main()
 
     assert exit_info.value.code == 1
-    hard_exit.assert_called_with(1)
+    hard_exit.assert_called_with(1, grace_seconds=60)
 
 
 def test_main_hard_exits_when_watchdog_races_rpc_abandonment() -> None:
@@ -801,8 +831,13 @@ def test_main_hard_exits_when_watchdog_races_rpc_abandonment() -> None:
     context = MagicMock()
     # Given: the worker latches and dies between the latch check and the
     # watchdog probe.
-    context.chain_rpc_restart_required.side_effect = [False, True]
-    context.watchdog_exit_reason.return_value = "scoring loop thread exited"
+    context.chain_rpc_restart_required.return_value = False
+
+    def latch_during_watchdog() -> str:
+        context.chain_rpc_restart_required.return_value = True
+        return "scoring loop thread exited"
+
+    context.watchdog_exit_reason.side_effect = latch_during_watchdog
 
     with (
         patch(
@@ -810,14 +845,16 @@ def test_main_hard_exits_when_watchdog_races_rpc_abandonment() -> None:
             return_value=threading.Event(),
         ),
         patch("neurons.validator.Validator", return_value=context),
-        patch("neurons.validator.os._exit", side_effect=SystemExit(1)) as hard_exit,
+        patch(
+            "neurons.validator.terminate_process", side_effect=SystemExit(1)
+        ) as hard_exit,
         pytest.raises(SystemExit) as exit_info,
     ):
         main()
 
     # Then: the watchdog path still restarts hard instead of exiting normally.
     assert exit_info.value.code == 1
-    hard_exit.assert_called_with(1)
+    hard_exit.assert_called_with(1, grace_seconds=60)
 
 
 def test_main_hard_exits_when_shutdown_signal_races_rpc_abandonment() -> None:
@@ -835,14 +872,16 @@ def test_main_hard_exits_when_shutdown_signal_races_rpc_abandonment() -> None:
             return_value=already_stopped,
         ),
         patch("neurons.validator.Validator", return_value=context),
-        patch("neurons.validator.os._exit", side_effect=SystemExit(1)) as hard_exit,
+        patch(
+            "neurons.validator.terminate_process", side_effect=SystemExit(1)
+        ) as hard_exit,
         pytest.raises(SystemExit) as exit_info,
     ):
         main()
 
     # Then: the process still restarts hard instead of exiting normally.
     assert exit_info.value.code == 1
-    hard_exit.assert_called_with(1)
+    hard_exit.assert_called_with(1, grace_seconds=60)
 
 
 def test_main_hard_exits_when_rpc_abandonment_races_lifecycle_teardown() -> None:
@@ -868,14 +907,16 @@ def test_main_hard_exits_when_rpc_abandonment_races_lifecycle_teardown() -> None
             return_value=already_stopped,
         ),
         patch("neurons.validator.Validator", return_value=context),
-        patch("neurons.validator.os._exit", side_effect=SystemExit(1)) as hard_exit,
+        patch(
+            "neurons.validator.terminate_process", side_effect=SystemExit(1)
+        ) as hard_exit,
         pytest.raises(SystemExit) as exit_info,
     ):
         main()
 
     # Then: the post-teardown recheck still restarts hard.
     assert exit_info.value.code == 1
-    hard_exit.assert_called_with(1)
+    hard_exit.assert_called_with(1, grace_seconds=60)
 
 
 def test_main_hard_exits_when_latching_teardown_also_raises() -> None:
@@ -901,30 +942,16 @@ def test_main_hard_exits_when_latching_teardown_also_raises() -> None:
             return_value=already_stopped,
         ),
         patch("neurons.validator.Validator", return_value=context),
-        patch("neurons.validator.os._exit", side_effect=SystemExit(1)) as hard_exit,
+        patch(
+            "neurons.validator.terminate_process", side_effect=SystemExit(1)
+        ) as hard_exit,
         pytest.raises(SystemExit) as exit_info,
     ):
         main()
 
     # Then: the teardown exception cannot bypass the hard restart.
     assert exit_info.value.code == 1
-    hard_exit.assert_called_with(1)
-
-
-def test_forced_exit_after_grace_arms_a_daemon_timer() -> None:
-    from neurons.validator import (
-        _WATCHDOG_TEARDOWN_GRACE_SECONDS,
-        _schedule_forced_exit_after_grace,
-    )
-
-    timer = _schedule_forced_exit_after_grace()
-    try:
-        assert timer.daemon is True
-        assert timer.interval == _WATCHDOG_TEARDOWN_GRACE_SECONDS
-        assert timer.function is os._exit
-        assert timer.args == (1,)
-    finally:
-        timer.cancel()
+    hard_exit.assert_called_with(1, grace_seconds=60)
 
 
 def test_main_redacts_runtime_endpoint_credentials() -> None:
@@ -942,6 +969,7 @@ def test_main_redacts_runtime_endpoint_credentials() -> None:
         ),
         patch("neurons.validator.Validator", side_effect=RuntimeError(credential_url)),
         patch("neurons.validator.bt.logging.error", error_log),
+        patch("neurons.validator._schedule_forced_exit_after_grace"),
         pytest.raises(SystemExit) as exit_info,
     ):
         main()
@@ -1032,38 +1060,6 @@ def test_sync_brackets_gated_chain_work_with_tick_progress(
     assert validator.watchdog_exit_reason() is None
 
 
-def test_set_weights_abstains_until_first_resolution(
-    mock_validator_config: bt.Config,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Epoch 0: all-zero scores would emit the SDK's uniform fallback —
-    abstain instead until something has actually scored."""
-    from decimal import Decimal
-
-    from endure.base.validator import BaseValidatorNeuron
-    from neurons.validator import Validator
-
-    mock_validator_config.neuron.axon_off = True
-    mock_validator_config.neuron.disable_set_weights = True
-    validator = Validator(config=mock_validator_config)
-
-    calls = {"n": 0}
-    monkeypatch.setattr(
-        BaseValidatorNeuron,
-        "set_weights",
-        lambda self: calls.__setitem__("n", calls["n"] + 1),
-    )
-
-    validator.scores = [Decimal(0) for _ in validator.scores]
-    validator.set_weights()
-    assert calls["n"] == 0
-
-    if validator.scores:
-        validator.scores[0] = Decimal("0.5")
-        validator.set_weights()
-        assert calls["n"] == 1
-
-
 def test_apply_weights_maps_hotkeys_to_metagraph_positions(
     mock_validator_config: bt.Config,
 ) -> None:
@@ -1148,3 +1144,147 @@ def test_validator_forward_throttles_on_successful_tick(
 
     tick_seconds = int(mock_validator_config.endure.tick_seconds)
     assert recorded == [tick_seconds]
+
+
+def test_operator_loopback_mainnet_node_runs_mainnet_gates_before_transport(
+    production_validator_config: bt.Config,
+) -> None:
+    from endure.protocol.consensus_policy import MAINNET_GENESIS_HASH
+    from neurons.validator import Validator
+
+    cfg = production_validator_config
+    cfg.netuid = 30
+    cfg.subtensor.network = "local"
+    cfg.subtensor.chain_endpoint = ""
+    cfg.endure.serving_stage = "mainnet"
+    cfg.neuron.axon_off = True
+    probe = MagicMock(side_effect=RuntimeError("archive probe reached"))
+    transport = MagicMock(side_effect=AssertionError("transport opened"))
+
+    with (
+        patch(
+            "neurons.validator.read_chain_genesis", return_value=MAINNET_GENESIS_HASH
+        ),
+        patch("neurons.validator.validate_mainnet_archive", probe),
+        patch("neurons.validator.resolve_runtime_provider", transport),
+        patch("neurons.validator._require_hotkey"),
+    ):
+        with pytest.raises(RuntimeError, match="disable_set_weights"):
+            Validator(config=cfg)
+        cfg.neuron.axon_off = False
+        with pytest.raises(RuntimeError, match="archive probe reached"):
+            Validator(config=cfg)
+
+    probe.assert_called_once()
+    transport.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("network", "stage"), (("local", "mainnet"), ("test", "testnet"))
+)
+def test_stale_consensus_overrides_start_and_run_protocol_values(
+    production_validator_config: bt.Config, network: str, stage: str
+) -> None:
+    """v0.1.0 advised a positive stake floor; those operators must keep running."""
+    from endure.protocol.consensus_policy import MAINNET_GENESIS_HASH
+    from neurons.validator import Validator
+
+    cfg = production_validator_config
+    cfg.netuid = 30
+    cfg.subtensor.network = network
+    cfg.subtensor.chain_endpoint = ""
+    cfg.endure.serving_stage = stage
+    cfg.endure.min_miner_stake = Decimal("1")
+    cfg.endure.max_commits_per_round = 1000
+    cfg.endure.max_reveals_per_round = 1000
+    cfg.neuron.epoch_length = 360
+    effective: list[bt.Config] = []
+
+    def transport(config: bt.Config) -> None:
+        effective.append(config)
+        raise RuntimeError("transport reached")
+
+    with (
+        patch(
+            "neurons.validator.read_chain_genesis", return_value=MAINNET_GENESIS_HASH
+        ),
+        patch("neurons.validator.validate_mainnet_archive"),
+        patch("neurons.validator.resolve_runtime_provider", transport),
+        patch("neurons.validator._require_hotkey"),
+        patch.object(bt.logging, "warning") as warning,
+        pytest.raises(RuntimeError, match="transport reached"),
+    ):
+        Validator(config=cfg)
+
+    (started,) = effective
+    assert started.endure.min_miner_stake == Decimal("0")
+    assert started.endure.max_commits_per_round == 10
+    assert started.endure.max_reveals_per_round == 10
+    assert started.neuron.epoch_length == 100
+    logged = "\n".join(call.args[0] for call in warning.call_args_list)
+    assert "--endure.min_miner_stake 1 is ignored" in logged
+    assert "--endure.max_commits_per_round 1000 is ignored" in logged
+    assert "--endure.max_reveals_per_round 1000 is ignored" in logged
+    assert "--neuron.epoch_length 360 is ignored" in logged
+
+
+def test_local_chain_keeps_custom_consensus_values(
+    mock_validator_config: bt.Config,
+) -> None:
+    from neurons.validator import Validator
+
+    cfg = mock_validator_config
+    cfg.neuron.axon_off = True
+    cfg.neuron.disable_set_weights = True
+    cfg.endure.max_commits_per_round = 3
+    cfg.neuron.epoch_length = 7
+
+    validator = Validator(config=cfg)
+
+    assert validator.config.endure.max_commits_per_round == 3
+    assert validator.config.neuron.epoch_length == 7
+
+
+def test_mainnet_compression_is_refused_before_the_archive_probe(
+    production_validator_config: bt.Config,
+) -> None:
+    from endure.utils.config import DevOnlyConfigError
+    from neurons.validator import Validator
+
+    cfg = production_validator_config
+    cfg.netuid = 30
+    cfg.subtensor.network = "finney"
+    cfg.subtensor.chain_endpoint = ""
+    cfg.endure.serving_stage = "mainnet"
+    cfg.endure.devnet_time_compression = True
+    probe = MagicMock()
+
+    with (
+        patch("neurons.validator.validate_mainnet_archive", probe),
+        pytest.raises(DevOnlyConfigError),
+    ):
+        Validator(config=cfg)
+
+    probe.assert_not_called()
+
+
+def test_missing_mainnet_hotkey_fails_offline_before_the_archive_probe(
+    production_validator_config: bt.Config, tmp_path: Path
+) -> None:
+    from neurons.validator import Validator
+
+    cfg = production_validator_config
+    cfg.netuid = 30
+    cfg.subtensor.network = "finney"
+    cfg.subtensor.chain_endpoint = ""
+    cfg.endure.serving_stage = "mainnet"
+    cfg.wallet.path = str(tmp_path / "no-wallets")
+    probe = MagicMock()
+
+    with (
+        patch("neurons.validator.validate_mainnet_archive", probe),
+        pytest.raises(bt.KeyFileError, match="Failed to get hotkey"),
+    ):
+        Validator(config=cfg)
+
+    probe.assert_not_called()

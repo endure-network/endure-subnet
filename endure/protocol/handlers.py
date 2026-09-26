@@ -12,6 +12,10 @@ from collections.abc import Callable
 from datetime import datetime
 
 from endure.assessment.registry import SchemaRegistry
+from endure.protocol.consensus_policy import (
+    MAX_COMMITS_PER_ROUND,
+    MAX_REVEALS_PER_ROUND,
+)
 from endure.protocol.round_engine import RoundWindows
 from endure.protocol.synapses import RejectionCode, SubmitCommit, SubmitReveal
 from endure.protocol.validation import (
@@ -22,10 +26,7 @@ from endure.protocol.validation import (
     validate_reveal,
 )
 from endure.protocol.version_contract import CURRENT_VERSION_KEY
-from endure.storage.repository import Storage
-
-DEFAULT_MAX_COMMITS_PER_ROUND = 10
-DEFAULT_MAX_REVEALS_PER_ROUND = 10
+from endure.storage.repository import ROUND_STATE_OPEN, Storage
 
 
 class SubmissionHandlers:
@@ -35,8 +36,8 @@ class SubmissionHandlers:
         storage: Storage,
         schema_id: str,
         now_fn: Callable[[], datetime],
-        max_commits_per_round: int = DEFAULT_MAX_COMMITS_PER_ROUND,
-        max_reveals_per_round: int = DEFAULT_MAX_REVEALS_PER_ROUND,
+        max_commits_per_round: int = MAX_COMMITS_PER_ROUND,
+        max_reveals_per_round: int = MAX_REVEALS_PER_ROUND,
         registry: SchemaRegistry | None = None,
     ) -> None:
         self._storage = storage
@@ -110,7 +111,17 @@ class SubmissionHandlers:
             max_reveals=self._max_reveals,
         )
         if not charged:
-            return Verdict(accepted=False, rejection_code=RejectionCode.RATE_LIMITED)
+            if self._storage.accepted_reveal(
+                synapse.round_id, self._schema_id, miner_hotkey
+            ) == (synapse.bundle_json, synapse.nonce_hex):
+                return Verdict(accepted=True)
+            code = (
+                RejectionCode.RATE_LIMITED
+                if self._storage.round_state(synapse.round_id, self._schema_id)
+                == ROUND_STATE_OPEN
+                else RejectionCode.LATE_REVEAL
+            )
+            return Verdict(accepted=False, rejection_code=code)
         return self._validate_reveal(
             synapse,
             committed=committed,
@@ -140,11 +151,9 @@ class SubmissionHandlers:
         if windows is None:
             self._reject(synapse, RejectionCode.ROUND_UNAVAILABLE)
             return synapse
-        # Advisory fast path: an over-cap miner is rejected before any
-        # validation work (the cap doubles as a DoS control). An exact retry
-        # is already committed, so acknowledge it without spending a slot.
-        # The authoritative changed-hash check-and-increment stays atomic in
-        # record_commit.
+        # The cap doubles as a DoS control for changed hashes. Exact retries
+        # still validate schema, version and window before acknowledgement;
+        # record_commit remains the authoritative capped, idempotent write.
         commit_count = self._storage.commit_count(
             synapse.round_id, self._schema_id, miner_hotkey
         )
@@ -158,21 +167,17 @@ class SubmissionHandlers:
             self._reject(synapse, RejectionCode.RATE_LIMITED)
             return synapse
 
-        verdict = (
-            Verdict(accepted=True)
-            if is_idempotent_retry
-            else validate_commit(
-                round_id=synapse.round_id,
-                schema_id=synapse.schema_id,
-                spec_version=synapse.spec_version,
-                bundle_hash=synapse.bundle_hash,
-                now=now,
-                commit_open=windows.commit_open,
-                commit_close=windows.commit_close,
-                registry=self._registry,
-            )
+        verdict = validate_commit(
+            round_id=synapse.round_id,
+            schema_id=synapse.schema_id,
+            spec_version=synapse.spec_version,
+            bundle_hash=synapse.bundle_hash,
+            now=now,
+            commit_open=windows.commit_open,
+            commit_close=windows.commit_close,
+            registry=self._registry,
         )
-        if verdict.accepted and not is_idempotent_retry:
+        if verdict.accepted:
             # Rate check and increment are one transaction in storage —
             # concurrent commits cannot exceed the cap.
             recorded = self._storage.record_commit(
@@ -184,7 +189,13 @@ class SubmissionHandlers:
                 max_commits=self._max_commits,
             )
             if not recorded:
-                self._reject(synapse, RejectionCode.RATE_LIMITED)
+                code = (
+                    RejectionCode.RATE_LIMITED
+                    if self._storage.round_state(synapse.round_id, self._schema_id)
+                    == ROUND_STATE_OPEN
+                    else RejectionCode.LATE_COMMIT
+                )
+                self._reject(synapse, code)
                 return synapse
         self._apply(synapse, verdict)
         return synapse
@@ -244,7 +255,7 @@ class SubmissionHandlers:
             and not is_accepted_retry
             and verdict.rejection_code is not RejectionCode.RATE_LIMITED
         ):
-            self._storage.record_reveal(
+            recorded = self._storage.record_reveal(
                 synapse.round_id,
                 self._schema_id,
                 miner_hotkey,
@@ -258,5 +269,19 @@ class SubmissionHandlers:
                 ),
                 now_iso=now.isoformat(),
             )
+            if (
+                verdict.accepted
+                and not recorded
+                and self._storage.accepted_reveal(
+                    synapse.round_id, self._schema_id, miner_hotkey
+                )
+                != (synapse.bundle_json, synapse.nonce_hex)
+            ):
+                # The round may close after validation captured its clock.
+                # A no-op is successful only for the durable accepted member,
+                # including an identical concurrent retry frozen by close.
+                verdict = Verdict(
+                    accepted=False, rejection_code=RejectionCode.LATE_REVEAL
+                )
         self._apply(synapse, verdict)
         return synapse

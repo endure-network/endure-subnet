@@ -54,10 +54,8 @@ services:
         "--endure.database_url", "sqlite:////data/validator-live.db",
         "--endure.api_port", "8714",
         "--endure.api_host", "0.0.0.0",
-        "--endure.min_miner_stake", "${MIN_MINER_STAKE:-0}",
         "--axon.port", "8091",
         "--axon.external_ip", "${EXTERNAL_IP:?set EXTERNAL_IP}",
-        "--neuron.epoch_length", "${EPOCH_LENGTH:-100}",
         "--logging.info",
       ]
 
