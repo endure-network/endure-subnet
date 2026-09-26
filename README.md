@@ -1,12 +1,12 @@
 # Endure Subnet
 
-> **Initial release — `v0.1.0`, with experimental economics.** See the
-> [release decision and limitations](docs/releases/v0.1.0.md). Alpha Risk serves on
+> **Release `v0.1.1`, with experimental economics.** See the
+> [release notes and soak decision](docs/releases/v0.1.1.md). Alpha Risk serves on
 > mainnet only behind the explicit `--endure.serving_stage mainnet`
 > acknowledgement, on releases promoted to the `:prod` image channel after the
 > owner release decision ([running_on_mainnet.md](docs/running_on_mainnet.md)).
-> This source candidate uses protocol key `2042` ([contract](endure/protocol/version_contract.py));
-> published `v0.1.0` images use key `2041`; adopting `2042` requires a coordinated release.
+> The current protocol key is `2042` ([contract](endure/protocol/version_contract.py));
+> miners and validators upgrade together, and `v0.1.0` images (key `2041`) are superseded.
 > Activated and retired leases are tracked in the [version registry](docs/protocol_versions.md).
 
 Endure is a Bittensor risk-intelligence subnet: miners submit falsifiable
