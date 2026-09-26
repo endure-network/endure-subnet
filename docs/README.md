@@ -17,7 +17,8 @@
 - [Mainnet runbook](running_on_mainnet.md) — production images and serving acknowledgement.
 - [Protocol activation history](protocol_versions.md) — retired assignments and
   the exclusive current candidate lease.
-- [v0.1.0 notes](releases/v0.1.0.md) — initial release, owner decision, and limitations.
+- [v0.1.1 notes](releases/v0.1.1.md) — key `2042` cutover, operator upgrade, and soak decision.
+- [v0.1.0 notes](releases/v0.1.0.md) — initial release (key `2041`), superseded.
 - [v0.1.0-rc.3 notes](releases/v0.1.0-rc.3.md) — superseded candidate.
 - [v0.1.0-rc.2 notes](releases/v0.1.0-rc.2.md) — superseded candidate.
 - [v0.1.0-rc.1 notes](releases/v0.1.0-rc.1.md) — superseded candidate.

@@ -1,15 +1,16 @@
 # Running Endure on Mainnet
 
-> **Mainnet serving is opt-in and owner-gated.** `v0.1.0` retains
+> **Mainnet serving is opt-in and owner-gated.** `v0.1.1` retains
 > experimental economic limitations. Alpha Risk serves on mainnet only when
 > the operator passes the explicit `--endure.serving_stage mainnet` acknowledgement on a
 > recognized mainnet endpoint, and only releases promoted to the `:prod`
-> image channel under the [owner release decision](releases/v0.1.0.md)
+> image channel under the [owner release decision](releases/v0.1.1.md)
 > are supported there. Do not run a staging release candidate or a locally built image on mainnet.
 
-This source candidate uses protocol key `2042` ([version contract](../endure/protocol/version_contract.py)).
-The published `v0.1.0` images use `2041`; the changes below require a new coordinated
-miner/validator release and do not change deployed images or chain parameters.
+`v0.1.1` uses protocol key `2042` ([version contract](../endure/protocol/version_contract.py)).
+It replaces the key-`2041` `v0.1.0` images: miners and validators upgrade
+together, and chain parameters, including `weights_version`, are unchanged.
+The [release notes](releases/v0.1.1.md) summarise the operator upgrade.
 Supported development uses Python `>=3.12,<3.13` and Bittensor `>=10.5,<11`.
 Endure's mainnet netuid is `30`; the subnet rates itself under the same rules
 as every other member of the Alpha Risk universe.

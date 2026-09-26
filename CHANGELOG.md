@@ -1,9 +1,12 @@
 # Changelog
 
-## Unreleased — SN30 correctness cutover
+## v0.1.1 — SN30 correctness cutover
 
-Protocol key `2042`; miners and validators must upgrade together. Published
-key-2041 images and chain parameters are not changed by this source update.
+Protocol key `2042`; miners and validators must upgrade together. Chain
+parameters, including SN30's `weights_version` (`2040`), are unchanged.
+Package/API version is `0.1.1`. See the
+[release notes, operator upgrade and soak decision](docs/releases/v0.1.1.md)
+and [#72](https://github.com/endure-network/endure-subnet/pull/72).
 
 - Serialize commit/reveal persistence with round closure; acknowledge only
   durable accepted reveals and preserve frozen empty snapshots.
