@@ -8,9 +8,11 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 
 import pytest
-from sqlalchemy import event, insert, select, update
+from sqlalchemy import insert, select, update
 
-from endure.assessment.coordinates import AssessmentConsensusRow
+from endure.assessment.coordinates import (
+    AssessmentConsensusRow,
+)
 from endure.assessment.registry import UniverseSnapshot
 from endure.assessment.schemas.subnet_alpha_risk import RISK_SCHEMA_ID
 from endure.protocol.round_engine import DEFAULT_OFFSETS, compute_windows
@@ -109,7 +111,7 @@ class TestRounds:
     def test_unknown_round_state_is_none(self, storage: Storage) -> None:
         assert storage.round_state("1999-01-01", RISK_SCHEMA_ID) is None
 
-    def test_consensus_snapshot_excludes_reveal_persisted_after_publication(
+    def test_consensus_snapshot_rejects_reveal_after_publication(
         self, storage: Storage
     ) -> None:
         round_id = _open_round(storage)
@@ -138,7 +140,7 @@ class TestRounds:
             consensus_rows,
             now_iso=NOW,
         )
-        storage.record_reveal(
+        assert not storage.record_reveal(
             round_id,
             RISK_SCHEMA_ID,
             "hk-late",
@@ -152,65 +154,36 @@ class TestRounds:
         assert captured == [("hk-in-consensus", '{"included":true}')]
         assert storage.accepted_bundles(round_id, RISK_SCHEMA_ID) == [
             ("hk-in-consensus", '{"included":true}'),
-            ("hk-late", '{"excluded":true}'),
         ]
         assert storage.scoring_bundles(round_id, RISK_SCHEMA_ID) == [
             ("hk-in-consensus", '{"included":true}')
         ]
 
-    def test_scoring_bundles_lazily_freezes_legacy_post_embargo_round(
-        self, storage: Storage
+    @pytest.mark.parametrize("state", ["revealed", "partially_scored", "closed"])
+    def test_empty_frozen_snapshot_never_backfills_from_live_submissions(
+        self, storage: Storage, state: str
     ) -> None:
-        """A legacy revealed round snapshots its current accepted set on first read."""
         round_id = _open_round(storage)
-        storage.record_reveal(
-            round_id,
-            RISK_SCHEMA_ID,
-            "hk-initial",
-            bundle_json='{"included":true}',
-            nonce_hex="01",
-            accepted=True,
-            rejection_code=None,
-            now_iso=NOW,
-        )
+        storage.set_round_state(round_id, RISK_SCHEMA_ID, state, now_iso=NOW)
+
+        # Simulate an out-of-band row in a database closed with no submissions.
+        # Reading scoring inputs must not reinterpret the empty frozen set.
         with storage._engine.begin() as connection:
             connection.execute(
-                update(rounds)
-                .where(
-                    rounds.c.round_id == round_id,
-                    rounds.c.schema_id == RISK_SCHEMA_ID,
+                insert(submissions).values(
+                    round_id=round_id,
+                    schema_id=RISK_SCHEMA_ID,
+                    miner_hotkey="hk-late",
+                    bundle_json='{"excluded":true}',
+                    nonce_hex="02",
+                    verdict="accepted",
                 )
-                .values(state="revealed", updated_at=NOW)
             )
 
-        first_read = storage.scoring_bundles(
-            round_id, RISK_SCHEMA_ID, now_iso="2026-06-09T12:00:00+00:00"
-        )
-        storage.record_reveal(
-            round_id,
-            RISK_SCHEMA_ID,
-            "hk-late",
-            bundle_json='{"excluded":true}',
-            nonce_hex="02",
-            accepted=True,
-            rejection_code=None,
-            now_iso=NOW,
-        )
-
+        assert storage.scoring_bundles(round_id, RISK_SCHEMA_ID) == []
+        assert storage.accepted_reveal(round_id, RISK_SCHEMA_ID, "hk-late") is None
         with storage._engine.connect() as connection:
-            snapshot_rows = connection.execute(
-                select(
-                    consensus_bundle_snapshots.c.miner_hotkey,
-                    consensus_bundle_snapshots.c.snapshotted_at,
-                ).where(
-                    consensus_bundle_snapshots.c.round_id == round_id,
-                    consensus_bundle_snapshots.c.schema_id == RISK_SCHEMA_ID,
-                )
-            ).all()
-
-        assert first_read == [("hk-initial", '{"included":true}')]
-        assert storage.scoring_bundles(round_id, RISK_SCHEMA_ID) == first_read
-        assert snapshot_rows == [("hk-initial", "2026-06-09T12:00:00+00:00")]
+            assert connection.execute(select(consensus_bundle_snapshots)).all() == []
 
 
 class TestCommits:
@@ -313,6 +286,47 @@ class TestCommits:
         assert sum(results) == 5
         assert storage.commit_count(round_id, RISK_SCHEMA_ID, "hotkey-a") == 5
 
+    def test_recommit_cannot_invalidate_accepted_reveal(self, storage: Storage) -> None:
+        round_id = _open_round(storage)
+        storage.record_commit(round_id, RISK_SCHEMA_ID, "hk", "ab" * 32, now_iso=NOW)
+        storage.record_reveal(
+            round_id,
+            RISK_SCHEMA_ID,
+            "hk",
+            bundle_json='{"accepted":true}',
+            nonce_hex="01",
+            accepted=True,
+            rejection_code=None,
+            now_iso=NOW,
+        )
+
+        assert not storage.record_commit(
+            round_id, RISK_SCHEMA_ID, "hk", "cd" * 32, now_iso=NOW
+        )
+        storage.set_round_state(round_id, RISK_SCHEMA_ID, "revealed", now_iso=NOW)
+
+        assert storage.committed_hash(round_id, RISK_SCHEMA_ID, "hk") == "ab" * 32
+        assert storage.scoring_bundles(round_id, RISK_SCHEMA_ID) == [
+            ("hk", '{"accepted":true}')
+        ]
+
+    def test_closed_round_rejects_commit_and_reveal_budget_writes(
+        self, storage: Storage
+    ) -> None:
+        round_id = _open_round(storage)
+        storage.record_commit(round_id, RISK_SCHEMA_ID, "hk", "ab" * 32, now_iso=NOW)
+        storage.set_round_state(round_id, RISK_SCHEMA_ID, "revealed", now_iso=NOW)
+
+        assert not storage.record_commit(
+            round_id, RISK_SCHEMA_ID, "hk", "cd" * 32, now_iso=NOW
+        )
+        assert not storage.record_reveal_attempt(
+            round_id, RISK_SCHEMA_ID, "hk", max_reveals=10
+        )
+        assert storage.committed_hash(round_id, RISK_SCHEMA_ID, "hk") == "ab" * 32
+        assert storage.commit_count(round_id, RISK_SCHEMA_ID, "hk") == 1
+        assert storage.reveal_count(round_id, RISK_SCHEMA_ID, "hk") == 0
+
 
 class TestReveals:
     def test_record_reveal_attempt_is_restart_surviving_and_capped(
@@ -396,66 +410,36 @@ class TestReveals:
 
         assert storage.accepted_bundles(round_id, RISK_SCHEMA_ID) == []
 
-    def test_conflicted_rejected_reveal_reports_no_persistence(
-        self, storage: Storage
+    @pytest.mark.parametrize("accepted", [False, True])
+    def test_accepted_reveal_cannot_be_replaced(
+        self, storage: Storage, accepted: bool
     ) -> None:
         round_id = _open_round(storage)
-        competing_reveal_written = False
-
-        def write_competing_reveal_before_insert(
-            _connection,
-            _cursor,
-            statement: str,
-            _parameters,
-            _context,
-            _executemany,
-        ) -> None:
-            nonlocal competing_reveal_written
-            if competing_reveal_written or not statement.startswith(
-                "INSERT INTO submissions"
-            ):
-                return
-            competing_reveal_written = True
-            with storage._engine.begin() as competing_connection:
-                competing_connection.execute(
-                    insert(submissions).values(
-                        round_id=round_id,
-                        schema_id=RISK_SCHEMA_ID,
-                        miner_hotkey="hk",
-                        revealed_at=NOW,
-                        bundle_json='{"winner":true}',
-                        nonce_hex="0102",
-                        verdict="accepted",
-                        rejection_code=None,
-                    )
-                )
-
-        event.listen(
-            storage._engine,
-            "before_cursor_execute",
-            write_competing_reveal_before_insert,
+        assert storage.record_reveal(
+            round_id,
+            RISK_SCHEMA_ID,
+            "hk",
+            bundle_json='{"winner":true}',
+            nonce_hex="0102",
+            accepted=True,
+            rejection_code=None,
+            now_iso=NOW,
         )
-        try:
-            persisted = storage.record_reveal(
-                round_id,
-                RISK_SCHEMA_ID,
-                "hk",
-                bundle_json='{"loser":true}',
-                nonce_hex="0103",
-                accepted=False,
-                rejection_code="HASH_MISMATCH",
-                now_iso=NOW,
-            )
-        finally:
-            event.remove(
-                storage._engine,
-                "before_cursor_execute",
-                write_competing_reveal_before_insert,
-            )
 
-        assert competing_reveal_written is True
+        persisted = storage.record_reveal(
+            round_id,
+            RISK_SCHEMA_ID,
+            "hk",
+            bundle_json='{"loser":true}',
+            nonce_hex="0103",
+            accepted=accepted,
+            rejection_code=None if accepted else "HASH_MISMATCH",
+            now_iso=NOW,
+        )
+
         assert persisted is False
-        assert storage.accepted_bundles(round_id, RISK_SCHEMA_ID) == [
+        storage.set_round_state(round_id, RISK_SCHEMA_ID, "revealed", now_iso=NOW)
+        assert storage.scoring_bundles(round_id, RISK_SCHEMA_ID) == [
             ("hk", '{"winner":true}')
         ]
 

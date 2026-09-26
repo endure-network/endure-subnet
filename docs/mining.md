@@ -56,12 +56,7 @@ There is no minimum runtime, warm-up round count, or registration-age gate.
 Qualification is event-driven:
 
 1. Register the hotkey on netuid `504`.
-2. Clear the receiving validator's stake floor (`--endure.min_miner_stake`,
-   compared against metagraph total stake weight `S`). The floor is
-   deployment-configured per validator; see
-   [Troubleshooting](#troubleshooting-and-support) for the soak validator's
-   current value.
-3. Land one valid commit and matching reveal in the same round.
+2. Land one valid commit and matching reveal in the same round.
 
 Your first accepted round enters you into the scoring set defined by
 [the fairness deltas](specs/2026-07-20-scoring-fairness-deltas.md#1--absence-aware-scoring):
@@ -76,15 +71,29 @@ EMA half-life (5 rounds):
 | Milestone | Time from first accepted submission |
 | --- | --- |
 | In the scoring set | immediately |
-| First resolved scores → first nonzero weight | ~6 days (the round's 5-day horizon resolves) |
+| First positive resolved scores → eligibility for earned weights | ~6 days (the round's 5-day horizon resolves); submission and finalized confirmation follow separately |
 | 30-day coordinates begin contributing | ~31 days |
 | Track record saturated at your accuracy level | a few half-lives beyond each horizon's first resolution |
 
-Registration alone earns nothing: a hotkey that never lands an accepted round
-has no EMA state and receives zero weight. Weights follow the decaying track
+Registration alone earns no score-derived weight: a hotkey that never lands an
+accepted round has no EMA state. Earned weights follow the decaying track
 record, not single rounds — one missed round dents the EMA, and sustained
 absence decays every coordinate toward the archival threshold (`0.01`), after
 which the hotkey leaves the scoring set entirely.
+
+Key `2042` has one fallback to score-derived allocation: on mainnet SN30 and
+Bittensor testnet, a served Alpha Risk validator whose score vector has no
+positive entry — at cold start, including when no miners have submitted, and
+again after every scored miner is archived — submits its whole vote to the UID
+of the on-chain subnet owner hotkey. This owner vote is a fallback allocation,
+not earned miner reputation or proof of model accuracy; it writes no synthetic
+scores or EMAs. As soon as any miner's score is positive, the same running
+process submits earned weights without an operator flag change or restart.
+Mock and local chains abstain in the all-zero case. Independent validators'
+accepted submissions, resolution timing, and durable histories can differ, so
+they may enter or leave the owner vote at different times, and chain
+confirmation is not guaranteed to be simultaneous across validators. See the
+[mainnet lifecycle and safety gates](running_on_mainnet.md#weights-and-abstention).
 
 ## Cover the full universe
 
@@ -132,8 +141,9 @@ validator remain authoritative.
 
 The schema defines the outputs, horizons, units, validation, and all numerical
 scoring definitions: [subnet_alpha_risk.py](../endure/assessment/schemas/subnet_alpha_risk.py).
-Validators resolve the observable coordinates and aggregate assessment scoring
-in [assessment_orchestrator.py](../endure/scoring/assessment_orchestrator.py).
+Validators resolve the observable coordinates in
+[orchestrator.py](../endure/scoring/risk/orchestrator.py) and aggregate assessment
+scoring in [assessment_orchestrator.py](../endure/scoring/assessment_orchestrator.py).
 Risk tiers are derived in [risk_tier.py](../endure/publication/risk_tier.py),
 and compatibility is enforced by [version_contract.py](../endure/protocol/version_contract.py).
 
@@ -143,15 +153,17 @@ Bittensor emission. Alpha Risk is absence-aware: any hotkey with active EMA
 state that misses a resolved coordinate receives a zero observation, which
 decays that coordinate's EMA. A never-active expected miner has no EMA state
 to decay. The scoring-set and zero-fill rules are defined by
+[eligibility.py](../endure/scoring/eligibility.py),
 [assessment_orchestrator.py](../endure/scoring/assessment_orchestrator.py) and
 [the scoring fairness deltas](specs/2026-07-20-scoring-fairness-deltas.md#1--absence-aware-scoring).
 The shared scoring policy is defined by
 [policy.py](../endure/scoring/policy.py) and the EMA/normalization helpers by
-[weights.py](../endure/scoring/weights.py). Code, not this guide, remains
+[weights.py](../endure/scoring/weights.py), and the chain weight vector by
+[weight_processing.py](../endure/scoring/weight_processing.py). Code, not this guide, remains
 canonical.
 
-In plain terms, the incentive design pays for verified accuracy and nothing
-else:
+In plain terms, earned miner weights reward scored prediction accuracy; the
+owner-vote fallback is separate:
 
 - Each coordinate scores your revealed value against the realized outcome. A
   grace band absorbs small misses (for example 200 bps on drawdown, 500 bps on
@@ -167,11 +179,11 @@ else:
   a `0.5` record roughly six to one, and near-zero records earn effectively
   nothing.
 
-The constants above are protocol-key-`2041` testnet values
+Key `2042` retains the scoring constants shipped at key `2041`
 ([policy.py](../endure/scoring/policy.py),
-[subnet_alpha_risk.py](../endure/assessment/schemas/subnet_alpha_risk.py)) and
-remain tunable before the serving freeze; see
-[economic limitations](economic-limitations.md).
+[subnet_alpha_risk.py](../endure/assessment/schemas/subnet_alpha_risk.py)).
+They are release-pinned, not operator tuning controls, and remain experimental;
+see [economic limitations](economic-limitations.md).
 
 ## Troubleshooting and support
 
@@ -181,7 +193,7 @@ remain tunable before the serving freeze; see
 | `NO_COMMIT` or `HASH_MISMATCH` | Confirm durable state, the same nonce, and the exact committed bundle. |
 | Late commit/reveal | Synchronize the host clock and read the round windows from the validator. |
 | No validator axons | Confirm registration/permit state, validator health, and any `--endure.min_validator_stake_weight` floor, then allow metagraph synchronization. |
-| Pushes go out but no commit is ever acked (`0 validators hold it`) | Validators may enforce a minimum miner stake (`--endure.min_miner_stake`) and reject under-staked hotkeys with `Insufficient stake`. The public testnet soak validator's floor is deployment-configured and can change without a release; the authoritative signal is the rejection reason in the miner log. Stake the miner hotkey above the floor, then keep the miner running. |
+| Pushes go out but no commit is ever acked (`0 validators hold it`) | Inspect the rejection reason. Key `2042` validators on testnet and mainnet admit every registered hotkey with no additional stake floor; verify registration, matching protocol keys, reachability, and round windows rather than adding stake to cure a protocol rejection. |
 
 Optional remote logging (`ENDURE_LOG_DRAIN`) and JSON console output
 (`ENDURE_LOG_FORMAT=json`) work the same as for validators — see

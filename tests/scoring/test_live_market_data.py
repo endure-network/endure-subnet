@@ -1,15 +1,19 @@
 from __future__ import annotations
 
+import gc
 import threading
 import time
+import weakref
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from itertools import count
+from types import SimpleNamespace
 
 import pytest
 from async_substrate_interface.errors import (
     MaxRetriesExceeded,
+    StateDiscardedError,
     SubstrateRequestException,
 )
 from websockets.datastructures import Headers
@@ -17,6 +21,8 @@ from websockets.exceptions import InvalidStatus
 from websockets.http11 import Response
 
 from endure.live.alpha_market_data import (
+    CHAIN_GENESIS_MAX_BACKOFF_SECONDS,
+    CHAIN_GENESIS_READ_DEADLINE_SECONDS,
     LIVE_MARKET_DATA_MAX_ABANDONED_WORKERS,
     LIVE_MARKET_DATA_RATE_LIMIT_COOLDOWN_SECONDS,
     LIVE_MARKET_DATA_REQUEST_PAUSE_SECONDS,
@@ -24,7 +30,10 @@ from endure.live.alpha_market_data import (
     BittensorSubnetInfoFetcher,
     LiveAlphaPriceProvider,
     LiveAlphaPriceProviderConfig,
+    read_chain_genesis,
+    validate_mainnet_archive,
 )
+from endure.protocol.consensus_policy import MAINNET_GENESIS_HASH
 from endure.protocol.risk_miner import LatestPoolObservation, baseline_risk_bundle
 from endure.scoring.assessment_orchestrator import ResolutionDeadlineExceeded
 from endure.scoring.market_data import (
@@ -55,6 +64,10 @@ class FakeSubnetFetcher:
     current_failures: int = 0
     calls: list[tuple[int, int | None]] = field(default_factory=list)
     current_calls: int = 0
+    genesis: str | None = MAINNET_GENESIS_HASH
+    genesis_answers: list[str | None] = field(default_factory=list)
+    genesis_calls: int = 0
+    timestamp_calls: list[int] = field(default_factory=list)
 
     def subnet(self, *, netuid: int, block: int | None = None) -> FakeDynamicInfo:
         self.calls.append((netuid, block))
@@ -74,10 +87,17 @@ class FakeSubnetFetcher:
             raise TimeoutError("archive head unavailable")
         return self.current
 
+    def genesis_hash(self) -> str | None:
+        self.genesis_calls += 1
+        if self.genesis_answers:
+            return self.genesis_answers.pop(0)
+        return self.genesis
+
     def finalized_block(self) -> int:
         return self.finalized
 
     def timestamp_at_block(self, block: int) -> int:
+        self.timestamp_calls.append(block)
         return self.timestamps_by_block[block]
 
 
@@ -91,6 +111,8 @@ class FakeArchiveSubstrate:
     finalized: int
     timestamps_by_block: dict[int, int]
     query_hashes: list[str] = field(default_factory=list)
+    closed: bool = False
+    genesis: str | None = None
 
     def get_chain_finalised_head(self) -> str:
         return "finalized"
@@ -100,6 +122,8 @@ class FakeArchiveSubstrate:
         return self.finalized
 
     def get_block_hash(self, block_id: int) -> str:
+        if block_id == 0 and self.genesis is not None:
+            return self.genesis
         return f"block-{block_id}"
 
     def query(
@@ -117,6 +141,9 @@ class FakeArchiveSubstrate:
         block = int(block_hash.removeprefix("block-"))
         return FakeStorageValue(value=self.timestamps_by_block[block])
 
+    def close(self) -> None:
+        self.closed = True
+
 
 @dataclass(slots=True)
 class BlockingSubtensor:
@@ -124,6 +151,7 @@ class BlockingSubtensor:
     slow_current_block: bool = False
     sleep_seconds: float = 0.6
     calls: list[tuple[int, int | None]] = field(default_factory=list)
+    closed: bool = False
 
     def subnet(self, netuid: int, block: int | None = None) -> FakeDynamicInfo:
         self.calls.append((netuid, block))
@@ -135,6 +163,9 @@ class BlockingSubtensor:
         if self.slow_current_block:
             time.sleep(self.sleep_seconds)
         return 9_999
+
+    def close(self) -> None:
+        self.closed = True
 
 
 @dataclass(slots=True)
@@ -198,6 +229,312 @@ def _reveal_close(seconds_after_epoch: int) -> datetime:
 
 def _timestamp(seconds_after_epoch: int) -> int:
     return 1_767_225_600_000 + seconds_after_epoch * 1_000
+
+
+def _archive_probe_fetcher() -> FakeSubnetFetcher:
+    # Sparse synthetic blocks deliberately do not follow a 12-second estimate.
+    timestamps = {block: _timestamp(block * 86_400) for block in range(101)}
+    timestamps[100] += 3_600_000
+    return FakeSubnetFetcher(
+        responses={(30, 70): FakeDynamicInfo(tao_in=5_000, alpha_in=1_000)},
+        finalized=100,
+        timestamps_by_block=timestamps,
+    )
+
+
+def _archive_probe_provider(
+    fetcher: FakeSubnetFetcher, *, max_attempts: int = 1
+) -> LiveAlphaPriceProvider:
+    # Backoff sleeps advance a virtual clock, so deadline-bounded probe retries
+    # finish instantly instead of spinning for the real 120-second budget.
+    clock = [0.0]
+
+    def sleep(seconds: Decimal) -> None:
+        clock[0] += float(seconds)
+
+    return LiveAlphaPriceProvider(
+        config=LiveAlphaPriceProviderConfig(
+            endpoint="wss://archive.example/private-key?token=secret",
+            request_pause_seconds=Decimal("1"),
+            max_attempts=max_attempts,
+        ),
+        fetcher=fetcher,
+        sleep=sleep,
+        now_fn=lambda: clock[0],
+    )
+
+
+def test_archive_readiness_uses_deep_history_and_timestamp_lookback() -> None:
+    fetcher = _archive_probe_fetcher()
+
+    _archive_probe_provider(fetcher).validate_archive(netuid=30)
+
+    # The old midpoint is required by scoring's binary search even though it
+    # precedes the 30-day reserve lookback; only one historical pool is fetched.
+    assert 50 in fetcher.timestamp_calls
+    assert fetcher.calls == [(30, 70)]
+    assert fetcher.current_calls == 0
+
+
+@pytest.mark.parametrize(
+    "genesis", [MAINNET_GENESIS_HASH.upper(), MAINNET_GENESIS_HASH[2:]]
+)
+def test_archive_readiness_compares_normalized_genesis(genesis: str) -> None:
+    # Given: a node rendering the mainnet genesis in uppercase or without 0x.
+    fetcher = _archive_probe_fetcher()
+    fetcher.genesis = genesis
+
+    # When / Then: the archive is still recognized as mainnet.
+    _archive_probe_provider(fetcher).validate_archive(netuid=30)
+    assert fetcher.calls == [(30, 70)]
+
+
+def test_archive_readiness_retries_a_missing_genesis() -> None:
+    # Given: a node that answers no genesis once, then the mainnet genesis.
+    fetcher = _archive_probe_fetcher()
+    fetcher.genesis_answers = [None]
+
+    # When / Then: the empty answer is retried instead of refusing mainnet.
+    _archive_probe_provider(fetcher, max_attempts=3).validate_archive(netuid=30)
+    assert fetcher.genesis_calls == 2
+    assert fetcher.calls == [(30, 70)]
+
+
+@pytest.mark.parametrize(
+    ("genesis", "genesis_calls"), [("0xwrong-chain", 1), (None, 3)]
+)
+def test_archive_readiness_rejects_wrong_or_missing_genesis(
+    genesis: str | None, genesis_calls: int
+) -> None:
+    # Given: a different chain (refused at once) or a node that never answers
+    # a genesis (refused once its retries are spent).
+    fetcher = _archive_probe_fetcher()
+    fetcher.genesis = genesis
+
+    with pytest.raises(AlphaMarketDataUnavailable):
+        _archive_probe_provider(fetcher, max_attempts=3).validate_archive(netuid=30)
+
+    assert fetcher.genesis_calls == genesis_calls
+    assert fetcher.calls == []
+    assert fetcher.timestamp_calls == []
+
+
+@pytest.mark.parametrize("missing_block", [50, 70, 100])
+def test_archive_readiness_rejects_pruned_or_missing_timestamp_history(
+    missing_block: int,
+) -> None:
+    fetcher = _archive_probe_fetcher()
+    del fetcher.timestamps_by_block[missing_block]
+
+    with pytest.raises(AlphaMarketDataUnavailable):
+        _archive_probe_provider(fetcher).validate_archive(netuid=30)
+
+    assert fetcher.calls == []
+
+
+@pytest.mark.parametrize(
+    ("tao", "alpha"), [(0, 1_000), (5_000, 0), (-1, 1_000), (5_000, -1)]
+)
+def test_archive_readiness_rejects_nonpositive_reserves(tao: int, alpha: int) -> None:
+    fetcher = _archive_probe_fetcher()
+    fetcher.responses[(30, 70)] = FakeDynamicInfo(tao_in=tao, alpha_in=alpha)
+
+    with pytest.raises(AlphaMarketDataUnavailable):
+        _archive_probe_provider(fetcher).validate_archive(netuid=30)
+
+
+def test_archive_readiness_rejects_missing_historical_pool() -> None:
+    fetcher = _archive_probe_fetcher()
+    fetcher.responses.clear()
+
+    with pytest.raises(AlphaMarketDataUnavailable):
+        _archive_probe_provider(fetcher).validate_archive(netuid=30)
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        LookupError("historical state discarded"),
+        TimeoutError("archive timed out"),
+        OSError("archive wss://archive.example/private-key?token=secret unavailable"),
+        SubstrateRequestException(
+            {"code": -32000, "message": "State already discarded"}
+        ),
+    ],
+)
+def test_archive_readiness_rejects_unavailable_historical_reserves(
+    error: Exception,
+) -> None:
+    fetcher = _archive_probe_fetcher()
+    fetcher.failed_blocks = frozenset({70})
+    fetcher.failure_error = error
+
+    with pytest.raises(AlphaMarketDataUnavailable) as caught:
+        _archive_probe_provider(fetcher).validate_archive(netuid=30)
+
+    assert "secret" not in str(caught.value)
+    assert "private-key" not in str(caught.value)
+    assert caught.value.__suppress_context__
+
+
+@pytest.mark.parametrize(
+    ("error", "prompt"),
+    [
+        (
+            SubstrateRequestException(
+                {
+                    "code": 4003,
+                    "message": "Client error: UnknownBlock: State already "
+                    "discarded for 0x4f1e5d3c8a",
+                }
+            ),
+            True,
+        ),
+        (StateDiscardedError("0x4f1e5d3c8a"), True),
+        (LookupError("historical state discarded"), True),
+        (TimeoutError("archive timed out"), False),
+    ],
+)
+def test_archive_probe_refuses_a_pruned_node_promptly(
+    error: Exception, prompt: bool
+) -> None:
+    # Given: a pruned node's real discarded-state RPC error versus an outage.
+    clock = [0.0]
+
+    def sleep(seconds: Decimal) -> None:
+        clock[0] += float(seconds)
+
+    fetcher = _archive_probe_fetcher()
+    fetcher.failed_blocks = frozenset({70})
+    fetcher.failure_error = error
+    provider = LiveAlphaPriceProvider(
+        config=LiveAlphaPriceProviderConfig(endpoint="mock://archive"),
+        fetcher=fetcher,
+        sleep=sleep,
+        now_fn=lambda: clock[0],
+    )
+
+    # When / Then: missing history fails within the normal retry ladder, while
+    # a transport outage is retried until the probe deadline.
+    with pytest.raises(AlphaMarketDataUnavailable):
+        provider.validate_archive(netuid=30)
+    assert (clock[0] < 10.0) is prompt
+    assert (clock[0] >= 120.0) is not prompt
+
+
+def test_archive_readiness_enforces_probe_deadline() -> None:
+    fetcher = _archive_probe_fetcher()
+    ticks = iter([0.0, 121.0])
+    provider = LiveAlphaPriceProvider(
+        config=LiveAlphaPriceProviderConfig(max_attempts=1),
+        fetcher=fetcher,
+        now_fn=lambda: next(ticks),
+    )
+
+    with pytest.raises(AlphaMarketDataUnavailable):
+        provider.validate_archive(netuid=30)
+
+    assert fetcher.calls == []
+    assert fetcher.timestamp_calls == []
+
+
+@pytest.mark.parametrize(
+    "info",
+    [
+        None,
+        object(),
+        SimpleNamespace(tao_in=None, alpha_in=1_000),
+        SimpleNamespace(tao_in="invalid", alpha_in=1_000),
+    ],
+)
+def test_archive_readiness_rejects_malformed_pool_response(
+    monkeypatch: pytest.MonkeyPatch, info: object
+) -> None:
+    fetcher = _archive_probe_fetcher()
+    monkeypatch.setattr(FakeSubnetFetcher, "subnet", lambda _self, **_kwargs: info)
+
+    with pytest.raises(AlphaMarketDataUnavailable):
+        _archive_probe_provider(fetcher).validate_archive(netuid=30)
+
+
+@pytest.mark.parametrize("failure", [None, "identity"])
+def test_archive_probe_releases_scoped_clients(
+    monkeypatch: pytest.MonkeyPatch, failure: str | None
+) -> None:
+    source = _archive_probe_fetcher()
+    substrate = FakeArchiveSubstrate(
+        finalized=source.finalized,
+        timestamps_by_block=source.timestamps_by_block,
+        genesis="0xwrong-chain" if failure == "identity" else MAINNET_GENESIS_HASH,
+    )
+    subtensor = BlockingSubtensor()
+
+    def make_fetcher(endpoint: str) -> BittensorSubnetInfoFetcher:
+        fetcher = BittensorSubnetInfoFetcher(
+            endpoint, subtensor=subtensor, min_request_interval_seconds=0.0
+        )
+        fetcher._make_substrate = lambda: substrate
+        return fetcher
+
+    monkeypatch.setattr(
+        "endure.live.alpha_market_data.BittensorSubnetInfoFetcher", make_fetcher
+    )
+
+    if failure is None:
+        validate_mainnet_archive("mock://archive", netuid=30)
+    else:
+        with pytest.raises(AlphaMarketDataUnavailable):
+            validate_mainnet_archive("mock://archive", netuid=30)
+
+    assert substrate.closed
+    assert subtensor.closed is (failure is None)
+    assert subtensor.calls == ([(30, 70)] if failure is None else [])
+
+
+def test_archive_probe_waits_out_a_handshake_rate_limit_within_its_deadline() -> None:
+    # Given: a coordinated restart whose first archive handshake is throttled
+    # (HTTP 429 arms the 60-second cooldown) and a healthy archive afterwards.
+    clock = [0.0]
+    source = _archive_probe_fetcher()
+    substrate = FakeArchiveSubstrate(
+        finalized=source.finalized,
+        timestamps_by_block=source.timestamps_by_block,
+        genesis=MAINNET_GENESIS_HASH,
+    )
+    handshakes: list[float] = []
+
+    def handshake() -> FakeArchiveSubstrate:
+        handshakes.append(clock[0])
+        if len(handshakes) == 1:
+            raise InvalidStatus(Response(429, "Too Many Requests", Headers()))
+        return substrate
+
+    fetcher = BittensorSubnetInfoFetcher(
+        "mock://archive",
+        subtensor=BlockingSubtensor(),
+        now_fn=lambda: clock[0],
+        min_request_interval_seconds=0.0,
+    )
+    fetcher._make_substrate = handshake
+
+    def sleep(seconds: Decimal) -> None:
+        clock[0] += float(seconds)
+
+    provider = LiveAlphaPriceProvider(
+        config=LiveAlphaPriceProviderConfig(endpoint="mock://archive"),
+        fetcher=fetcher,
+        sleep=sleep,
+        now_fn=lambda: clock[0],
+    )
+
+    # When: the startup probe runs.
+    provider.validate_archive(netuid=30)
+
+    # Then: it retried past max_attempts, waited out the cooldown, and passed
+    # well inside the 120-second probe deadline.
+    assert len(handshakes) == 2
+    assert 60.0 <= handshakes[1] < 70.0
+    fetcher.close()
 
 
 def test_live_provider_uses_first_block_at_or_after_reveal_close() -> None:
@@ -1420,3 +1757,164 @@ def test_live_provider_is_window_explicit_and_reentrant() -> None:
     assert long is not None
     assert tuple(snapshot.block for snapshot in short.snapshots) == blocks[:5]
     assert tuple(snapshot.block for snapshot in long.snapshots) == blocks[:10]
+
+
+@dataclass(slots=True)
+class FakeGenesisClient:
+    result: str | None | Exception
+    closed: bool = False
+
+    def get_block_hash(self, block_id: int) -> str | None:
+        assert block_id == 0
+        if isinstance(self.result, Exception):
+            raise self.result
+        return self.result
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def test_chain_genesis_read_retries_transient_failures_and_closes_each_client() -> None:
+    # Given: a throttled handshake, a DNS blip, a booting node answering None,
+    # then a healthy node.
+    clock = [0.0]
+    sleeps: list[float] = []
+    outcomes: list[str | None | Exception] = [
+        OSError("[Errno -3] Temporary failure in name resolution"),
+        None,
+        MAINNET_GENESIS_HASH,
+    ]
+    handshakes: list[str] = []
+    clients: list[FakeGenesisClient] = []
+
+    def make_client(endpoint: str, timeout: float) -> FakeGenesisClient:
+        assert 0 < timeout <= CHAIN_GENESIS_READ_DEADLINE_SECONDS
+        handshakes.append(endpoint)
+        if len(handshakes) == 1:
+            raise InvalidStatus(Response(429, "Too Many Requests", Headers()))
+        client = FakeGenesisClient(outcomes[len(clients)])
+        clients.append(client)
+        return client
+
+    def sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+        clock[0] += seconds
+
+    # When: startup reads the chain identity.
+    genesis = read_chain_genesis(
+        "ws://127.0.0.1:9944",
+        client_factory=make_client,
+        now_fn=lambda: clock[0],
+        sleep=sleep,
+    )
+
+    # Then: the hash is returned after exponential backoff, and every client
+    # that was built was closed.
+    assert genesis == MAINNET_GENESIS_HASH
+    assert sleeps == [0.5, 1.0, 2.0]
+    assert handshakes == ["ws://127.0.0.1:9944"] * 4
+    assert len(clients) == 3
+    assert all(client.closed for client in clients)
+
+
+def test_chain_genesis_read_refuses_within_its_deadline_on_persistent_failure() -> None:
+    # Given: an endpoint that never answers and a virtual clock.
+    clock = [0.0]
+    sleeps: list[float] = []
+    clients: list[FakeGenesisClient] = []
+
+    def make_client(endpoint: str, timeout: float) -> FakeGenesisClient:
+        client = FakeGenesisClient(ConnectionError(f"{endpoint} refused"))
+        clients.append(client)
+        return client
+
+    def sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+        clock[0] += seconds
+
+    # When: startup reads the chain identity.
+    genesis = read_chain_genesis(
+        "wss://node.example:443",
+        client_factory=make_client,
+        now_fn=lambda: clock[0],
+        sleep=sleep,
+    )
+
+    # Then: it gives up (caller refuses startup) within the deadline, after
+    # several capped-backoff attempts, each on a fresh closed client.
+    assert genesis is None
+    assert clock[0] <= CHAIN_GENESIS_READ_DEADLINE_SECONDS
+    assert len(clients) > 1
+    assert len(clients) == len(sleeps) + 1
+    assert max(sleeps) == CHAIN_GENESIS_MAX_BACKOFF_SECONDS
+    assert all(client.closed for client in clients)
+
+
+def test_chain_genesis_read_does_not_hang_past_its_deadline() -> None:
+    # Given: a connect that blocks until the test releases it.
+    release = threading.Event()
+    clients: list[FakeGenesisClient] = []
+
+    def make_client(endpoint: str, timeout: float) -> FakeGenesisClient:
+        release.wait()
+        client = FakeGenesisClient(MAINNET_GENESIS_HASH)
+        clients.append(client)
+        return client
+
+    # When: startup reads the chain identity with a short deadline.
+    started = time.monotonic()
+    try:
+        genesis = read_chain_genesis(
+            "ws://127.0.0.1:9944", deadline_seconds=0.3, client_factory=make_client
+        )
+        elapsed = time.monotonic() - started
+        hung = [
+            thread
+            for thread in threading.enumerate()
+            if thread.name == "chain-genesis-read"
+        ]
+    finally:
+        release.set()
+
+    # Then: the read gives up at the deadline, the wedged attempt cannot keep
+    # the process alive, and it closes its client once it unblocks.
+    assert genesis is None
+    assert elapsed < 2.0
+    assert hung
+    assert all(thread.daemon for thread in hung)
+    for thread in hung:
+        thread.join(timeout=2.0)
+    assert clients
+    assert all(client.closed for client in clients)
+
+
+def test_a_half_built_genesis_client_is_finalized_when_its_attempt_fails() -> None:
+    """A client whose constructor fails after connecting must not outlive the
+    attempt waiting for cyclic GC: its finalizer is what closes the socket."""
+    finalized = threading.Event()
+
+    class HalfBuiltClient:
+        def __init__(self, _endpoint: str, _timeout: float) -> None:
+            # The websocket handshake succeeded; the init RPC then times out.
+            weakref.finalize(self, finalized.set)
+            raise TimeoutError("runtime metadata read timed out")
+
+        def get_block_hash(self, block_id: int) -> str | None:
+            raise AssertionError(block_id)
+
+        def close(self) -> None:
+            raise AssertionError("never built")
+
+    gc.disable()
+    try:
+        genesis = read_chain_genesis(
+            "ws://node.invalid:9944",
+            deadline_seconds=1.0,
+            client_factory=HalfBuiltClient,
+            sleep=lambda _seconds: None,
+        )
+        assert genesis is None
+        # Reference counting alone must release it once the attempt ends.
+        assert finalized.wait(2), "the half-built client waits for cyclic GC"
+    finally:
+        gc.enable()

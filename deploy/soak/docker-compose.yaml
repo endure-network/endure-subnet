@@ -23,10 +23,10 @@
 # chain RPC URL such as a keyed Dwellir testnet endpoint — bittensor >=10.3
 # ignores --subtensor.chain_endpoint, so a custom RPC must ride this flag;
 # the URL host must be allowlisted in endure/utils/config.py _TESTNET_HOSTS;
-# default test), MIN_MINER_STAKE
-# (default 0 — see docs/deploy/coolify.md for the stake-floor tradeoff),
-# EPOCH_LENGTH (blocks between weight settings, default 100), MARKET_DATA_ENDPOINT
-# (mainnet archive for Alpha market data, default the public OpenTensor archive).
+# default test), MARKET_DATA_ENDPOINT (mainnet archive for Alpha market data,
+# default the public OpenTensor archive). The miner stake floor, round caps and
+# epoch length are protocol values on served testnet and mainnet and are not
+# configurable here.
 #
 # Port 8091 is a raw host publish (the chain stores integer IPs; axons cannot
 # sit behind a proxy). The read-only HTTP API stays on the private Compose
@@ -121,9 +121,7 @@ services:
         "--endure.database_url", "sqlite:////data/validator-live.db",
         "--endure.api_port", "8714",
         "--endure.api_host", "0.0.0.0",
-        "--endure.min_miner_stake", "${MIN_MINER_STAKE:-0}",
         "--axon.port", "8091",
         "--axon.external_ip", "${EXTERNAL_IP:?set EXTERNAL_IP}",
-        "--neuron.epoch_length", "${EPOCH_LENGTH:-100}",
         "--logging.info",
       ]

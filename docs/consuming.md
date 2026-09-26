@@ -26,9 +26,11 @@ curl --fail https://api.testnet.endure.network/risk/v1/subnets \
   --output risk-feed.json
 ```
 
-`/health` must report `status: ok`, schema `risk.v1.subnet_alpha`, protocol key
-`2041`, and an explicit release source revision. `/schemas` reports horizons in
-seconds. Alpha Risk uses `432000` (5 days) and `2592000` (30 days).
+`/health` must report `status: ok`, schema `risk.v1.subnet_alpha`, an explicit
+release source revision, and the protocol key of the selected deployment.
+Published `v0.1.0` images use `2041`; this source candidate uses `2042` and requires
+a coordinated upgrade. `/schemas` reports horizons in seconds: Alpha Risk uses
+`432000` (5 days) and `2592000` (30 days).
 
 `source_revision` is attested by whoever built the image, not proven to you.
 `content_revision` is derived from the code the validator is running, so you can

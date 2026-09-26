@@ -9,13 +9,24 @@ EMAs whenever scoring happens.
 """
 
 import asyncio
-import os
+import contextlib
+import copy
 import threading
 import time
+from collections.abc import Iterator
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
-from typing import TYPE_CHECKING, Final, Protocol, Tuple, runtime_checkable
+from typing import (
+    TYPE_CHECKING,
+    ClassVar,
+    Final,
+    Literal,
+    Protocol,
+    Tuple,
+    runtime_checkable,
+)
 
 import bittensor as bt
 
@@ -36,7 +47,16 @@ from endure.assessment.schemas.subnet_alpha_risk import (
 )
 from endure.assessment.subnet_alpha_universe import StaticAlphaRiskUniverseProvider
 from endure.base.axon import authenticated_hotkey
-from endure.base.shutdown import install_shutdown_handlers, join_thread_or_raise
+from endure.base.shutdown import (
+    STARTUP_SHUTDOWN_GRACE_SECONDS,
+    WATCHDOG_TEARDOWN_GRACE_SECONDS,
+    NeuronLifecycle,
+    install_shutdown_handlers,
+    join_thread_or_raise,
+    run_entrypoint,
+    schedule_forced_exit_after_grace,
+    terminate_process,
+)
 from endure.base.validator import (
     WEIGHT_EMISSION_FINALITY_MARGIN_BLOCKS,
     WEIGHT_EMISSION_PERIOD_BLOCKS,
@@ -47,7 +67,11 @@ from endure.base.validator import (
 from endure.live.alpha_market_data import (
     LiveAlphaPriceProvider,
     LiveAlphaPriceProviderConfig,
+    read_chain_genesis,
+    validate_mainnet_archive,
 )
+from endure.protocol.admission import miner_admission
+from endure.protocol.consensus_policy import OwnerVoteNetwork
 from endure.protocol.handlers import SubmissionHandlers
 from endure.protocol.risk_runtime import (
     RECORDED_FIXTURE_WINDOW_START_BLOCK,
@@ -62,14 +86,28 @@ from endure.protocol.vertical import AssessmentRoundProgram, VerticalRuntime
 from endure.runtime.identity import runtime_identity
 from endure.runtime.resolve import resolve_runtime_provider
 from endure.scoring.assessment_orchestrator import ResolutionBudget
+from endure.scoring.eligibility import DeregistrationTracker, scoring_set
+from endure.scoring.emission_policy import (
+    CHAIN_SNAPSHOT_METAGRAPH_INDICES,
+    ChainSnapshot,
+    EmissionBlocked,
+    EmissionBlockReason,
+    EmissionPlan,
+    OwnerVoteRecipient,
+    plan_emission,
+    recheck_owner_vote,
+    select_emission_mode,
+)
 from endure.scoring.market_data import recorded_mainnet_fixture_provider
 from endure.scoring.policy import DEFAULT_PAYOUT_HALF_LIFE_ROUNDS
 from endure.scoring.risk.orchestrator import RiskScoringOrchestrator
 from endure.storage.repository import (
     CR4_REVEAL_SCAN_BATCH_BLOCKS,
+    OPEN_WEIGHT_EMISSION_CONFIRMATION_STATES,
     Storage,
     WeightCommitEvidence,
     WeightEmissionChainSnapshot,
+    WeightEmissionConfirmationHealth,
     WeightEmissionRow,
     WeightRevealEvidence,
     ensure_sqlite_parent_dir,
@@ -77,18 +115,31 @@ from endure.storage.repository import (
 from endure.utils.config import (
     DevOnlyConfigError,
     active_runtime_schema_id,
+    apply_consensus_settings,
+    owner_vote_network,
     permits_dev_only_runtime,
     require_compression_runtime_allowed,
     require_explicit_netuid,
+    require_mainnet_validator_policy,
     require_serving_stage_allowed,
+    resolve_chain_identity,
+    uses_mainnet_consensus_policy,
 )
 from endure.utils.log_shipping import configure_log_shipping
 from endure.utils.logging import safe_endpoint_label, safe_error
 
 _RECORDED_FIXTURE_NETUIDS: Final = (8, 44)
 ZERO = Decimal("0")
-
-DEREGISTRATION_CONFIRMATION_SYNCS = 2
+# Owner-state failures that no retry fixes on its own degrade /health at once;
+# snapshot/identity glitches only after they persist for a couple of epochs.
+# Blocked emission lets weights age toward activity_cutoff (5000 blocks on SN30).
+_IMMEDIATE_EMISSION_BLOCKS: Final = frozenset(
+    {"owner_hotkey_mismatch", "owner_unregistered", "owner_vote_chain_mismatch"}
+)
+_TRANSIENT_EMISSION_BLOCK_EPOCHS: Final = 2
+# /health reuses the durable confirmation summary this long, so public polling
+# cannot turn into one database query per request; emission events drop it.
+_CONFIRMATION_SUMMARY_TTL_SECONDS: Final = 5.0
 
 
 def _cr4_reveal_scan_batch_budget(epoch_length: int) -> int:
@@ -132,13 +183,38 @@ def _run_migrations(database_url: str) -> None:
     alembic_command.upgrade(config, "head")
 
 
+def _require_hotkey(config: bt.Config) -> None:
+    hotkey = bt.Wallet(config=config).hotkey.ss58_address
+    if not hotkey:
+        raise RuntimeError("the configured validator hotkey has no address")
+
+
+@dataclass(frozen=True, slots=True)
+class _ConfirmationSummaryCache:
+    read_at: float
+    block: int | None
+    generation: int
+    summary: WeightEmissionConfirmationHealth
+
+
 class Validator(BaseValidatorNeuron):
     """Schema-routed validator round loop."""
 
+    # Emission health bookkeeping is shared by the run loop and the API thread.
+    _emission_state_lock: ClassVar[threading.RLock] = threading.RLock()
+
     def __init__(self, config: bt.Config | None = None) -> None:
-        resolved_config = config or type(self).build_config()
+        resolved_config = copy.deepcopy(config or type(self).build_config())
+        # Endpoint names cannot identify an operator's own Finney node behind
+        # loopback or a tunnel; genesis does, before any policy gate runs.
+        resolve_chain_identity(resolved_config, read_genesis=read_chain_genesis)
         require_serving_stage_allowed(resolved_config)
         require_explicit_netuid(resolved_config)
+        apply_consensus_settings(resolved_config)
+        require_mainnet_validator_policy(resolved_config)
+        if compression_enabled(resolved_config):
+            # Refuse offline before the network-bound archive probe below.
+            require_compression_runtime_allowed(resolved_config)
         if (
             active_runtime_schema_id(resolved_config) == RISK_SCHEMA_ID
             and int(resolved_config.neuron.num_concurrent_forwards) != 1
@@ -177,14 +253,37 @@ class Validator(BaseValidatorNeuron):
                 "endure.health_tick_max_duration_seconds; a budget at or above "
                 "the watchdog window cannot prevent stale-tick restarts"
             )
+        # Local inputs fail offline, before the network-bound archive probe:
+        # the SQLite URL/path (and schema), then the mainnet hotkey file.
+        _run_migrations(resolved_config.endure.database_url)
+        if uses_mainnet_consensus_policy(resolved_config):
+            _require_hotkey(resolved_config)
+            validate_mainnet_archive(
+                str(resolved_config.endure.market_data_endpoint), netuid=30
+            )
         super().__init__(
             config=resolved_config,
             runtime_provider=resolve_runtime_provider(resolved_config),
         )
         self._schema_id = active_runtime_schema_id(self.config)
-        _run_migrations(self.config.endure.database_url)
         self._storage = Storage.from_url(self.config.endure.database_url)
+        # Before the API thread starts: afterwards only the run loop updates it.
+        self._load_startup_fence()
         self._weight_emission_startup_fence_block: int | None = None
+        self._owner_vote_recipient: OwnerVoteRecipient | None = None
+        self._emission_block: EmissionBlockReason | None = None
+        self._emission_block_since_block: int | None = None
+        self._emission_block_seen_block: int | None = None
+        self._emission_block_underlying: EmissionBlockReason | None = None
+        self._emission_mode = (
+            "disabled" if self.config.neuron.disable_set_weights else "abstain"
+        )
+        self._emission_reason = "initializing"
+        self._emission_expected_since: float | None = None
+        self._emission_deadline: float | None = None
+        self._emission_next_eligible_block: int | None = None
+        self._emission_chain_due_block: int | None = None
+        self._emission_blocked_reason: str | None = None
         self._handlers = SubmissionHandlers(
             storage=self._storage,
             schema_id=self._schema_id,
@@ -196,6 +295,7 @@ class Validator(BaseValidatorNeuron):
         self._vertical_runtime: VerticalRuntime
         self._service = self._build_service()
         self._reconstruct_scores()
+        self._durable_scores_loaded = True
         self._seed_deregistration_tracker()
         self._tick_failures = 0
         self._last_tick_ok: str | None = None
@@ -211,33 +311,121 @@ class Validator(BaseValidatorNeuron):
         self._api_thread: threading.Thread | None = None
         self._attach_handlers()
         self._start_api()
-        # D1=B: the code default stays 0; the operator's deployment sets the
-        # floor. Warn loudly when a live network runs with no stake gate — any
-        # registered hotkey can then impose commit/reveal load.
-        if str(self.config.runtime.mode) != "mock" and (
-            self.config.endure.min_miner_stake <= 0
-        ):
-            bt.logging.warning(
-                "endure.min_miner_stake is 0 on a live network — any registered "
-                "hotkey can impose commit/reveal load; pass "
-                "--endure.min_miner_stake with a positive TAO floor"
-            )
 
     def runtime_health(self) -> RuntimeHealth:
         """Stuck-loop observability, merged into /health. Tick fields are the
         validator's; universe-fetch fields come from the round service (a
-        failed open is swallowed there but must still surface as degraded)."""
-        gate = self.rpc_gate.snapshot()
+        failed open is swallowed there but must still surface as degraded).
+
+        The API thread and the run loop both touch emission bookkeeping; one
+        lock gives every response a consistent emission snapshot. Durable
+        reads happen before the lock is taken, so a stalled database delays
+        only this response, never the run loop's emission checks.
+        """
+        current_block = _cached_block_number(vars(self.metagraph).get("block"))
+        confirmation = self._confirmation_summary(current_block)
+        startup_fence = self._startup_fence()
+        with self._emission_state():
+            return self._runtime_health_snapshot(
+                confirmation, current_block, startup_fence
+            )
+
+    def _confirmation_summary(
+        self, current_block: int | None
+    ) -> WeightEmissionConfirmationHealth | None:
+        """Durable confirmation counters, cached briefly to bound /health load."""
         storage = getattr(self, "_storage", None)
-        metagraph_block = vars(self.metagraph).get("block")
-        current_block = _cached_block_number(metagraph_block)
-        confirmation = (
+        if storage is None:
+            return None
+        now = time.monotonic()
+        cached: _ConfirmationSummaryCache | None = getattr(
+            self, "_confirmation_summary_cache", None
+        )
+        # A cached read is served only if no emission event has happened since
+        # it began: the generation it started under travels with it, so an
+        # invalidation is honoured however it interleaves with the store.
+        if (
+            cached is not None
+            and cached.generation == getattr(self, "_confirmation_generation", 0)
+            and cached.block == current_block
+            and 0 <= now - cached.read_at < _CONFIRMATION_SUMMARY_TTL_SECONDS
+        ):
+            return cached.summary
+        generation = getattr(self, "_confirmation_generation", 0)
+        summary = storage.weight_emission_confirmation_health(
+            schema_id=self._schema_id, current_block=current_block
+        )
+        self._confirmation_summary_cache = _ConfirmationSummaryCache(
+            read_at=now, block=current_block, generation=generation, summary=summary
+        )
+        return summary
+
+    def _load_startup_fence(self) -> None:
+        """Read the key's startup fence once, before any other thread runs.
+
+        The fence is immutable once written, and only the run loop writes it
+        (in ``_weight_emission_ready``, which updates this cached value).
+        """
+        storage = getattr(self, "_storage", None)
+        self._startup_fence_block: int | None = (
             None
             if storage is None
-            else storage.weight_emission_confirmation_health(
-                schema_id=self._schema_id, current_block=current_block
+            else storage.weight_emission_startup_fence(
+                schema_id=self._schema_id, protocol_version_key=CURRENT_VERSION_KEY
             )
         )
+        self._startup_fence_loaded = storage is not None
+
+    def _startup_fence(self) -> int | None:
+        """The cached startup fence; a read that finds no fence is never cached.
+
+        A read racing the run loop's first write can see no fence yet;
+        caching that would overwrite the recorded fence and re-fence emission.
+        """
+        if getattr(self, "_startup_fence_loaded", False):
+            return self._startup_fence_block
+        storage = getattr(self, "_storage", None)
+        if storage is None:
+            return None
+        fence = storage.weight_emission_startup_fence(
+            schema_id=self._schema_id, protocol_version_key=CURRENT_VERSION_KEY
+        )
+        if fence is not None:
+            self._startup_fence_block = fence
+            self._startup_fence_loaded = True
+        return fence
+
+    def _open_confirmation(self) -> bool:
+        """In-memory single-flight state; the database is read at first use and
+        again at every reconciliation, and events update it in between."""
+        known: bool | None = getattr(self, "_open_confirmation_known", None)
+        if known is None:
+            known = self._reload_open_confirmation()
+        return known
+
+    def _reload_open_confirmation(self) -> bool:
+        storage = getattr(self, "_storage", None)
+        is_open = storage is not None and storage.has_open_weight_emission_confirmation(
+            schema_id=self._schema_id
+        )
+        self._note_confirmation_state(is_open)
+        return is_open
+
+    def _note_confirmation_state(self, is_open: bool) -> None:
+        self._open_confirmation_known = is_open
+        self._invalidate_confirmation_summary()
+
+    def _invalidate_confirmation_summary(self) -> None:
+        self._confirmation_generation = getattr(self, "_confirmation_generation", 0) + 1
+        self._confirmation_summary_cache = None
+
+    def _runtime_health_snapshot(
+        self,
+        confirmation: WeightEmissionConfirmationHealth | None,
+        current_block: int | None,
+        startup_fence: int | None,
+    ) -> RuntimeHealth:
+        gate = self.rpc_gate.snapshot()
         latest_unconfirmed = (
             None
             if confirmation is None
@@ -271,6 +459,17 @@ class Validator(BaseValidatorNeuron):
             and time.monotonic() - self._started_monotonic
             > int(self.config.endure.health_startup_grace_seconds)
         )
+        self._refresh_emission_health(
+            current_block,
+            open_confirmation=(
+                confirmation is not None and confirmation.open_submissions > 0
+            ),
+            startup_fence=startup_fence,
+        )
+        submission_overdue = (
+            self._emission_deadline is not None
+            and time.monotonic() > self._emission_deadline
+        )
         weight_emission_degraded = (
             gate.degraded
             or gate.abandoned_generations > 0
@@ -279,6 +478,8 @@ class Validator(BaseValidatorNeuron):
             or deadline_overdue
             or fallback_overdue
             or unknown_block_open
+            or submission_overdue
+            or self._emission_block_degraded()
         )
         long_op_started = getattr(self, "_long_op_started_monotonic", None)
         return {
@@ -322,6 +523,30 @@ class Validator(BaseValidatorNeuron):
             "last_set_weights_ok": self._last_set_weights_ok,
             "consecutive_set_weights_failures": self._consecutive_set_weights_failures,
             "weight_emission_degraded": weight_emission_degraded,
+            "emission_mode": self._emission_mode,
+            "emission_reason": self._emission_reason,
+            "emission_blocked_reason": (
+                getattr(self, "_emission_blocked_reason", None)
+                or getattr(self, "_emission_block", None)
+            ),
+            "emission_expected": self._emission_expected_since is not None,
+            "emission_next_eligible_block": self._emission_next_eligible_block,
+            "emission_expected_seconds": (
+                None
+                if self._emission_expected_since is None
+                else max(0.0, time.monotonic() - self._emission_expected_since)
+            ),
+            "emission_deadline_in_seconds": (
+                None
+                if self._emission_deadline is None
+                else self._emission_deadline - time.monotonic()
+            ),
+            "emission_submission_overdue": submission_overdue,
+            "emission_confirmation_deadline_block": (
+                None
+                if confirmation is None
+                else confirmation.oldest_open_deadline_block
+            ),
             "last_confirmed_weights_at": (
                 None if confirmation is None else confirmation.last_confirmed_at
             ),
@@ -533,42 +758,341 @@ class Validator(BaseValidatorNeuron):
         )
 
     def _blacklist(self, synapse: bt.Synapse) -> Tuple[bool, str]:
-        if synapse.dendrite is None or synapse.dendrite.hotkey is None:
-            return True, "Missing dendrite or hotkey"
-        if synapse.dendrite.hotkey not in self.metagraph.hotkeys:
-            return True, "Unrecognized hotkey"
-        # Registration is cheap; the stake gate bounds who can impose
-        # commit/reveal load. The threshold is parsed to Decimal at argparse
-        # time (boot); the chain-native metagraph float is crossed into Decimal
-        # through str to avoid binary-float artifacts at the threshold.
-        min_stake = self.config.endure.min_miner_stake
-        if min_stake > 0:
-            uid = self.metagraph.hotkeys.index(synapse.dendrite.hotkey)
-            if Decimal(str(self.metagraph.S[uid])) < min_stake:
-                return True, "Insufficient stake"
-        return False, "Hotkey recognized"
+        dendrite = synapse.dendrite
+        # Cross the SDK boundary through str so Decimal comparisons do not
+        # inherit binary-float artifacts at the floor.
+        return miner_admission(
+            None if dendrite is None else dendrite.hotkey,
+            registered_hotkeys=self.metagraph.hotkeys,
+            stake_weight=lambda uid: Decimal(str(self.metagraph.S[uid])),
+            min_stake=self.config.endure.min_miner_stake,
+        )
 
-    def set_weights(self):
-        """Abstain until something has scored: all-zero scores would emit the
-        SDK's uniform fallback — pure noise into consensus during validator
-        warm-up."""
-        if not any(score != ZERO for score in self.scores):
-            bt.logging.info("no resolved scores yet — abstaining from set_weights")
+    def _observed_emission_mode(self) -> str:
+        """Read local policy facts only; never consult RPC from the health route."""
+        if self.config.neuron.disable_set_weights:
+            return "disabled"
+        mode = select_emission_mode(
+            getattr(self, "scores", ()),
+            owner_vote_network=owner_vote_network(self.config),
+        )
+        if mode != "abstain" and getattr(self, "_emission_block", None) is not None:
+            return "abstain"
+        return mode
+
+    @contextlib.contextmanager
+    def _emission_state(self) -> Iterator[None]:
+        """Hold the emission-state lock; log transitions only after release.
+
+        A stalled log sink must never hold off /health, so messages recorded
+        under the lock are emitted once the outermost holder releases it.
+        """
+        self._emission_state_lock.acquire()
+        self._emission_lock_depth = getattr(self, "_emission_lock_depth", 0) + 1
+        backlog: list[str] = []
+        try:
+            yield
+        finally:
+            self._emission_lock_depth -= 1
+            if self._emission_lock_depth == 0:
+                backlog = getattr(self, "_emission_log_backlog", [])
+                self._emission_log_backlog = []
+            self._emission_state_lock.release()
+        for message in backlog:
+            bt.logging.info(message)
+
+    def _set_emission_observation(self, mode: str, reason: str) -> None:
+        with self._emission_state():
+            if (mode, reason) != (
+                getattr(self, "_emission_mode", None),
+                getattr(self, "_emission_reason", None),
+            ):
+                backlog: list[str] = getattr(self, "_emission_log_backlog", [])
+                backlog.append(f"weight emission mode={mode} reason={reason}")
+                self._emission_log_backlog = backlog
+            self._emission_mode = mode
+            self._emission_reason = reason
+
+    def _defer_emission(self, reason: str) -> None:
+        with self._emission_state():
+            self._emission_expected_since = None
+            self._emission_deadline = None
+            mode = self._observed_emission_mode()
+            if mode == "disabled" or (
+                mode == "abstain" and getattr(self, "_emission_block", None) is None
+            ):
+                self._emission_blocked_reason = None
+            self._set_emission_observation(mode, reason)
+
+    def _emission_block_degraded(self) -> bool:
+        """Blocked emission lets weights age toward activity_cutoff; page early."""
+        block = getattr(self, "_emission_block", None)
+        if block is None or self.config.neuron.disable_set_weights:
+            return False
+        underlying = getattr(self, "_emission_block_underlying", None)
+        # A score-read failure can interrupt an immediate-severity fault; the
+        # parked fault still pages at once.
+        if (
+            block in _IMMEDIATE_EMISSION_BLOCKS
+            or underlying in _IMMEDIATE_EMISSION_BLOCKS
+        ):
+            return True
+        # Transient reasons page only once the condition has been re-observed
+        # for two epochs; a stale first observation alone never pages.
+        since = getattr(self, "_emission_block_since_block", None)
+        seen = getattr(self, "_emission_block_seen_block", None)
+        return (
+            since is not None
+            and seen is not None
+            and seen - since
+            >= _TRANSIENT_EMISSION_BLOCK_EPOCHS * int(self.config.neuron.epoch_length)
+        )
+
+    def _note_head_block(self, block: int | None) -> None:
+        """Remember the newest live head an emission decision was taken at."""
+        if block is None:
             return
+        with self._emission_state():
+            known = getattr(self, "_emission_head_block", None)
+            if known is None or block > known:
+                self._emission_head_block = block
+
+    def _refresh_emission_health(
+        self,
+        current_block: int | None,
+        *,
+        open_confirmation: bool,
+        startup_fence: int | None,
+    ) -> None:
+        """Update in-memory emission health; callers read durable state first."""
+        with self._emission_state():
+            # The cached metagraph block can trail the live head the plan's
+            # chain due block came from by up to an epoch; judging a due
+            # attempt against it would report chain_rate_limit and reset the
+            # overdue clock.
+            head = getattr(self, "_emission_head_block", None)
+            if head is not None and (current_block is None or head > current_block):
+                current_block = head
+            mode = self._observed_emission_mode()
+            if mode != getattr(self, "_emission_mode", None):
+                self._emission_blocked_reason = None
+                self._emission_expected_since = None
+                self._emission_deadline = None
+            self._emission_next_eligible_block = None
+            reason = self._emission_wait_reason(
+                mode, current_block, open_confirmation, startup_fence
+            )
+            if reason is not None:
+                self._defer_emission(reason)
+                return
+            now = time.monotonic()
+            if getattr(self, "_emission_expected_since", None) is None:
+                self._emission_expected_since = now
+                self._emission_deadline = max(
+                    now + int(self.config.endure.health_tick_max_duration_seconds),
+                    self._started_monotonic
+                    + int(self.config.endure.health_startup_grace_seconds),
+                )
+            reason = getattr(self, "_emission_blocked_reason", None) or (
+                "ready" if self.rpc_gate.ready() else "rpc_deferred"
+            )
+            if (
+                reason == "ready"
+                and self._emission_deadline is not None
+                and now > self._emission_deadline
+            ):
+                reason = "submission_overdue"
+            self._set_emission_observation(mode, reason)
+
+    def _emission_wait_reason(  # noqa: PLR0911 — explicit, ordered eligibility gates.
+        self,
+        mode: str,
+        block: int | None,
+        open_confirmation: bool,
+        fence: int | None,
+    ) -> str | None:
+        if mode == "disabled":
+            return "disabled"
+        if mode == "abstain":
+            return getattr(self, "_emission_block", None) or "no_positive_scores"
+        if open_confirmation:
+            return "confirmation_pending"
+        if block is None:
+            return "chain_state_unavailable"
+        if str(self.config.runtime.mode) != "mock":
+            if fence is None or block <= fence:
+                self._emission_next_eligible_block = (
+                    None if fence is None else fence + 1
+                )
+                return "startup_fence"
+        hotkeys = self.metagraph.hotkeys
+        if not 0 <= int(self.uid) < len(hotkeys) or hotkeys[int(self.uid)] != str(
+            self.wallet.hotkey.ss58_address
+        ):
+            return "validator_identity_invalid"
+        uid = int(self.uid)
+        permits = self.metagraph.validator_permit
+        if uid < 0 or uid >= len(permits):
+            return "chain_state_unavailable"
+        permit = bool(permits[uid])
+        if getattr(self, "_emission_snapshot_block", -1) >= block:
+            permit = self._emission_snapshot_permit
+        if not permit:
+            return "no_validator_permit"
+        chain_due = getattr(self, "_emission_chain_due_block", None)
+        if chain_due is not None and block < chain_due:
+            self._emission_next_eligible_block = chain_due
+            return "chain_rate_limit"
+        last_attempt = getattr(self, "_last_weights_attempt", None)
+        if last_attempt is None:
+            return "epoch_pacing"
+        due = last_attempt + int(self.config.neuron.epoch_length) + 1
+        # Once due, an unsuccessful attempt is not progress. Do not perpetually
+        # renew its deadline simply because the scheduler paces another retry.
+        if block < due and getattr(self, "_emission_expected_since", None) is None:
+            self._emission_next_eligible_block = due
+            return "epoch_pacing"
+        return None
+
+    def should_set_weights(self) -> bool:
+        # The base constructor's first sync runs before durable scores exist;
+        # planning or reporting a mode then would describe zero scores.
+        if not getattr(self, "_durable_scores_loaded", False):
+            return False
+        due = super().should_set_weights()
+        if due:
+            # The base just paced this attempt on the live head (TTL-cached).
+            self._note_head_block(self._safe_block())
+        # Every loop pass runs this: it reads only in-memory state, so it makes
+        # no database query and never waits behind a /health response.
+        self._refresh_emission_health(
+            _cached_block_number(vars(self.metagraph).get("block")),
+            open_confirmation=self._open_confirmation(),
+            startup_fence=self._startup_fence(),
+        )
+        return due
+
+    def set_weights(self) -> None:
+        """Emit earned weights, or the owner vote whenever no score is positive.
+
+        The score vector is rebuilt from durable EMAs first, so a restart, a
+        failed tick or a metagraph resync never reads as zero scores. The
+        owner allocation never enters scores or EMAs.
+        """
+        if self.config.neuron.disable_set_weights:
+            self._defer_emission("disabled")
+            return
+        if not self._refresh_scores_from_durable_state():
+            return
+        network = owner_vote_network(self.config)
+        mode = select_emission_mode(self.scores, owner_vote_network=network)
+        if mode == "abstain":
+            self._clear_emission_block()
+            self._defer_emission("no_positive_scores")
+            return
+        self._set_emission_observation(
+            self._observed_emission_mode(),
+            getattr(self, "_emission_reason", "initializing"),
+        )
         storage = getattr(self, "_storage", None)
+        if not self._weight_emission_ready(storage):
+            return
+        plan = self._plan_emission(mode, network)
+        if plan is None:
+            return
+        with self._emission_state():
+            self._emission_blocked_reason = None
+        self._owner_vote_recipient = plan.recipient
+        try:
+            self._emit_weight_candidate(plan.weights)
+        except EmissionBlocked as blocked:
+            # The prepared-vector recheck refused before sending; the emitter
+            # already counted the failed attempt. Returning lets sync() advance
+            # the attempt block, so the retry waits for the next epoch.
+            bt.logging.warning(f"weight emission refused: {blocked.reason}: {blocked}")
+            with self._emission_state():
+                self._emission_blocked_reason = blocked.reason
+                self._set_emission_observation(
+                    self._observed_emission_mode(), blocked.reason
+                )
+        finally:
+            self._owner_vote_recipient = None
+
+    def _refresh_scores_from_durable_state(self) -> bool:
+        try:
+            self._reconstruct_scores()
+        except Exception as error:  # noqa: BLE001 — never emit from stale state
+            # A zeroed or stale vector must not read as owner_vote or scored;
+            # abstain visibly and escalate like any other persistent block.
+            self._block_emission(
+                EmissionBlocked(
+                    "score_state_unavailable",
+                    f"durable score state unavailable: {safe_error(error)}",
+                ),
+                self._chain_block_hint(),
+            )
+            return False
+        if getattr(self, "_emission_block", None) == "score_state_unavailable":
+            with self._emission_state():
+                underlying = getattr(self, "_emission_block_underlying", None)
+                if underlying is None:
+                    self._clear_emission_block()
+                else:
+                    # Only the score-read component resolved; the interrupted
+                    # fault's streak (and its escalation clock) continues.
+                    self._emission_block = underlying
+                    self._emission_blocked_reason = underlying
+                    self._emission_block_underlying = None
+        return True
+
+    def _chain_block_hint(self) -> int | None:
+        block = self._safe_block()
+        if block is None:
+            block = _cached_block_number(vars(self.metagraph).get("block"))
+        return block
+
+    def _block_emission(self, blocked: EmissionBlocked, block: int | None) -> None:
+        bt.logging.warning(f"weight emission abstains: {blocked.reason}: {blocked}")
+        with self._emission_state():
+            # One clock per continuous blocked streak, whatever the reason: a
+            # reason flapping between snapshot faults must still page. Severity
+            # is timed across observations, so a condition that clears before
+            # the next attempt is never re-observed and never pages.
+            if getattr(self, "_emission_block_since_block", None) is None:
+                self._emission_block_since_block = block
+            current = getattr(self, "_emission_block", None)
+            if blocked.reason == "score_state_unavailable" and current not in {
+                None,
+                "score_state_unavailable",
+            }:
+                # Remember the fault the score-read failure interrupted.
+                self._emission_block_underlying = current
+            self._emission_block_seen_block = block
+            self._emission_block = blocked.reason
+            self._emission_blocked_reason = blocked.reason
+            self._defer_emission(blocked.reason)
+
+    def _clear_emission_block(self) -> None:
+        """End the blocked streak: the condition resolved at an attempt/resync."""
+        with self._emission_state():
+            self._emission_block = None
+            self._emission_block_since_block = None
+            self._emission_block_seen_block = None
+            self._emission_block_underlying = None
+
+    def _weight_emission_ready(self, storage: Storage | None) -> bool:
+        """Keep startup fencing and durable single-flight common to both modes."""
         if str(self.config.runtime.mode) != "mock":
             startup_fence = (
-                storage.weight_emission_startup_fence(
-                    schema_id=self._schema_id,
-                    protocol_version_key=CURRENT_VERSION_KEY,
-                )
+                self._startup_fence()
                 if storage is not None
                 else getattr(self, "_weight_emission_startup_fence_block", 0)
             )
             if startup_fence is None:
                 current_block = self._safe_block()
                 if current_block is None:
-                    return
+                    self._defer_emission("chain_state_unavailable")
+                    return False
                 netuid = int(self.config.netuid)
                 startup_fence = (
                     self.gated_subtensor.cr4_reveal_deadline_at(
@@ -588,20 +1112,74 @@ class Validator(BaseValidatorNeuron):
                         protocol_version_key=CURRENT_VERSION_KEY,
                         fence_block=startup_fence,
                     )
-                bt.logging.info("weight emission startup fence initialized")
-                return
+                    self._startup_fence_block = startup_fence
+                    self._startup_fence_loaded = True
+                self._defer_emission("startup_fence")
+                return False
             if startup_fence > 0:
                 current_block = self._safe_block()
                 if current_block is None or current_block <= startup_fence:
-                    return
-        if storage is not None and storage.has_open_weight_emission_confirmation(
-            schema_id=self._schema_id
-        ):
-            bt.logging.info(
-                "weight emission remains unconfirmed — abstaining from a new submission"
+                    self._defer_emission("startup_fence")
+                    return False
+        # Single flight is decided on durable state right before a write.
+        if storage is not None and self._reload_open_confirmation():
+            self._defer_emission("confirmation_pending")
+            return False
+        return True
+
+    def _plan_emission(
+        self,
+        mode: Literal["scored", "owner_vote"],
+        network: OwnerVoteNetwork | None,
+    ) -> EmissionPlan | None:
+        """Plan identity, permit, strict rate limit and recipient in one snapshot."""
+        netuid = int(self.config.netuid)
+        block = int(self.subtensor.get_current_block())
+        self._note_head_block(block)
+        info = self.subtensor.get_metagraph_info(
+            netuid=netuid,
+            selected_indices=list(CHAIN_SNAPSHOT_METAGRAPH_INDICES),
+            block=block,
+        )
+        snapshot = (
+            None
+            if info is None
+            else ChainSnapshot(
+                block=info.block,
+                hotkeys=info.hotkeys,
+                owner_hotkey=info.owner_hotkey,
+                validator_permit=info.validator_permit,
+                last_update=info.last_update,
+                weights_rate_limit=info.weights_rate_limit,
             )
-            return
-        super().set_weights()
+        )
+        try:
+            plan = plan_emission(
+                mode=mode,
+                network=network,
+                snapshot=snapshot,
+                block=block,
+                chain_identity=self.gated_subtensor.get_block_hash(0),
+                netuid=netuid,
+                validator_uid=int(self.uid),
+                validator_hotkey=str(self.wallet.hotkey.ss58_address),
+                local_hotkeys=self.metagraph.hotkeys,
+                scores=self.scores,
+            )
+        except EmissionBlocked as blocked:
+            self._block_emission(blocked, block)
+            return None
+        with self._emission_state():
+            self._clear_emission_block()
+            self._emission_chain_due_block = plan.next_eligible_block
+            self._emission_snapshot_permit = plan.permit
+            self._emission_snapshot_block = block
+        if not plan.due:
+            self._defer_emission(
+                "no_validator_permit" if not plan.permit else "chain_rate_limit"
+            )
+            return None
+        return plan
 
     def _emission_blended_snapshot(self) -> dict[str, Decimal]:
         cached: dict[str, Decimal] = getattr(self, "_blended_snapshot", {})
@@ -619,7 +1197,11 @@ class Validator(BaseValidatorNeuron):
         storage = getattr(self, "_storage", None)
         if storage is None:
             return []
-        blended = self._emission_blended_snapshot()
+        blended = (
+            {}
+            if getattr(self, "_owner_vote_recipient", None) is not None
+            else self._emission_blended_snapshot()
+        )
         u16_by_uid = dict(zip(attempt.uint_uids, attempt.uint_weights, strict=True))
         rows: list[WeightEmissionRow] = []
         for uid, processed in zip(
@@ -647,9 +1229,73 @@ class Validator(BaseValidatorNeuron):
         return rows
 
     def _on_weights_prepared(self, attempt: WeightEmissionAttempt) -> int | None:
+        recipient: OwnerVoteRecipient | None = getattr(
+            self, "_owner_vote_recipient", None
+        )
+        if recipient is not None:
+            # Pre-submission recheck against the exact metagraph, chain
+            # identity and constraints that produced this prepared vector.
+            try:
+                recheck_owner_vote(
+                    recipient,
+                    chain_identity=attempt.chain_identity or "",
+                    netuid=attempt.netuid if attempt.netuid is not None else -1,
+                    hotkeys=attempt.hotkeys,
+                    uint_uids=attempt.uint_uids,
+                    uint_weights=attempt.uint_weights,
+                    min_allowed_weights=attempt.min_allowed_weights,
+                    max_weight_limit=attempt.max_weight_limit,
+                )
+            except EmissionBlocked:
+                self._record_refused_weight_attempt(attempt)
+                raise
+        self._set_emission_observation(self._observed_emission_mode(), "prepared")
         storage = getattr(self, "_storage", None)
         if storage is None:
             return None
+        batch_id = self._record_emission_batch(
+            storage,
+            attempt,
+            status="error",
+            confirmation_state="prepared",
+            confirmation_deadline_block=attempt.confirmation_deadline_block,
+        )
+        self._note_confirmation_state(True)
+        return batch_id
+
+    def _record_refused_weight_attempt(self, attempt: WeightEmissionAttempt) -> None:
+        """Leave a durable failed record of a vector the recheck refused to send.
+
+        The refusal must survive a restart in the emission history and in
+        ``failed_weight_submissions_total``; no submission exists, so no
+        confirmation deadline does either.
+        """
+        storage = getattr(self, "_storage", None)
+        if storage is None:
+            return
+        try:
+            self._record_emission_batch(
+                storage,
+                attempt,
+                status="failed",
+                confirmation_state="failed",
+                confirmation_deadline_block=None,
+            )
+        except Exception as error:  # noqa: BLE001 — the refusal itself must still surface
+            bt.logging.error(
+                "could not record the refused weight attempt: "
+                f"{type(error).__name__}: {safe_error(error)}"
+            )
+
+    def _record_emission_batch(
+        self,
+        storage: Storage,
+        attempt: WeightEmissionAttempt,
+        *,
+        status: str,
+        confirmation_state: str | None,
+        confirmation_deadline_block: int | None,
+    ) -> int:
         return storage.record_weight_emission(
             schema_id=self._schema_id,
             round_id=None,
@@ -658,10 +1304,10 @@ class Validator(BaseValidatorNeuron):
             min_allowed_weights=attempt.min_allowed_weights,
             max_weight_limit=attempt.max_weight_limit,
             metagraph_size=len(attempt.hotkeys),
-            status="error",
+            status=status,
             rows=self._emission_rows(attempt),
             submission_block=attempt.submission_block,
-            confirmation_state="prepared",
+            confirmation_state=confirmation_state,
             baseline_last_update_block=attempt.baseline_last_update_block,
             period_blocks=attempt.period_blocks,
             chain_identity=attempt.chain_identity,
@@ -673,13 +1319,23 @@ class Validator(BaseValidatorNeuron):
             protocol_version_key=attempt.protocol_version_key,
             commitment_hash=attempt.commitment_hash,
             reveal_round=attempt.reveal_round,
-            confirmation_deadline_block=attempt.confirmation_deadline_block,
+            confirmation_deadline_block=confirmation_deadline_block,
             cr4_reveal_deadline_block=attempt.cr4_reveal_deadline_block,
         )
 
     def _on_weights_emitted(
         self, attempt: WeightEmissionAttempt, batch_id: int | None = None
     ) -> None:
+        if attempt.status == "submitted":
+            self._defer_emission("confirmation_pending")
+        else:
+            with self._emission_state():
+                reason = (
+                    getattr(self, "_emission_blocked_reason", None)
+                    or "submission_failed"
+                )
+                self._emission_blocked_reason = reason
+                self._set_emission_observation(self._observed_emission_mode(), reason)
         storage = getattr(self, "_storage", None)
         if storage is None:
             return
@@ -697,38 +1353,43 @@ class Validator(BaseValidatorNeuron):
                 confirmation_deadline_block=attempt.confirmation_deadline_block,
                 cr4_reveal_deadline_block=attempt.cr4_reveal_deadline_block,
             )
+            self._note_confirmation_state(
+                confirmation_state in OPEN_WEIGHT_EMISSION_CONFIRMATION_STATES
+            )
             return
         confirmation_state = attempt.confirmation_state
         if confirmation_state is None and attempt.status != "submitted":
             confirmation_state = "failed"
-        storage.record_weight_emission(
-            schema_id=self._schema_id,
-            round_id=None,
-            emitted_at_iso=_utc_now().isoformat(),
-            block=attempt.block,
-            min_allowed_weights=attempt.min_allowed_weights,
-            max_weight_limit=attempt.max_weight_limit,
-            metagraph_size=len(attempt.hotkeys),
+        self._record_emission_batch(
+            storage,
+            attempt,
             status=attempt.status,
-            rows=self._emission_rows(attempt),
-            submission_block=attempt.submission_block,
             confirmation_state=confirmation_state,
-            baseline_last_update_block=attempt.baseline_last_update_block,
-            period_blocks=attempt.period_blocks,
-            chain_identity=attempt.chain_identity,
-            netuid=attempt.netuid,
-            validator_uid=attempt.validator_uid,
-            validator_hotkey=attempt.validator_hotkey,
-            submission_mode=attempt.submission_mode,
-            intent_hash=attempt.intent_hash,
-            protocol_version_key=attempt.protocol_version_key,
-            commitment_hash=attempt.commitment_hash,
-            reveal_round=attempt.reveal_round,
             confirmation_deadline_block=attempt.confirmation_deadline_block,
-            cr4_reveal_deadline_block=attempt.cr4_reveal_deadline_block,
         )
+        if confirmation_state is None:
+            self._reload_open_confirmation()
+        else:
+            self._note_confirmation_state(
+                confirmation_state in OPEN_WEIGHT_EMISSION_CONFIRMATION_STATES
+            )
 
     def _on_metagraph_synced(self) -> None:
+        if getattr(self, "_durable_scores_loaded", False):
+            # Resync alignment has just zeroed UIDs whose hotkey changed. Rebuild
+            # from durable EMAs before any confirmation RPC, so /health never
+            # reads the zeroed vector as owner_vote and a miner that
+            # re-registered at a new UID keeps its earned weight.
+            self._refresh_scores_from_durable_state()
+        try:
+            self._resolve_weight_confirmations()
+        finally:
+            # Reconciliation can confirm, expire or fail batches: the next
+            # check re-reads open confirmations from the database.
+            self._open_confirmation_known = None
+            self._invalidate_confirmation_summary()
+
+    def _resolve_weight_confirmations(self) -> None:
         """Resolve every restart-surviving submitted weight batch from chain state."""
         storage = getattr(self, "_storage", None)
         if storage is None:
@@ -834,6 +1495,9 @@ class Validator(BaseValidatorNeuron):
             return
         self._consecutive_set_weights_failures = 0
         self._last_set_weights_ok = _utc_now().isoformat()
+        with self._emission_state():
+            self._emission_blocked_reason = None
+            self._defer_emission("confirmed")
         bt.logging.info(
             f"confirmed {confirmed} weight emission batch(es) "
             f"at finalized block {finalized_block}"
@@ -890,82 +1554,53 @@ class Validator(BaseValidatorNeuron):
         self._apply_weights(weights)
 
     def resync_metagraph(self):
-        """Advance the deregistration tracker once per metagraph refresh.
-
-        Fairness-deltas spec §1 decision 3: the two-sync confirmation counts
-        metagraph resync generations — never scoring-pass ticks, which can
-        repeat against one stale snapshot. The tracker is deliberately
-        in-memory: a restart only delays archival by one confirmation cycle
-        while the hotkey keeps receiving zero observations.
-        """
+        """Advance the deregistration tracker once per metagraph refresh."""
         super().resync_metagraph()
-        self._advance_deregistration_tracker(set(self.metagraph.hotkeys))
+        self._deregistration_tracker().advance(self.metagraph.hotkeys)
+
+    def _deregistration_tracker(self) -> DeregistrationTracker:
+        # The base constructor's first sync can resync before __init__ seeds.
+        tracker: DeregistrationTracker | None = getattr(self, "_dereg_tracker", None)
+        if tracker is None:
+            tracker = DeregistrationTracker()
+            self._dereg_tracker = tracker
+        return tracker
 
     def _seed_deregistration_tracker(self) -> None:
-        """Baseline the tracker from durable EMA state, not process history.
-
-        Fairness-deltas spec §1 decision 3 promises a restart merely delays
-        archival by one confirmation cycle. Without this seed, a hotkey whose
-        EMA state persisted while it was already absent from the first
-        post-restart metagraph would never enter the missing-count tracker
-        and could never reach two-sync archival.
-        """
         persisted = {
             state.miner_hotkey
             for state in self._storage.assessment_ema_states(self._schema_id)
         }
-        self._dereg_missing_counts: dict[str, int] = {}
-        self._dereg_last_registered: set[str] = set(self.metagraph.hotkeys) | persisted
-
-    def _advance_deregistration_tracker(self, current: set[str]) -> None:
-        counts = getattr(self, "_dereg_missing_counts", None)
-        if counts is None:
-            counts = {}
-            self._dereg_missing_counts = counts
-        last_registered: set[str] = getattr(self, "_dereg_last_registered", set())
-        for hotkey in (set(counts) | last_registered) - current:
-            counts[hotkey] = counts.get(hotkey, 0) + 1
-        for hotkey in current:
-            counts.pop(hotkey, None)
-        self._dereg_last_registered = current
-
-    def _confirmed_deregistered(self) -> list[str]:
-        counts: dict[str, int] = getattr(self, "_dereg_missing_counts", {})
-        return sorted(
-            hotkey
-            for hotkey, missed in counts.items()
-            if missed >= DEREGISTRATION_CONFIRMATION_SYNCS
-        )
+        self._deregistration_tracker().seed(self.metagraph.hotkeys, persisted)
 
     def _prune_archived_deregistrations(self) -> None:
-        counts: dict[str, int] = getattr(self, "_dereg_missing_counts", {})
-        confirmed = self._confirmed_deregistered()
-        if not confirmed:
+        tracker = self._deregistration_tracker()
+        if not tracker.confirmed():
             return
         storage = getattr(self, "_storage", None)
         if storage is None:
             return
-        active_hotkeys = {
-            state.miner_hotkey
-            for state in storage.assessment_ema_states(self._schema_id)
-        }
-        for hotkey in confirmed:
-            if (
-                hotkey not in active_hotkeys
-                and not storage.has_unfinished_assessment_submission(
-                    self._schema_id, hotkey
-                )
-            ):
-                counts.pop(hotkey, None)
+        tracker.forget_settled(
+            active_hotkeys={
+                state.miner_hotkey
+                for state in storage.assessment_ema_states(self._schema_id)
+            },
+            has_unfinished_submission=lambda hotkey: (
+                storage.has_unfinished_assessment_submission(self._schema_id, hotkey)
+            ),
+        )
 
     async def forward(self) -> None:
         """One round-service tick; updates scores when new resolutions land."""
         self._begin_long_op()
         try:
+            selected = scoring_set(
+                self.metagraph.hotkeys, self._deregistration_tracker()
+            )
             weights = await asyncio.to_thread(
                 self._service.tick,
-                expected_miners=list(self.metagraph.hotkeys),
-                archive_hotkeys=self._confirmed_deregistered(),
+                expected_miners=list(selected.expected_miners),
+                archive_hotkeys=list(selected.archive_hotkeys),
             )
             if weights is not None:
                 self._blended_snapshot = self._service.blended_snapshot()
@@ -1013,10 +1648,7 @@ def _build_risk_vertical_runtime(validator: Validator) -> VerticalRuntime:
         reveal_close_block = _recorded_fixture_block
         window_end_block = None
     else:
-        scheduler = scheduler_for_schema(
-            RISK_SCHEMA_ID,
-            fetch_delay_seconds=int(validator.config.endure.fetch_delay_seconds),
-        )
+        scheduler = scheduler_for_schema(RISK_SCHEMA_ID)
         if permits_dev_only_runtime(validator.config):
             price_provider = recorded_mainnet_fixture_provider()
             reveal_close_block = _recorded_fixture_block
@@ -1079,10 +1711,7 @@ def _build_forge_vertical_runtime(validator: Validator) -> VerticalRuntime:
     )
     from endure.scoring.lending.orchestrator import LendingScoringOrchestrator
 
-    scheduler = scheduler_for_schema(
-        FORGE_LENDING_SCHEMA_ID,
-        fetch_delay_seconds=int(validator.config.endure.fetch_delay_seconds),
-    )
+    scheduler = scheduler_for_schema(FORGE_LENDING_SCHEMA_ID)
     orchestrator = LendingScoringOrchestrator(
         storage=validator._storage,
         price_provider=recorded_mainnet_fixture_provider(),
@@ -1102,28 +1731,15 @@ def _build_forge_vertical_runtime(validator: Validator) -> VerticalRuntime:
     )
 
 
-def _force_restart_if_rpc_abandoned(validator: Validator) -> None:
-    if validator.chain_rpc_restart_required() is not True:
-        return
-    bt.logging.error(
-        "validator forcing process restart after chain RPC "
-        "abandonment capacity was reached"
-    )
-    os._exit(1)
+# Module-level seams: main() passes them at call time, so a test can patch
+# them for this neuron alone.
+_WATCHDOG_TEARDOWN_GRACE_SECONDS = WATCHDOG_TEARDOWN_GRACE_SECONDS
+_STARTUP_SHUTDOWN_GRACE_SECONDS = STARTUP_SHUTDOWN_GRACE_SECONDS
+_schedule_forced_exit_after_grace = schedule_forced_exit_after_grace
 
 
-_WATCHDOG_TEARDOWN_GRACE_SECONDS = 60
-
-
-def _schedule_forced_exit_after_grace() -> threading.Timer:
-    # SystemExit only terminates the process once every non-daemon thread
-    # unwinds — and the wedged tick worker that trips the watchdog may never
-    # return. A daemon timer guarantees the supervisor gets a dead process to
-    # restart while still giving graceful teardown a bounded head start.
-    timer = threading.Timer(_WATCHDOG_TEARDOWN_GRACE_SECONDS, os._exit, args=(1,))
-    timer.daemon = True
-    timer.start()
-    return timer
+def _watchdog_exit_reason(validator: Validator) -> str | None:
+    return validator.watchdog_exit_reason()
 
 
 def main() -> None:
@@ -1137,29 +1753,22 @@ def main() -> None:
             f"protocol_version_key={CURRENT_VERSION_KEY}"
         )
         stop = install_shutdown_handlers()
-        validator = Validator()
+        lifecycle = NeuronLifecycle[Validator](
+            name="validator",
+            terminate=terminate_process,
+            schedule_forced_exit=_schedule_forced_exit_after_grace,
+            startup_grace_seconds=_STARTUP_SHUTDOWN_GRACE_SECONDS,
+            teardown_grace_seconds=_WATCHDOG_TEARDOWN_GRACE_SECONDS,
+        )
+        validator = lifecycle.construct(stop, Validator)
         try:
             with validator:
-                while not stop.is_set():
-                    _force_restart_if_rpc_abandoned(validator)
-                    if (reason := validator.watchdog_exit_reason()) is not None:
-                        # The worker may have died by latching between the check
-                        # above and this liveness probe; a plain SystemExit here
-                        # would take the normal exit the latch exists to prevent.
-                        _force_restart_if_rpc_abandoned(validator)
-                        bt.logging.error(f"validator watchdog exiting: {reason}")
-                        _schedule_forced_exit_after_grace()
-                        raise SystemExit(1)
-                    bt.logging.info(f"Validator running... {time.time()}")
-                    stop.wait(5)
-                # A shutdown signal that races the latch must not fall through
-                # to the normal exit the latch exists to prevent.
-                _force_restart_if_rpc_abandoned(validator)
+                lifecycle.watch(stop, validator, exit_reason=_watchdog_exit_reason)
         finally:
             # The RPC worker can also latch while __exit__ joins it — and
             # __exit__ itself raises on incomplete cleanup, so this recheck
             # must run on the exception path too, not only after a clean exit.
-            _force_restart_if_rpc_abandoned(validator)
+            lifecycle.force_restart_if_rpc_abandoned(validator)
         bt.logging.info("validator stopped on shutdown signal")
     except DevOnlyConfigError as error:
         bt.logging.error(f"validator refused to start: {safe_error(error)}")
@@ -1172,4 +1781,6 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    # Construction can exit (sys.exit for an unregistered hotkey) or fail after
+    # abandoning a non-daemon archive worker; the boundary never finalizes.
+    run_entrypoint(main, grace_seconds=_WATCHDOG_TEARDOWN_GRACE_SECONDS)

@@ -4,7 +4,9 @@ from pathlib import Path
 
 from scripts.quality_gates.checks import (
     DECIMAL_POLICY_PATHS,
+    REPO_ROOT,
     find_decimal_policy_violations,
+    iter_text_files,
 )
 
 
@@ -117,5 +119,12 @@ def test_decimal_policy_reports_syntax_error_without_crashing(tmp_path: Path) ->
 
 
 def test_decimal_policy_targets_runtime_weight_paths() -> None:
+    # The runtime weight emitter sits outside the domain packages, so the
+    # gate names it explicitly; the chain weight vector is a domain module.
     assert Path("endure/base/validator.py") in DECIMAL_POLICY_PATHS
-    assert Path("endure/base/utils/weight_utils.py") in DECIMAL_POLICY_PATHS
+    scanned = {
+        path.relative_to(REPO_ROOT)
+        for path in iter_text_files(REPO_ROOT, DECIMAL_POLICY_PATHS)
+    }
+    assert Path("endure/base/validator.py") in scanned
+    assert Path("endure/scoring/weight_processing.py") in scanned

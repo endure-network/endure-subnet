@@ -129,7 +129,7 @@ first-parent staging lineage in commit
 `90c973f7a369746a4b19a8b4eb04fed2d37e4caa`; its source-bound receipt is
 `86150d44b3134f1a10fe4a98d4bafda63eb6aa55c9d348ec0284bb83c2d384fc`.
 
-Key `2041` is leased to the SN30 qualification candidate. Signed commit and
+Key `2041` was leased to the SN30 qualification candidate. Signed commit and
 reveal requests bind all request fields, and rejected reveal persistence is
 bounded by admission while accepted retries remain idempotent. Miners and
 validators must upgrade together. The candidate line also carries the
@@ -163,3 +163,62 @@ consensus weights while preserving retired EMA memory and historical round
 settlement. Reintroduction resumes preserved scores under the existing
 registration rules; validators clear cached scores when no eligible scores remain. See the [universe-change policy](specs/2026-07-20-scoring-fairness-deltas.md#universe-changes)
 and [upgrade and rollback guidance](deploy/operator-node.md#rollback).
+
+Key `2041` is recorded as `activation-0044`. It first appeared on the public
+first-parent staging lineage in commit
+`824f1367f4d23cb4cee6605d53db709bd86bdd23`; its source-bound receipt is
+`0df17c6368167b0f8b3f376b2d84e5f9810d89860c67532dfaef348a2559918d`.
+The published `v0.1.0` images retain that assignment.
+
+Key `2042` is leased to the SN30 correctness and owner-vote fallback cutover.
+It pins admission on served testnet and mainnet to zero additional miner stake,
+commit/reveal caps of 10, and a 100-block metagraph/weight-attempt epoch; other
+operator values are ignored with a startup warning. Admission and snapshot closure
+serialize in SQLite, empty frozen snapshots never backfill during reads, and
+commit retries validate the key and window. Storage admission/selection, miner
+axon admission (registered hotkey and stake floor, in
+[admission.py](../endure/protocol/admission.py)), deregistration confirmation
+over `DEREGISTRATION_CONFIRMATION_SYNCS = 2` metagraph resyncs (in
+[consensus_policy.py](../endure/protocol/consensus_policy.py), tracked by
+[eligibility.py](../endure/scoring/eligibility.py), which also selects each
+tick's scoring set of expected miners and archived hotkeys), the complete Decimal
+score-to-u16 composition (abstain on no positive score, chain limits, u16
+encoding, in [weight_processing.py](../endure/scoring/weight_processing.py)),
+emission planning from one chain snapshot and its pre-submission recheck (in
+[emission_policy.py](../endure/scoring/emission_policy.py)), Alpha
+market-data sampling decisions (canonical sample blocks, timestamp-to-block
+boundary searches, the series gap policy, the scoring retry budget, and the
+missing-value and gap-versus-outage classification of archive reads, in
+[market_sampling.py](../endure/scoring/market_sampling.py), moved unchanged
+from `endure/live/alpha_market_data.py`; old-vs-new differentials over 4,500
+and 4,000 cases found 0 mismatches), the mainnet/testnet genesis identities,
+which schema is served, and the owner-vote fallback policy are
+digest-covered. On mainnet
+SN30 and Bittensor testnet, one emission-enabled process submits its whole vote
+to the UID of the on-chain subnet owner hotkey whenever no score is positive,
+and earned weights as soon as any score is positive, without a flag change or
+restart; there is no latch. Mainnet additionally pins the genesis, netuid `30`,
+and owner hotkey.
+Explicitly disabling emission remains a true off switch. Startup teardown and
+existing health/log observability are hardened in the same release.
+No schema migration is introduced; scoring coefficients and the target universe
+are unchanged. This remains one unserved `2042` lease, not another key bump.
+
+Its watched-tree digest is
+`224eebd7dfcaa588c0a6aa94116d95a7851e44cb7c3a2e3260046de354f2b4a2`.
+The public lease authority receipt uses
+`PREVIOUS_RECEIPT=27e8f797e62ce76333067470e18a32bdccdd80a385235b4d700d21513880c2b1`,
+`CURRENT_VERSION_KEY=2042`, and
+`CURRENT_VERSION_DIGEST=224eebd7dfcaa588c0a6aa94116d95a7851e44cb7c3a2e3260046de354f2b4a2`
+under the `LEASE_AUTHORITY` format above, producing
+`bf6e2d6b4c21e0b2568db7253ebcfd43c5a8422f2f8dbcf6dfebf4294c4b6714`.
+
+Miners and validators must upgrade together. This source update does not publish
+production images, deploy services, or raise the chain's weight-version floor.
+SN30's chain `weights_version` is `2040` and Subtensor accepts a `version_key`
+at or above it, so key-`2042` submissions are accepted without a
+`weights_version` change. Raising it is a later, deliberate owner decision only
+after every permit validator runs `2042`; raising it earlier would reject
+validators still on `2040`.
+Follow the [coordinated cutover](running_on_mainnet.md#coordinated-cutover) after
+qualification and agreement with independently operated validators.
