@@ -33,6 +33,7 @@ least two independently operated validators, and one complete 30-day
 resolution cycle remain qualification requirements. For the initial `v0.1.0`
 image publication, the owner accepted the documented limitations on
 2026-09-20 while staging continues; see the [release decision](releases/v0.1.0.md).
+They remain accepted and disclosed for [`v0.1.1`](releases/v0.1.1.md).
 This acceptance does not establish that these requirements have been met.
 No consumer should interpret testnet emissions as evidence that modeling
 costs are economically rewarded at production scale.
@@ -65,8 +66,8 @@ The final unattended configuration keeps the axon on and
 `disable_set_weights` absent/default-false. An explicitly true off switch
 disables both modes indefinitely and is never auto-enabled by scores. Follow the
 [single-writer cutover](running_on_mainnet.md#coordinated-cutover), without an
-external weight setter or later flag-changing restart. This source change
-does not publish production images or alter the published key-`2041` release.
+external weight setter or later flag-changing restart. Key `2042` ships as
+[`v0.1.1`](releases/v0.1.1.md); it does not change chain parameters.
 
 ## Conditional determinism
 

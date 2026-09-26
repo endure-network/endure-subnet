@@ -40,13 +40,18 @@ the deployment/documentation and package-version changes. Staging continues
 to run. See the [release decision](releases/v0.1.0.md); this is a scoped
 exception, not evidence that an unchanged seven-day window completed.
 
-For protocol key `2042`, the owner decided on 2026-09-24 to publish to `:prod`
-without a fresh seven-day window. Validators on key `2041` abstain until they
-have scores, so with no miners yet their weights age past `activity_cutoff`;
-`2042` replaces that abstention with the owner vote whenever no miner has a
-positive score. This is a second scoped exception to the unchanged-revision
-rule. CI and localnet qualification remain required for the selected staging
-commit, and the tagged version's release notes record the decision.
+For protocol key `2042` (`v0.1.1`), the owner decided on 2026-09-24 not to wait
+for a fresh seven-day window. Validators on key `2041` abstain until they have
+scores, so with no miners yet their weights age past `activity_cutoff`; `2042`
+replaces that abstention with the owner vote whenever no miner has a positive
+score. On 2026-09-26 the owner scoped this second exception to the
+unchanged-revision rule: a targeted soak of roughly 24 hours on the exact
+release commit, with a confirmed key-`2042` testnet weight submission, one full
+round cycle and a restart as checkpoints, followed by a mainnet canary on the
+team's own validator (SN30 UID 195) before third-party operators. CI and
+localnet qualification remain required for the selected staging commit. The
+[v0.1.1 release notes](releases/v0.1.1.md) record the decision, and the GitHub
+release records the checkpoint outcomes.
 
 The default soak gate is the promotion evidence the mainnet decision consumes.
 It passes when the deployed staging environment shows, over seven consecutive
