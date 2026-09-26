@@ -213,8 +213,8 @@ The public lease authority receipt uses
 under the `LEASE_AUTHORITY` format above, producing
 `bf6e2d6b4c21e0b2568db7253ebcfd43c5a8422f2f8dbcf6dfebf4294c4b6714`.
 
-Miners and validators must upgrade together. This source update does not publish
-production images, deploy services, or raise the chain's weight-version floor.
+Key `2042` ships as [`v0.1.1`](releases/v0.1.1.md). Miners and validators must
+upgrade together; the release does not raise the chain's weight-version floor.
 SN30's chain `weights_version` is `2040` and Subtensor accepts a `version_key`
 at or above it, so key-`2042` submissions are accepted without a
 `weights_version` change. Raising it is a later, deliberate owner decision only
