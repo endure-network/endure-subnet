@@ -18,8 +18,8 @@
 
 import argparse
 import os
+from collections.abc import Callable
 from decimal import Decimal, InvalidOperation
-from urllib.parse import urlparse
 
 import bittensor as bt
 from bittensor.core.subtensor import Subtensor
@@ -32,8 +32,27 @@ from endure.assessment.registry import (
     default_registry,
 )
 from endure.assessment.schemas.subnet_alpha_risk import RISK_SCHEMA_ID
+from endure.protocol.consensus_policy import (
+    EPOCH_LENGTH_BLOCKS,
+    MAX_COMMITS_PER_ROUND,
+    MAX_REVEALS_PER_ROUND,
+    MIN_MINER_STAKE,
+    PROTOCOL_CONSENSUS_SETTINGS,
+    ChainClass,
+    OwnerVoteNetwork,
+    PinnedConsensusSettings,
+    chain_needs_genesis,
+    chain_owner_vote_network,
+    classify_chain,
+    consensus_settings_pinned,
+    ignored_consensus_settings,
+    mainnet_policy_applies,
+    normalize_genesis_hash,
+    require_emitting_validator_serves_axon,
+    serves_alpha_risk,
+)
 
-from .logging import safe_endpoint_label, setup_events_logger
+from .logging import safe_endpoint_label
 
 # bittensor >=10.3 disabled bt.Config CLI/arg parsing by default
 # (BT_NO_PARSE_CLI_ARGS defaults to "true"), so bt.Config(parser, args=...)
@@ -41,29 +60,6 @@ from .logging import safe_endpoint_label, setup_events_logger
 # argument. Our neuron entrypoints and tests build config from argparse and
 # depend on that parsing, so opt back in unless an operator overrides it.
 os.environ.setdefault("BT_NO_PARSE_CLI_ARGS", "false")
-
-_LOCAL_CHAIN_HOSTS = {"localhost", "127.0.0.1", "::1"}
-# Hosts the serving-stage gate accepts as Bittensor TESTNET. Keyed RPC
-# providers ride --subtensor.network as a wss:// URL because bittensor >=10.3
-# silently drops --subtensor.chain_endpoint during network resolution
-# (Subtensor.setup_config evaluates candidates without breaking, so the
-# always-set network default wins). Extend deliberately: a wrong entry here
-# opens the mainnet serving gate.
-_TESTNET_HOSTS = {
-    "test.finney.opentensor.ai",
-    "api-bittensor-testnet.n.dwellir.com",
-}
-# Hosts the serving-stage gate accepts as Bittensor MAINNET. Serving still
-# requires the explicit --endure.serving_stage mainnet acknowledgement;
-# unrecognized remote endpoints are refused outright.
-_MAINNET_HOSTS = {
-    "entrypoint-finney.opentensor.ai",
-    "archive.chain.opentensor.ai",
-    "lite.sub.latent.to",
-    "api-bittensor-mainnet.n.dwellir.com",
-}
-# bittensor's built-in --subtensor.network aliases that resolve to mainnet.
-_MAINNET_NETWORKS = {"finney", "archive", "latent-lite"}
 
 
 class DevOnlyConfigError(RuntimeError):
@@ -84,47 +80,121 @@ def _effective_chain(config: "bt.Config") -> tuple[str, str]:
     return str(endpoint or "").strip(), str(network or "").strip()
 
 
-def permits_dev_only_runtime(config: "bt.Config") -> bool:
-    """True only for mock or local chain endpoints (risk scope §Dev-only time compression)."""
+def _is_mock_runtime(config: "bt.Config") -> bool:
     runtime = getattr(config, "runtime", None)
     runtime_mode = str(getattr(runtime, "mode", ""))
     if runtime_mode == "mock":
         return True
-    if runtime_mode != "live" and bool(getattr(config, "mock", False)):
-        return True
-    endpoint, _network = _effective_chain(config)
-    if endpoint in {"mock", "local", "localhost", "127.0.0.1"}:
-        return True
-    return _host_of(endpoint) in _LOCAL_CHAIN_HOSTS
+    return runtime_mode != "live" and bool(getattr(config, "mock", False))
 
 
-def _host_of(endpoint: str) -> str:
-    endpoint = endpoint.strip()
-    if not endpoint:
-        return ""
-    parsed = urlparse(endpoint if "://" in endpoint else f"//{endpoint}")
-    return parsed.hostname or endpoint.split(":", maxsplit=1)[0]
+def _resolved_genesis(config: "bt.Config") -> str | None:
+    section = getattr(config, "endure", None)
+    genesis = getattr(section, "chain_genesis_hash", None)
+    return genesis if isinstance(genesis, str) else None
 
 
-def _is_bittensor_testnet(config: "bt.Config") -> bool:
+def resolve_chain_identity(
+    config: "bt.Config", *, read_genesis: Callable[[str], str | None]
+) -> None:
+    """Record the connected chain's genesis before any policy gate reads it.
+
+    Endpoint names cannot identify an operator's own Finney node reached over
+    loopback, an SSH tunnel, ``--subtensor.network local`` or a private host;
+    the watched ``classify_chain`` uses the recorded genesis instead.
+    """
     endpoint, network = _effective_chain(config)
-    if network == "test":
-        return True
-    return bool({_host_of(endpoint), _host_of(network)} & _TESTNET_HOSTS)
+    # Always overwrite: a value carried in from an operator config file must
+    # never classify a chain this process did not read.
+    config.endure.chain_genesis_hash = None
+    if not chain_needs_genesis(
+        mock=_is_mock_runtime(config), endpoint=endpoint, network=network
+    ):
+        return
+    genesis = read_genesis(endpoint)
+    if genesis is None:
+        raise RuntimeError(
+            f"cannot identify the chain at {safe_endpoint_label(endpoint)}"
+        )
+    config.endure.chain_genesis_hash = normalize_genesis_hash(genesis)
 
 
-def _is_bittensor_mainnet(config: "bt.Config") -> bool:
+def chain_class(config: "bt.Config") -> ChainClass:
     endpoint, network = _effective_chain(config)
-    if network in _MAINNET_NETWORKS:
-        return True
-    return bool({_host_of(endpoint), _host_of(network)} & _MAINNET_HOSTS)
+    return classify_chain(
+        mock=_is_mock_runtime(config),
+        endpoint=endpoint,
+        network=network,
+        genesis=_resolved_genesis(config),
+    )
+
+
+def permits_dev_only_runtime(config: "bt.Config") -> bool:
+    """True only for mock runtimes or local chains that are not Finney/testnet.
+
+    Risk scope §Dev-only time compression.
+    """
+    return chain_class(config) == "dev"
+
+
+def uses_mainnet_consensus_policy(config: "bt.Config") -> bool:
+    """Select live Alpha Risk mainnet policy for the classified chain."""
+    return mainnet_policy_applies(
+        chain_class(config), served=requires_serving_stage_gate(config)
+    )
+
+
+def owner_vote_network(config: "bt.Config") -> OwnerVoteNetwork | None:
+    return chain_owner_vote_network(
+        chain_class(config), served=requires_serving_stage_gate(config)
+    )
+
+
+def apply_consensus_settings(config: "bt.Config") -> None:
+    """Normalize the effective config to the protocol consensus settings.
+
+    On served mainnet and testnet an operator value is ignored with a warning
+    instead of refused: v0.1.0 advised a positive stake floor on live networks,
+    and a refusal would crash-loop those operators on the next image pull.
+    """
+    chain = chain_class(config)
+    if not consensus_settings_pinned(chain, served=requires_serving_stage_gate(config)):
+        return
+    given = PinnedConsensusSettings(
+        min_miner_stake=Decimal(str(config.endure.min_miner_stake)),
+        max_commits_per_round=int(config.endure.max_commits_per_round),
+        max_reveals_per_round=int(config.endure.max_reveals_per_round),
+        epoch_length=int(config.neuron.epoch_length),
+    )
+    for ignored in ignored_consensus_settings(given):
+        bt.logging.warning(
+            f"--{ignored.option} {ignored.given} is ignored on {chain}; "
+            f"running the protocol value {ignored.protocol}"
+        )
+    protocol = PROTOCOL_CONSENSUS_SETTINGS
+    config.endure.min_miner_stake = protocol.min_miner_stake
+    config.endure.max_commits_per_round = protocol.max_commits_per_round
+    config.endure.max_reveals_per_round = protocol.max_reveals_per_round
+    config.neuron.epoch_length = protocol.epoch_length
+
+
+def require_mainnet_validator_policy(config: "bt.Config") -> None:
+    """Fail before transport startup on a mainnet option that cannot be ignored."""
+    if not uses_mainnet_consensus_policy(config):
+        return
+    require_emitting_validator_serves_axon(
+        axon_off=bool(config.neuron.axon_off),
+        disable_set_weights=bool(config.neuron.disable_set_weights),
+    )
 
 
 def requires_serving_stage_gate(
     config: "bt.Config", registry: SchemaRegistry | None = None
 ) -> bool:
     entry = active_schema_entry(config, registry)
-    return entry.schema.schema_id == RISK_SCHEMA_ID and entry.serving_status == "served"
+    return serves_alpha_risk(
+        schema_id=entry.schema.schema_id, serving_status=entry.serving_status
+    )
 
 
 def require_serving_stage_allowed(
@@ -138,7 +208,7 @@ def require_serving_stage_allowed(
     section = getattr(config, "endure", None)
     serving_stage = None if section is None else getattr(section, "serving_stage", None)
     endpoint = safe_endpoint_label(_effective_chain(config)[0])
-    if _is_bittensor_testnet(config):
+    if chain_class(config) == "testnet":
         if serving_stage == "testnet":
             return
         raise DevOnlyConfigError(
@@ -147,7 +217,7 @@ def require_serving_stage_allowed(
             f"{endpoint!r} is refused"
         )
 
-    if _is_bittensor_mainnet(config):
+    if chain_class(config) == "mainnet":
         if serving_stage == "mainnet":
             return
         raise DevOnlyConfigError(
@@ -200,7 +270,7 @@ def require_compression_runtime_allowed(config: "bt.Config") -> None:
     section = getattr(config, "endure", None)
     serving_stage = None if section is None else getattr(section, "serving_stage", None)
     endpoint = safe_endpoint_label(_effective_chain(config)[0])
-    if _is_bittensor_testnet(config):
+    if chain_class(config) == "testnet":
         if serving_stage == "testnet":
             return
         raise DevOnlyConfigError(
@@ -222,19 +292,6 @@ def _positive_int(value: str) -> int:
     parsed = int(value)
     if parsed <= 0:
         raise argparse.ArgumentTypeError(f"must be a positive integer, got {parsed}")
-    return parsed
-
-
-def _unit_interval_decimal(value: str) -> Decimal:
-    # EMA alpha affects scoring: parse it as Decimal (not float, per the
-    # Decimal policy) and reject anything outside [0, 1], since alpha > 1
-    # inverts the moving average and NaN/negative corrupts scores.
-    try:
-        parsed = Decimal(value)
-    except (InvalidOperation, ValueError) as exc:
-        raise argparse.ArgumentTypeError(f"invalid Decimal value: {value!r}") from exc
-    if parsed.is_nan() or not (Decimal("0") <= parsed <= Decimal("1")):
-        raise argparse.ArgumentTypeError(f"must be a Decimal in [0, 1], got {parsed}")
     return parsed
 
 
@@ -344,12 +401,48 @@ def check_config(cls, config: "bt.Config"):
     ):
         require_compression_runtime_allowed(config)
 
-    if not config.neuron.dont_save_events:
-        # Add custom event logger for the events.
-        events_logger = setup_events_logger(
-            config.neuron.full_path, config.neuron.events_retention_size
+    warn_ignored_options(config)
+
+
+# Options that no longer do anything. Each stays accepted so an existing start
+# script keeps working, is ignored with a warning, and is deleted at the next
+# protocol key change.
+_IGNORED_VALUE_OPTIONS = (
+    "endure.fetch_delay_seconds",
+    "neuron.events_retention_size",
+    "neuron.moving_average_alpha",
+)
+_IGNORED_FLAG_OPTIONS = ("neuron.dont_save_events",)
+_IGNORED_OPTION_HELP = "Ignored; removed at the next protocol key change."
+
+
+def _add_ignored_options(parser, options: tuple[str, ...]) -> None:
+    for option in options:
+        if option in _IGNORED_FLAG_OPTIONS:
+            parser.add_argument(
+                f"--{option}",
+                action="store_true",
+                default=None,
+                help=_IGNORED_OPTION_HELP,
+            )
+        else:
+            parser.add_argument(
+                f"--{option}", type=str, default=None, help=_IGNORED_OPTION_HELP
+            )
+
+
+def warn_ignored_options(config: "bt.Config") -> None:
+    """Warn for every supplied option that no longer has any effect."""
+    for option in (*_IGNORED_VALUE_OPTIONS, *_IGNORED_FLAG_OPTIONS):
+        section, name = option.split(".", maxsplit=1)
+        value = getattr(getattr(config, section, None), name, None)
+        if value is None:
+            continue
+        given = "" if option in _IGNORED_FLAG_OPTIONS else f" {value}"
+        bt.logging.warning(
+            f"--{option}{given} is ignored and will be removed at the next "
+            "protocol key change; delete it from start scripts"
         )
-        bt.logging.register_primary_logger(events_logger.name)
 
 
 def add_args(cls, parser):
@@ -372,22 +465,17 @@ def add_args(cls, parser):
     parser.add_argument(
         "--neuron.epoch_length",
         type=_positive_int,
-        help="The default epoch length (how often we set weights, measured in 12 second blocks).",
-        default=100,
+        help="Metagraph refresh and weight-attempt interval in blocks; served testnet/mainnet ignore it and run the protocol value.",
+        default=EPOCH_LENGTH_BLOCKS,
     )
 
-    parser.add_argument(
-        "--neuron.events_retention_size",
-        type=_positive_int,
-        help="Events retention size in bytes (passed to RotatingFileHandler.maxBytes).",
-        default=2 * 1024 * 1024 * 1024,  # 2 GB
-    )
-
-    parser.add_argument(
-        "--neuron.dont_save_events",
-        action="store_true",
-        help="If set, we dont save events to a log file.",
-        default=False,
+    _add_ignored_options(
+        parser,
+        (
+            "neuron.events_retention_size",
+            "neuron.dont_save_events",
+            "endure.fetch_delay_seconds",
+        ),
     )
 
     parser.add_argument(
@@ -472,12 +560,6 @@ def add_args(cls, parser):
         ),
     )
     parser.add_argument(
-        "--endure.fetch_delay_seconds",
-        type=_positive_int,
-        default=72000,
-        help="Settled-data delay after a horizon's close before outcome fetch.",
-    )
-    parser.add_argument(
         "--endure.tick_seconds",
         type=_positive_int,
         default=12,
@@ -530,24 +612,24 @@ def add_args(cls, parser):
     parser.add_argument(
         "--endure.min_miner_stake",
         type=_non_negative_decimal,
-        default=Decimal("0"),
+        default=MIN_MINER_STAKE,
         help=(
-            "Minimum miner stake (TAO) to accept commits/reveals; 0 disables "
-            "the gate (validator-only). Parsed as Decimal — TAO is an "
-            "economic value."
+            "Minimum miner metagraph stake weight S to accept commits/reveals "
+            "(not a TAO balance). Served testnet/mainnet ignore it and run the "
+            "protocol zero floor; only mock/local chains honor it."
         ),
     )
     parser.add_argument(
         "--endure.max_commits_per_round",
         type=_positive_int,
-        default=10,
-        help="Per-miner commit rate limit per round.",
+        default=MAX_COMMITS_PER_ROUND,
+        help="Per-miner commit rate limit per round; served testnet/mainnet run the protocol value.",
     )
     parser.add_argument(
         "--endure.max_reveals_per_round",
         type=_positive_int,
-        default=10,
-        help="Per-miner reveal rate limit per round.",
+        default=MAX_REVEALS_PER_ROUND,
+        help="Per-miner reveal rate limit per round; served testnet/mainnet run the protocol value.",
     )
     parser.add_argument(
         "--endure.api_port",
@@ -635,6 +717,8 @@ def add_validator_args(cls, parser):
         default="validator",
     )
 
+    _add_ignored_options(parser, ("neuron.moving_average_alpha",))
+
     parser.add_argument(
         "--neuron.num_concurrent_forwards",
         type=_positive_int,
@@ -647,13 +731,6 @@ def add_validator_args(cls, parser):
         action="store_true",
         help="Disables setting weights.",
         default=False,
-    )
-
-    parser.add_argument(
-        "--neuron.moving_average_alpha",
-        type=_unit_interval_decimal,
-        help="Moving average alpha parameter, how much to add of the new observation.",
-        default=Decimal("0.1"),
     )
 
     parser.add_argument(

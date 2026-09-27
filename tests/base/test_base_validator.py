@@ -1,6 +1,6 @@
 """Tests for endure.base.validator.BaseValidatorNeuron.
 
-Constructor, update_scores, resync_metagraph, context manager exit, and
+Constructor, resync_metagraph, context manager exit, and
 sandboxed state persistence. Disk-backed save_state/load_state paths include
 round-trip and corruption-quarantine coverage.
 
@@ -10,7 +10,6 @@ introspection reason).
 """
 
 import dataclasses
-import logging
 import threading
 from collections.abc import Callable
 from decimal import Decimal
@@ -32,6 +31,7 @@ from endure.base.rate_gate import (
 )
 from endure.base.validator import BaseValidatorNeuron
 from endure.runtime.mock import MockRuntimeProvider, MockSubtensor
+from endure.scoring.weight_processing import normalize_scores
 
 pytestmark = pytest.mark.filterwarnings(
     "ignore::pydantic.warnings.PydanticDeprecatedSince20"
@@ -289,30 +289,11 @@ class TestStateRoundTrip:
 
 
 class TestWeightNormalization:
-    def test_negative_scores_are_clamped_not_inverted(
-        self, validator: _ConcreteValidator
-    ) -> None:
-        validator.scores = [Decimal("-2"), Decimal("1")]
-        assert validator._normalized_weights() == [Decimal("0"), Decimal("1")]
-
-    def test_all_nonpositive_scores_yield_abstain_vector(
-        self, validator: _ConcreteValidator
-    ) -> None:
-        validator.scores = [Decimal("0"), Decimal("-5")]
-        assert validator._normalized_weights() == [Decimal("0"), Decimal("0")]
-
-    def test_positive_scores_normalize_to_one(
-        self, validator: _ConcreteValidator
-    ) -> None:
-        validator.scores = [Decimal("1"), Decimal("3")]
-        weights = validator._normalized_weights()
-        assert weights == [Decimal("0.25"), Decimal("0.75")]
-        assert sum(weights, Decimal("0")) == Decimal("1")
-
     def test_set_weights_abstains_when_no_positive_scores(
         self, validator: _ConcreteValidator
     ) -> None:
         validator.step = 5
+        validator.config.neuron.disable_set_weights = False
         validator.scores = [Decimal("0")] * int(validator.metagraph.n)
         spy = MagicMock()
         validator.subtensor.set_weights = spy
@@ -320,81 +301,6 @@ class TestWeightNormalization:
         validator.set_weights()
 
         spy.assert_not_called()
-
-
-class TestUpdateScores:
-    def test_applies_moving_average_for_single_uid(
-        self, validator: _ConcreteValidator
-    ) -> None:
-        alpha = Decimal(str(validator.config.neuron.moving_average_alpha))
-        n = int(validator.metagraph.n)
-        validator.scores = [Decimal("0")] * n
-        rewards = [Decimal("1.0")]
-        validator.update_scores(rewards=rewards, uids=[0])
-        # Expected: scores[0] = alpha * 1.0 + (1-alpha) * 0 == alpha.
-        assert validator.scores[0] == alpha
-        # Other indices must remain zero.
-        assert all(score == Decimal("0") for score in validator.scores[1:])
-
-    def test_nan_rewards_are_sanitized_and_logged(
-        self,
-        validator: _ConcreteValidator,
-        caplog: pytest.LogCaptureFixture,
-    ) -> None:
-        n = int(validator.metagraph.n)
-        validator.scores = [Decimal("0")] * n
-        rewards = np.array([np.nan], dtype=np.float32)
-        with caplog.at_level(logging.WARNING, logger="bittensor"):
-            validator.update_scores(rewards=rewards, uids=[0])
-        assert validator.scores[0] == Decimal("0")
-
-    @pytest.mark.parametrize("reward", [Decimal("Infinity"), Decimal("-Infinity")])
-    def test_non_finite_rewards_are_sanitized_before_normalization(
-        self, validator: _ConcreteValidator, reward: Decimal
-    ) -> None:
-        validator.scores = [Decimal("0")] * int(validator.metagraph.n)
-
-        validator.update_scores(rewards=[reward], uids=[0])
-
-        assert all(score.is_finite() for score in validator.scores)
-        assert validator._normalized_weights() == [Decimal("0")] * len(validator.scores)
-
-    def test_empty_uids_is_noop(self, validator: _ConcreteValidator) -> None:
-        before = validator.scores.copy()
-        validator.update_scores(rewards=np.array([]), uids=[])
-        assert before == validator.scores
-
-    def test_length_mismatch_raises_value_error(
-        self, validator: _ConcreteValidator
-    ) -> None:
-        with pytest.raises(ValueError, match="Shape mismatch"):
-            validator.update_scores(rewards=np.array([0.1, 0.2]), uids=[0])
-
-    def test_accepts_numpy_uids_without_copy_warning(
-        self, validator: _ConcreteValidator
-    ) -> None:
-        alpha = Decimal(str(validator.config.neuron.moving_average_alpha))
-        validator.update_scores(
-            rewards=[Decimal("0.5")],
-            uids=np.array([0], dtype=np.int64),
-        )
-        assert validator.scores[0] == alpha * Decimal("0.5")
-
-    def test_out_of_range_uid_is_skipped_without_indexerror(
-        self, validator: _ConcreteValidator
-    ) -> None:
-        n = int(validator.metagraph.n)
-        validator.scores = [Decimal("0")] * n
-        # uid == n is one past the last valid index; the old code raised
-        # IndexError here. It must now be skipped, leaving scores untouched.
-        validator.update_scores(rewards=[Decimal("1.0")], uids=[n])
-        assert all(score == Decimal("0") for score in validator.scores)
-
-    def test_negative_uid_is_skipped(self, validator: _ConcreteValidator) -> None:
-        n = int(validator.metagraph.n)
-        validator.scores = [Decimal("0")] * n
-        validator.update_scores(rewards=[Decimal("1.0")], uids=[-1])
-        assert all(score == Decimal("0") for score in validator.scores)
 
 
 class TestResyncMetagraph:
@@ -427,7 +333,7 @@ class TestResyncMetagraph:
 
         validator.resync_metagraph()
         assert reconcile.call_count == 2
-        assert validator._normalized_weights()[replaced_uid] == Decimal(0)
+        assert normalize_scores(validator.scores)[replaced_uid] == Decimal(0)
         assert all(
             score == Decimal("0.5")
             for uid, score in enumerate(validator.scores)
@@ -1024,7 +930,6 @@ class TestLoadStatePartialCorruption:
         assert all(score.is_finite() for score in validator.scores)
         assert state_path.exists()
         assert not list(state_path.parent.glob("state.npz.corrupt*"))
-        validator._normalized_weights()  # must not raise
 
 
 class TestSelfPacedSync:

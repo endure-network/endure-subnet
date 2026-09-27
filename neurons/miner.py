@@ -8,9 +8,7 @@ validator axons (permit + optional stake-weight floor) via its dendrite.
 
 import asyncio
 import copy
-import os
 import threading
-import time
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -23,10 +21,20 @@ from endure.assessment.schemas.forge_lending import FORGE_LENDING_SCHEMA_ID
 from endure.assessment.schemas.subnet_alpha_risk import RISK_SCHEMA_ID
 from endure.assessment.subnet_alpha_universe import ALPHA_RISK_WHITELISTED_NETUIDS
 from endure.base.miner import BaseMinerNeuron
-from endure.base.shutdown import install_shutdown_handlers, join_thread_or_raise
+from endure.base.shutdown import (
+    STARTUP_SHUTDOWN_GRACE_SECONDS,
+    WATCHDOG_TEARDOWN_GRACE_SECONDS,
+    NeuronLifecycle,
+    install_shutdown_handlers,
+    join_thread_or_raise,
+    run_entrypoint,
+    schedule_forced_exit_after_grace,
+    terminate_process,
+)
 from endure.live.alpha_market_data import (
     LiveAlphaPriceProvider,
     LiveAlphaPriceProviderConfig,
+    read_chain_genesis,
 )
 from endure.protocol.miner_service import MinerRoundService
 from endure.protocol.risk_miner import RiskBaselineAssembler
@@ -42,10 +50,12 @@ from endure.runtime.resolve import resolve_runtime_provider
 from endure.scoring.market_data import recorded_mainnet_fixture_provider
 from endure.utils.config import (
     active_runtime_schema_id,
+    apply_consensus_settings,
     permits_dev_only_runtime,
     require_compression_runtime_allowed,
     require_explicit_netuid,
     require_serving_stage_allowed,
+    resolve_chain_identity,
 )
 from endure.utils.log_shipping import configure_log_shipping
 from endure.utils.logging import safe_error, safe_remote_text
@@ -120,10 +130,14 @@ class Miner(BaseMinerNeuron):
 
     def __init__(self, config: bt.Config | None = None) -> None:
         resolved_config = copy.deepcopy(config or type(self).build_config())
+        # Endpoint names cannot identify an operator's own Finney node behind
+        # loopback or a tunnel; genesis does, before any policy gate runs.
+        resolve_chain_identity(resolved_config, read_genesis=read_chain_genesis)
         if not permits_dev_only_runtime(resolved_config):
             resolved_config.blacklist.force_validator_permit = True
             resolved_config.blacklist.allow_non_registered = False
         require_explicit_netuid(resolved_config)
+        apply_consensus_settings(resolved_config)
         super().__init__(
             config=resolved_config,
             runtime_provider=resolve_runtime_provider(resolved_config),
@@ -179,10 +193,7 @@ class Miner(BaseMinerNeuron):
             scheduler = risk_runtime.scheduler
             provider = risk_runtime.price_provider
         else:
-            scheduler = scheduler_for_schema(
-                self._schema_id,
-                fetch_delay_seconds=int(self.config.endure.fetch_delay_seconds),
-            )
+            scheduler = scheduler_for_schema(self._schema_id)
             if permits_dev_only_runtime(self.config):
                 provider = recorded_mainnet_fixture_provider()
             else:
@@ -217,10 +228,7 @@ class Miner(BaseMinerNeuron):
 
         bt.logging.info("Forge lending reference miner (dormant, dev-only)")
         return MinerRoundService(
-            scheduler=scheduler_for_schema(
-                self._schema_id,
-                fetch_delay_seconds=int(self.config.endure.fetch_delay_seconds),
-            ),
+            scheduler=scheduler_for_schema(self._schema_id),
             assemble=LendingBaselineAssembler(
                 netuids=FORGE_LENDING_WHITELISTED_NETUIDS,
                 miner_hotkey=str(self.wallet.hotkey.ss58_address),
@@ -437,29 +445,17 @@ class Miner(BaseMinerNeuron):
         return priority
 
 
-def _force_restart_if_rpc_abandoned(miner: Miner) -> None:
-    if miner.chain_rpc_restart_required() is not True:
-        return
-    # A normal exit would join the abandoned non-daemon RPC workers at
-    # interpreter shutdown and could hang forever.
-    bt.logging.error(
-        "miner forcing process restart after chain RPC abandonment capacity was reached"
-    )
-    os._exit(1)
+# Module-level seams: main() passes them at call time, so a test can patch
+# them for this neuron alone.
+_WATCHDOG_TEARDOWN_GRACE_SECONDS = WATCHDOG_TEARDOWN_GRACE_SECONDS
+_STARTUP_SHUTDOWN_GRACE_SECONDS = STARTUP_SHUTDOWN_GRACE_SECONDS
+_schedule_forced_exit_after_grace = schedule_forced_exit_after_grace
 
 
-_WATCHDOG_TEARDOWN_GRACE_SECONDS = 60
-
-
-def _schedule_forced_exit_after_grace() -> threading.Timer:
-    # SystemExit only terminates the process once every non-daemon thread
-    # unwinds — and whatever killed the miner loop thread may have left one
-    # wedged. A daemon timer guarantees the supervisor gets a dead process to
-    # restart while still giving graceful teardown a bounded head start.
-    timer = threading.Timer(_WATCHDOG_TEARDOWN_GRACE_SECONDS, os._exit, args=(1,))
-    timer.daemon = True
-    timer.start()
-    return timer
+def _watchdog_exit_reason(miner: Miner) -> str | None:
+    if miner.thread is None or not miner.thread.is_alive():
+        return "miner loop thread exited"
+    return None
 
 
 def main() -> None:
@@ -473,32 +469,24 @@ def main() -> None:
             f"protocol_version_key={CURRENT_VERSION_KEY}"
         )
         stop = install_shutdown_handlers()
+        lifecycle = NeuronLifecycle[Miner](
+            name="miner",
+            terminate=terminate_process,
+            schedule_forced_exit=_schedule_forced_exit_after_grace,
+            startup_grace_seconds=_STARTUP_SHUTDOWN_GRACE_SECONDS,
+            teardown_grace_seconds=_WATCHDOG_TEARDOWN_GRACE_SECONDS,
+        )
+        constructed = lifecycle.construct(stop, Miner)
         miner: Miner | None = None
         try:
-            with Miner() as miner:
-                while not stop.is_set():
-                    _force_restart_if_rpc_abandoned(miner)
-                    if miner.thread is None or not miner.thread.is_alive():
-                        # The worker may have died by latching between the check
-                        # above and this liveness probe; a plain SystemExit here
-                        # would take the normal exit the latch exists to prevent.
-                        _force_restart_if_rpc_abandoned(miner)
-                        bt.logging.error(
-                            "miner watchdog exiting: miner loop thread exited"
-                        )
-                        _schedule_forced_exit_after_grace()
-                        raise SystemExit(1)
-                    bt.logging.info(f"Miner running... {time.time()}")
-                    stop.wait(5)
-                # A shutdown signal that races the latch must not fall through
-                # to the normal exit the latch exists to prevent.
-                _force_restart_if_rpc_abandoned(miner)
+            with constructed as miner:
+                lifecycle.watch(stop, miner, exit_reason=_watchdog_exit_reason)
         finally:
             # The RPC worker can also latch while __exit__ joins it — and
             # __exit__ itself raises on incomplete cleanup, so this recheck
             # must run on the exception path too, not only after a clean exit.
             if miner is not None:
-                _force_restart_if_rpc_abandoned(miner)
+                lifecycle.force_restart_if_rpc_abandoned(miner)
         bt.logging.info("miner stopped on shutdown signal")
     except Exception as error:  # noqa: BLE001 - CLI boundary must redact SDK errors.
         bt.logging.error(f"miner failed: {type(error).__name__}: {safe_error(error)}")
@@ -506,4 +494,6 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    # Startup can exit (sys.exit for an unregistered hotkey) or leave SDK
+    # websocket teardown for finalization; the boundary never finalizes.
+    run_entrypoint(main, grace_seconds=_WATCHDOG_TEARDOWN_GRACE_SECONDS)

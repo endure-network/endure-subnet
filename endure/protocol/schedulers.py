@@ -1,8 +1,7 @@
 """Round schedulers (spec §2; 24/7 rounds spec).
 
 Three interchangeable clocks behind one seam: ``NyseScheduler`` anchors rounds
-to real NYSE sessions with close-relative offsets and a settled-data fetch
-delay; ``FixedUtcScheduler`` anchors Alpha Risk rounds at 20:00 UTC every
+to real NYSE sessions with close-relative offsets; ``FixedUtcScheduler`` anchors Alpha Risk rounds at 20:00 UTC every
 calendar day; and ``SyntheticScheduler`` maps wall-clock periods onto fixture
 sessions so localnet and mock runs compress a full multi-day loop into minutes
 while the scoring math runs on real historical data.
@@ -23,11 +22,7 @@ from endure.protocol.round_engine import (
     compute_fixed_utc_windows,
     compute_windows,
 )
-from endure.scoring.oracle.trading_days import (
-    add_trading_days,
-    is_trading_session,
-    session_close,
-)
+from endure.scoring.oracle.trading_days import add_trading_days, is_trading_session
 
 _NEW_YORK = ZoneInfo("America/New_York")
 
@@ -39,16 +34,11 @@ class RoundScheduler(Protocol):
 
     def publication_available_at(self, windows: RoundWindows) -> datetime: ...
 
-    def resolution_due(
-        self, round_id: str, horizon_trading_days: int, now: datetime
-    ) -> bool: ...
-
 
 @dataclass(frozen=True, slots=True)
 class NyseScheduler:
-    """Production clock: real sessions, close-relative windows, fetch delay."""
+    """Production clock: real sessions and close-relative windows."""
 
-    fetch_delay_seconds: int
     offsets: WindowOffsets = field(default=DEFAULT_OFFSETS)
 
     def active_window(self, now: datetime) -> RoundWindows | None:
@@ -60,16 +50,6 @@ class NyseScheduler:
             return windows
         return None
 
-    def resolution_due(
-        self, round_id: str, horizon_trading_days: int, now: datetime
-    ) -> bool:
-        t0 = date.fromisoformat(round_id)
-        resolution_session = add_trading_days(t0, horizon_trading_days)
-        ready_at = session_close(resolution_session).astimezone(UTC) + timedelta(
-            seconds=self.fetch_delay_seconds
-        )
-        return now >= ready_at
-
     def publication_available_at(self, windows: RoundWindows) -> datetime:
         next_session = add_trading_days(date.fromisoformat(windows.round_id), 1)
         return compute_windows(next_session, offsets=self.offsets).commit_close
@@ -79,7 +59,6 @@ class NyseScheduler:
 class FixedUtcScheduler:
     """24/7 clock for Alpha Risk, anchored at 20:00 UTC every day."""
 
-    fetch_delay_seconds: int
     offsets: WindowOffsets = field(default=DEFAULT_OFFSETS)
 
     def active_window(self, now: datetime) -> RoundWindows | None:
@@ -89,32 +68,16 @@ class FixedUtcScheduler:
             return windows
         return None
 
-    def resolution_due(
-        self, round_id: str, horizon_trading_days: int, now: datetime
-    ) -> bool:
-        """Use calendar days; Alpha's stored-window gate does not call this."""
-        resolution_day = date.fromisoformat(round_id) + timedelta(
-            days=horizon_trading_days
-        )
-        ready_at = datetime(
-            resolution_day.year,
-            resolution_day.month,
-            resolution_day.day,
-            20,
-            tzinfo=UTC,
-        ) + timedelta(seconds=self.fetch_delay_seconds)
-        return now >= ready_at
-
     def publication_available_at(self, windows: RoundWindows) -> datetime:
         return windows.commit_close + timedelta(days=1)
 
 
-def scheduler_for_schema(schema_id: str, *, fetch_delay_seconds: int) -> RoundScheduler:
+def scheduler_for_schema(schema_id: str) -> RoundScheduler:
     """Choose the production clock without changing mock/local compression."""
     kind = default_registry().get(schema_id).production_scheduler_kind
     if kind == "fixed_utc":
-        return FixedUtcScheduler(fetch_delay_seconds=fetch_delay_seconds)
-    return NyseScheduler(fetch_delay_seconds=fetch_delay_seconds)
+        return FixedUtcScheduler()
+    return NyseScheduler()
 
 
 @dataclass(frozen=True, slots=True)
@@ -155,16 +118,3 @@ class SyntheticScheduler:
 
     def publication_available_at(self, windows: RoundWindows) -> datetime:
         return windows.commit_close + timedelta(seconds=self.period_seconds)
-
-    def resolution_due(
-        self, round_id: str, horizon_trading_days: int, now: datetime
-    ) -> bool:
-        try:
-            index = self.sessions.index(date.fromisoformat(round_id))
-        except ValueError:
-            return False
-        target = index + horizon_trading_days
-        if target >= len(self.sessions):
-            return False
-        ready_at = self._period_start(target + 1)
-        return now >= ready_at

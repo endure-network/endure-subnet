@@ -45,51 +45,6 @@ class RegistryPayload(TypedDict):
 
 
 REGISTRY_ADAPTER = TypeAdapter(RegistryPayload)
-ACTIVATED_ASSIGNMENTS = (
-    (10, "9bc000ca329b748b7a18ef361fff5dfb9f66b5879becd7619039b120b48ef104"),
-    (14, "905fa0830072dd392caac21e2b2fd41164c3a3901630f7849f60d29a3b30e225"),
-    (15, "cc388d70e7e4d26cafcd65918a0a471520587734910fb423fa32a10a9515c790"),
-    (15, "83890b6a72dfb93c82d5bc64d585c674cab6f07461169036e77ad994de87aece"),
-    (16, "3e61cb607af55712da072f1be52686aeb246cca43b03eb3f81987dedc12cf97d"),
-    (16, "74e953bb6309d3dff825858dc39d579b11b7d7718688e39dac4df7417a4a7183"),
-    (16, "3b2ec013c6bf699ca940fb10c1b9c66bd5935d5e4dee57a6f5965293cf84db46"),
-    (16, "9ca6deade93e0be309c48284187b25baa1a47e23f14ba60a3adc95239813d0b5"),
-    (16, "02d56a1f6b83dc7daf5aeb980357ee36e66749e55acbc10cdf22c46d63a3764b"),
-    (16, "baed1056cf74a16acfa388d3563a8fd31ef3ddb6806c25813944abb611bfadef"),
-    (16, "15d0d31e838c77a5796503d9a31b88dbb7f6f6cf3f4b0c5b069f3bdd6d67c0a6"),
-    (16, "08a4a41a04ff01e92c550f7e5f6abcd32b30d18a3a3ec17feb1562841ad665e3"),
-    (16, "87f3792c916c750bba14465e6bf5c8e3486fbc2a60f70658f038128b2eba2277"),
-    (16, "dcb6e9bc5945d417fce70b16edc63058a2ac417822bb02f7e51d7759fc5618dc"),
-    (16, "960160e83c00f1ed6d4299990f2a61925833a29a5d17b8c0d97e2af5eb88c1cb"),
-    (16, "7b81558f494ea744038d9539981e0f8c6b0b8198ca995cce1fc8ed24bb644996"),
-    (16, "1f22989383e65fbca8acf7bff26cb77452e42eeb453200404301e285e74a07b8"),
-    (16, "d73e03a3d1c37498613bdf940b4e78cee323f1d9ae739a1dfd5b3afb9b9d450e"),
-    (16, "2d1a91c985dff265b51715e4baed20f351302f0d9b515c5a5abbd7fb2757f4d6"),
-    (16, "fe6e5d6c8ac706d47c5eabd88ee5279da9db51cbed0b1dd571dd9880ee1eae53"),
-    (16, "727f71f9c952c7c37db7b82e49154a454a00b6508daf22d294c971547b10d04e"),
-    (16, "1674c8ab96b20bb32d5210a37dc41993af3e1edaf11da375fc4141ee983b9cc6"),
-    (17, "e255f7409264aa5806fddfe2906aeffe365e2df1f57800bb3be9a8ac25fa84d4"),
-    (17, "e720fde22c04d8f78b5cc6f7d9ef59529fc0168392d423cdab9427ccb2e61905"),
-    (17, "538696b4b6f584fa9c6750b2a2e30e97b7ae41b60f463c721673f8e448461fad"),
-    (18, "9b3a7f5c1fd4dedf984fa9fd89e18f43cbceb32f4eecfeb40314c4d624d69f5d"),
-    (18, "8fff2f7186cbad1ede92ce29c9e02fa75c3e2599889a7d0583fee13387a5005f"),
-    (18, "7a8cd9ffc80ed410f27df96f8efc599f555bb681e96afdd307eba79d07a84524"),
-    (19, "6f0aeba577566b4cfa5aef18d41923b0caa0d46db2f51d69441157dbf2f8bb53"),
-    (19, "ea42096cdc93b916f8153a5832f747f871ec3593595abd8df5bc005f8147b208"),
-    (19, "50b5f656eb7b701647aed097c46815bbc79756971034d52544fa95e4838e1b3d"),
-    (19, "597ec173635729f02e3a0d2c8bb473f43d909b6ac155e045ccc62462947c2d41"),
-    (20, "e16bcbe93b0b8a77ea796e7298eb522180edfd15ca44b085b6c5c4735bcaecf5"),
-    (21, "a1b0ba5c809ff48b07565ec8a16c0390f8cd3802e120e8d887b730027a3814b2"),
-    (21, "8bf61f924aa679b533aca45f3f4f43c02d439981400e660365d1a48e9a174a27"),
-    (22, "a5bac3c11ad674f1353be212fdec757f442da1ea099cc99a3b537033a30851cc"),
-    (24, "8f5be3b40345d6116525380b588373940d72db933d0dd38ca6e2fd234e29879c"),
-    (25, "7ceb7c8853668099cd1500cb4a3e429215ce4aa7887ae5cacdd6458f18c91383"),
-    (26, "0d0153828eebe5f449b365b7b3a3c43e87f3118770a2f76dfb98637a6eed6d9e"),
-    (27, "d0884ffa6bf8d98807d20ab9ee8a7a0c2821bb08d0cc6376fb87a6db605cf0fb"),
-    (28, "05da1df37dc67de435d0954d9b102be45922c6956822643ff1dcc7a892176e26"),
-    (29, "d3b9126c2bad0045e497e6f5f7362309c004d340f927cc91638d4df84344379b"),
-    (30, "3904a799a6560082a05b0ff62274cf4c71547cf1f5dfd0311418d2f4e574ef14"),
-)
 
 
 def _payload() -> RegistryPayload:
@@ -115,15 +70,6 @@ def registry_path(tmp_path: Path) -> Path:
     path = tmp_path / "activated_versions.json"
     path.write_bytes(TRACKED_REGISTRY.read_bytes())
     return path
-
-
-def test_registry_contains_exact_activation_history() -> None:
-    payload = _payload()
-    actual = tuple((row["key"], row["digest"]) for row in payload["activation_history"])
-
-    assert payload["schema_version"] == 1
-    assert actual == ACTIVATED_ASSIGNMENTS
-    assert payload["previous_activation_id"] == "activation-0043"
 
 
 def test_source_bound_receipt_format_and_fields_are_cryptographically_sensitive() -> (

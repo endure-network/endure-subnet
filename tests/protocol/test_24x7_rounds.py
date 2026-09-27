@@ -75,7 +75,7 @@ class _RiskAssessmentScorer:
 
 class TestFixedUtcScheduler:
     def test_uses_the_fixed_utc_window_shape_on_an_nyse_holiday(self) -> None:
-        scheduler = FixedUtcScheduler(fetch_delay_seconds=0)
+        scheduler = FixedUtcScheduler()
 
         window = scheduler.active_window(datetime(2026, 6, 19, 15, tzinfo=UTC))
 
@@ -91,7 +91,7 @@ class TestFixedUtcScheduler:
         )
 
     def test_creates_a_round_on_a_weekend(self) -> None:
-        scheduler = FixedUtcScheduler(fetch_delay_seconds=0)
+        scheduler = FixedUtcScheduler()
 
         window = scheduler.active_window(datetime(2026, 6, 20, 15, tzinfo=UTC))
 
@@ -99,7 +99,7 @@ class TestFixedUtcScheduler:
         assert window.round_id == "2026-06-20"
 
     def test_keeps_january_and_july_windows_on_the_same_utc_clock(self) -> None:
-        scheduler = FixedUtcScheduler(fetch_delay_seconds=0)
+        scheduler = FixedUtcScheduler()
 
         january = scheduler.active_window(datetime(2026, 1, 5, 15, tzinfo=UTC))
         july = scheduler.active_window(datetime(2026, 7, 6, 15, tzinfo=UTC))
@@ -111,15 +111,6 @@ class TestFixedUtcScheduler:
         assert january.t0_close.timetz() == july.t0_close.timetz()
         assert january.reveal_open.timetz() == july.reveal_open.timetz()
         assert january.reveal_close.timetz() == july.reveal_close.timetz()
-
-    def test_uses_calendar_days_for_resolution_due(self) -> None:
-        scheduler = FixedUtcScheduler(fetch_delay_seconds=3600)
-
-        before_due = datetime(2026, 6, 24, 20, 59, tzinfo=UTC)
-        due = datetime(2026, 6, 24, 21, tzinfo=UTC)
-
-        assert scheduler.resolution_due("2026-06-19", 5, before_due) is False
-        assert scheduler.resolution_due("2026-06-19", 5, due) is True
 
 
 class TestFixedUtcCutover:
@@ -139,7 +130,7 @@ class TestFixedUtcCutover:
             now_iso=old_windows.commit_open.isoformat(),
         )
         now_holder = {"now": datetime(2023, 3, 11, 15, tzinfo=UTC)}
-        scheduler = scheduler_for_schema(RISK_SCHEMA_ID, fetch_delay_seconds=0)
+        scheduler = scheduler_for_schema(RISK_SCHEMA_ID)
         assert isinstance(scheduler, FixedUtcScheduler)
         scorer = _RiskAssessmentScorer(storage)
         service = ValidatorRoundService(

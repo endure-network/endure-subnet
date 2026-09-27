@@ -23,20 +23,27 @@ from endure.assessment.schemas.forge_lending import (
     build_lending_v1_subnet_asset_schema,
 )
 from endure.assessment.schemas.subnet_alpha_risk import RISK_SCHEMA_ID
+from endure.protocol.consensus_policy import MAINNET_GENESIS_HASH, TESTNET_GENESIS_HASH
 from endure.utils.config import (
+    DevOnlyConfigError,
     active_runtime_schema_entry,
     active_runtime_schema_id,
     active_schema_id,
     add_args,
     add_miner_args,
     add_validator_args,
+    apply_consensus_settings,
     check_config,
     config,
+    owner_vote_network,
     permits_dev_only_runtime,
     require_compression_runtime_allowed,
     require_dev_only_runtime,
     require_explicit_netuid,
+    require_mainnet_validator_policy,
     require_serving_stage_allowed,
+    resolve_chain_identity,
+    uses_mainnet_consensus_policy,
 )
 
 
@@ -93,16 +100,6 @@ class TestAddArgs:
         with pytest.raises(SystemExit):
             parser.parse_args(["--endure.tick_seconds", "-1"])
 
-    def test_validator_args_registered(self) -> None:
-        parser = argparse.ArgumentParser()
-        add_validator_args(_FakeCls, parser)
-        dests = {a.dest for a in parser._actions}
-        assert "neuron.name" in dests
-        assert "runtime.mode" in dests
-        assert "neuron.disable_set_weights" in dests
-        assert "neuron.moving_average_alpha" in dests
-        assert "neuron.vpermit_tao_limit" not in dests
-
     @pytest.mark.parametrize(
         ("add_options", "removed_argv"),
         (
@@ -115,11 +112,13 @@ class TestAddArgs:
             (add_validator_args, ["--neuron.vpermit_tao_limit", "4096"]),
         ),
     )
-    def test_removed_cli_options_are_rejected(
+    def test_removed_cli_options_are_not_registered(
         self,
         add_options: Callable[[object, argparse.ArgumentParser], None],
         removed_argv: list[str],
     ) -> None:
+        # Plain argparse proves the option is unregistered. A neuron's
+        # bt.Config drops unregistered options silently unless --strict.
         parser = argparse.ArgumentParser()
         add_options(_FakeCls, parser)
 
@@ -540,7 +539,6 @@ class TestCheckConfig:
         cfg.wallet.hotkey = "test-hot"
         cfg.netuid = 7
         cfg.neuron.name = "pytest-neuron"
-        cfg.neuron.dont_save_events = True
 
         check_config(_FakeCls, cfg)
 
@@ -555,24 +553,54 @@ class TestCheckConfig:
         cfg.wallet.hotkey = "hot"
         cfg.netuid = 1
         cfg.neuron.name = "n"
-        cfg.neuron.dont_save_events = True
 
         check_config(_FakeCls, cfg)
         check_config(_FakeCls, cfg)
 
-    def test_registers_events_logger_when_enabled(self, tmp_path: Path) -> None:
+    def test_dead_options_are_accepted_ignored_and_warned(self, tmp_path: Path) -> None:
+        parser = argparse.ArgumentParser()
+        bt.Wallet.add_args(parser)
+        bt.Subtensor.add_args(parser)
+        bt.logging.add_args(parser)
+        add_args(_FakeCls, parser)
+        add_validator_args(_FakeCls, parser)
+        # A negative delay, once refused by the option's type check, parses too.
+        cfg = bt.Config(
+            parser,
+            args=[
+                "--endure.fetch_delay_seconds",
+                "-1",
+                "--neuron.events_retention_size",
+                "4096",
+                "--neuron.dont_save_events",
+                "--neuron.moving_average_alpha",
+                "0.25",
+                "--logging.logging_dir",
+                str(tmp_path),
+            ],
+        )
+
+        with patch.object(bt.logging, "warning") as warning:
+            check_config(_FakeCls, cfg)
+
+        assert sorted(
+            call.args[0].split(" is ignored")[0] for call in warning.call_args_list
+        ) == [
+            "--endure.fetch_delay_seconds -1",
+            "--neuron.dont_save_events",
+            "--neuron.events_retention_size 4096",
+            "--neuron.moving_average_alpha 0.25",
+        ]
+        assert not (Path(cfg.neuron.full_path) / "events.log").exists()
+
+    def test_absent_dead_options_log_nothing(self, tmp_path: Path) -> None:
         cfg = config(_FakeCls)
         cfg.logging.logging_dir = str(tmp_path)
-        cfg.wallet.name = "cold"
-        cfg.wallet.hotkey = "hot"
-        cfg.netuid = 1
-        cfg.neuron.name = "n"
-        cfg.neuron.dont_save_events = False
-        cfg.neuron.events_retention_size = 2048
 
-        with patch.object(bt.logging, "register_primary_logger") as registered:
+        with patch.object(bt.logging, "warning") as warning:
             check_config(_FakeCls, cfg)
-            registered.assert_called_once()
+
+        warning.assert_not_called()
 
     def test_compression_check_config_allows_testnet_with_stage_ack(
         self, tmp_path: Path
@@ -582,7 +610,6 @@ class TestCheckConfig:
         cfg.wallet.name = "cold"
         cfg.wallet.hotkey = "hot"
         cfg.neuron.name = "n"
-        cfg.neuron.dont_save_events = True
         cfg.runtime = argparse.Namespace(mode="live")
         cfg.endure.devnet_time_compression = True
         cfg.endure.serving_stage = "testnet"
@@ -600,7 +627,6 @@ class TestCheckConfig:
         cfg.wallet.name = "cold"
         cfg.wallet.hotkey = "hot"
         cfg.neuron.name = "n"
-        cfg.neuron.dont_save_events = True
         cfg.runtime = argparse.Namespace(mode="live")
         cfg.endure.devnet_time_compression = True
         cfg.endure.serving_stage = None
@@ -634,56 +660,11 @@ class TestArgValidation:
         add_miner_args(_FakeCls, parser)
         return parser
 
-    def test_events_retention_size_parses_positive_int(self) -> None:
-        ns = self._base_parser().parse_args(["--neuron.events_retention_size", "4096"])
-        value = getattr(ns, "neuron.events_retention_size")
-        assert value == 4096
-        assert isinstance(value, int)
-
-    def test_events_retention_size_default_is_positive_int(self) -> None:
-        value = getattr(
-            self._base_parser().parse_args([]), "neuron.events_retention_size"
-        )
-        assert isinstance(value, int)
-        assert value > 0
-
-    @pytest.mark.parametrize("bad", ["0", "-5", "notanint"])
-    def test_events_retention_size_rejects_invalid(self, bad: str) -> None:
-        with pytest.raises(SystemExit):
-            self._base_parser().parse_args(["--neuron.events_retention_size", bad])
-
-    def test_moving_average_alpha_parses_decimal(self) -> None:
-        ns = self._validator_parser().parse_args(
-            ["--neuron.moving_average_alpha", "0.25"]
-        )
-        value = getattr(ns, "neuron.moving_average_alpha")
-        assert value == Decimal("0.25")
-        assert isinstance(value, Decimal)
-
-    def test_moving_average_alpha_default_is_unit_interval_decimal(self) -> None:
-        value = getattr(
-            self._validator_parser().parse_args([]), "neuron.moving_average_alpha"
-        )
-        assert isinstance(value, Decimal)
-        assert Decimal("0") <= value <= Decimal("1")
-
-    @pytest.mark.parametrize("bad", ["1.5", "-0.1", "nan", "notanumber"])
-    def test_moving_average_alpha_rejects_out_of_range(self, bad: str) -> None:
-        with pytest.raises(SystemExit):
-            self._validator_parser().parse_args(["--neuron.moving_average_alpha", bad])
-
     def test_min_miner_stake_parses_decimal(self) -> None:
         ns = self._validator_parser().parse_args(["--endure.min_miner_stake", "10"])
         value = getattr(ns, "endure.min_miner_stake")
         assert value == Decimal("10")
         assert isinstance(value, Decimal)
-
-    def test_min_miner_stake_default_is_zero_decimal(self) -> None:
-        value = getattr(
-            self._validator_parser().parse_args([]), "endure.min_miner_stake"
-        )
-        assert isinstance(value, Decimal)
-        assert value == Decimal("0")
 
     @pytest.mark.parametrize("bad", ["-5", "nan", "Infinity", "notanumber"])
     def test_min_miner_stake_rejects_invalid(self, bad: str) -> None:
@@ -730,13 +711,6 @@ class TestNumericArgGuards:
         with pytest.raises(SystemExit):
             parser.parse_args(["--endure.max_commits_per_round", "0"])
 
-    def test_endure_fetch_delay_seconds_rejects_non_positive(self) -> None:
-        # Negative pulls outcome fetch before session close: unsettled data.
-        parser = argparse.ArgumentParser()
-        add_args(_FakeCls, parser)
-        with pytest.raises(SystemExit):
-            parser.parse_args(["--endure.fetch_delay_seconds", "-1"])
-
     def test_dead_template_args_are_removed(self) -> None:
         # sample_size/timeout are consumed nowhere — keeping them invites
         # configuring a knob that does nothing.
@@ -766,7 +740,7 @@ class TestRequireExplicitNetuid:
 
     def test_local_chain_accepts_the_default(self) -> None:
         # Keyed as --subtensor.network: bittensor's resolution drops
-        # --subtensor.chain_endpoint (see _TESTNET_HOSTS in the module).
+        # --subtensor.chain_endpoint (see TESTNET_HOSTS in consensus_policy).
         cfg = self._parsed(
             ["--runtime.mode", "live", "--subtensor.network", "ws://127.0.0.1:9944"]
         )
@@ -785,3 +759,206 @@ class TestRequireExplicitNetuid:
         built = self._parsed([])
         built.merge(self._parsed(["--netuid", "1", *self._LIVE]))
         require_explicit_netuid(built)
+
+
+class TestPinnedConsensusSettings:
+    _STALE = (
+        ("endure", "min_miner_stake", Decimal("1"), Decimal("0")),
+        ("endure", "max_commits_per_round", 1000, 10),
+        ("endure", "max_reveals_per_round", 1000, 10),
+        ("neuron", "epoch_length", 360, 100),
+    )
+
+    @classmethod
+    def _stale(cls, cfg: bt.Config) -> bt.Config:
+        for section, option, given, _protocol in cls._STALE:
+            setattr(getattr(cfg, section), option, given)
+        return cfg
+
+    @pytest.mark.parametrize(
+        ("network", "stage"), (("finney", "mainnet"), ("test", "testnet"))
+    )
+    def test_served_networks_ignore_stale_values_and_warn(
+        self, production_validator_config: bt.Config, network: str, stage: str
+    ) -> None:
+        cfg = self._stale(production_validator_config)
+        cfg.subtensor.network = network
+        cfg.endure.serving_stage = stage
+
+        with patch.object(bt.logging, "warning") as warning:
+            apply_consensus_settings(cfg)
+            require_mainnet_validator_policy(cfg)
+
+        messages = [call.args[0] for call in warning.call_args_list]
+        assert len(messages) == len(self._STALE)
+        for (section, option, given, protocol), message in zip(
+            self._STALE, messages, strict=True
+        ):
+            assert getattr(getattr(cfg, section), option) == protocol
+            assert f"--{section}.{option} {given} is ignored" in message
+            assert f"protocol value {protocol}" in message
+
+    def test_protocol_values_log_nothing(
+        self, production_validator_config: bt.Config
+    ) -> None:
+        cfg = production_validator_config
+        cfg.subtensor.network = "finney"
+        cfg.endure.serving_stage = "mainnet"
+
+        with patch.object(bt.logging, "warning") as warning:
+            apply_consensus_settings(cfg)
+
+        warning.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "network", ("ws://127.0.0.1:9944", "local"), ids=("loopback", "local")
+    )
+    def test_local_chains_keep_custom_values(
+        self, production_validator_config: bt.Config, network: str
+    ) -> None:
+        cfg = self._stale(production_validator_config)
+        cfg.subtensor.network = network
+
+        apply_consensus_settings(cfg)
+
+        for section, option, given, _protocol in self._STALE:
+            assert getattr(getattr(cfg, section), option) == given
+
+    def test_axon_off_requires_emission_disabled_on_mainnet(
+        self, production_validator_config: bt.Config
+    ) -> None:
+        cfg = production_validator_config
+        cfg.subtensor.network = "finney"
+        cfg.endure.serving_stage = "mainnet"
+        cfg.neuron.axon_off = True
+        cfg.neuron.disable_set_weights = True
+        require_mainnet_validator_policy(cfg)
+
+        cfg.neuron.disable_set_weights = False
+
+        with pytest.raises(RuntimeError, match="disable_set_weights"):
+            require_mainnet_validator_policy(cfg)
+
+
+class TestChainIdentityByGenesis:
+    """An operator's own Finney node on loopback is mainnet, not a dev chain."""
+
+    # The SDK resolves each of these to ws://127.0.0.1:9944 ("finney" would
+    # override a loopback chain_endpoint, so it is not a loopback case).
+    _LOOPBACK = (
+        ("local", ""),
+        ("", "ws://127.0.0.1:9944"),
+        ("ws://127.0.0.1:9944", ""),
+    )
+
+    @staticmethod
+    def _reader(genesis: str | None) -> Callable[[str], str | None]:
+        def read(endpoint: str) -> str | None:
+            assert "127.0.0.1" in endpoint
+            return genesis
+
+        return read
+
+    @pytest.mark.parametrize(("network", "endpoint"), _LOOPBACK)
+    def test_loopback_mainnet_node_gets_every_mainnet_gate(
+        self, production_validator_config: bt.Config, network: str, endpoint: str
+    ) -> None:
+        cfg = production_validator_config
+        cfg.subtensor.network = network
+        cfg.subtensor.chain_endpoint = endpoint
+        cfg.endure.serving_stage = "mainnet"
+        cfg.endure.min_miner_stake = Decimal("5")
+        assert permits_dev_only_runtime(cfg)
+
+        resolve_chain_identity(cfg, read_genesis=self._reader(MAINNET_GENESIS_HASH))
+
+        assert not permits_dev_only_runtime(cfg)
+        assert uses_mainnet_consensus_policy(cfg)
+        assert owner_vote_network(cfg) == "mainnet"
+        apply_consensus_settings(cfg)
+        assert cfg.endure.min_miner_stake == Decimal("0")
+        cfg.endure.serving_stage = "testnet"
+        with pytest.raises(DevOnlyConfigError):
+            require_serving_stage_allowed(cfg)
+        with pytest.raises(DevOnlyConfigError):
+            require_dev_only_runtime(cfg, feature="--endure.devnet_time_compression")
+
+    @pytest.mark.parametrize(("network", "endpoint"), _LOOPBACK)
+    def test_loopback_testnet_node_is_testnet(
+        self, production_validator_config: bt.Config, network: str, endpoint: str
+    ) -> None:
+        cfg = production_validator_config
+        cfg.subtensor.network = network
+        cfg.subtensor.chain_endpoint = endpoint
+
+        resolve_chain_identity(cfg, read_genesis=self._reader(TESTNET_GENESIS_HASH))
+
+        assert not permits_dev_only_runtime(cfg)
+        assert not uses_mainnet_consensus_policy(cfg)
+        assert owner_vote_network(cfg) == "testnet"
+
+    def test_loopback_localnet_stays_a_dev_chain(
+        self, production_validator_config: bt.Config
+    ) -> None:
+        cfg = production_validator_config
+        cfg.subtensor.network = "local"
+        cfg.subtensor.chain_endpoint = ""
+
+        resolve_chain_identity(cfg, read_genesis=self._reader("0xlocalnet"))
+
+        assert permits_dev_only_runtime(cfg)
+        assert owner_vote_network(cfg) is None
+
+    @pytest.mark.parametrize("runtime", ["named-finney", "mock"])
+    def test_named_networks_and_mock_never_read_the_chain(
+        self, production_validator_config: bt.Config, runtime: str
+    ) -> None:
+        cfg = production_validator_config
+        if runtime == "mock":
+            cfg.runtime.mode = "mock"
+            cfg.subtensor.network = "local"
+        else:
+            cfg.subtensor.network = "finney"
+        cfg.subtensor.chain_endpoint = ""
+
+        def unexpected(_endpoint: str) -> str | None:
+            raise AssertionError("genesis read")
+
+        resolve_chain_identity(cfg, read_genesis=unexpected)
+
+    def test_unidentifiable_chain_refuses_startup(
+        self, production_validator_config: bt.Config
+    ) -> None:
+        cfg = production_validator_config
+        cfg.subtensor.network = "local"
+        cfg.subtensor.chain_endpoint = ""
+
+        with pytest.raises(RuntimeError, match="cannot identify the chain"):
+            resolve_chain_identity(cfg, read_genesis=self._reader(None))
+
+    def test_preseeded_genesis_never_overrides_a_named_endpoint(
+        self, production_validator_config: bt.Config
+    ) -> None:
+        cfg = production_validator_config
+        cfg.subtensor.network = "finney"
+        cfg.subtensor.chain_endpoint = ""
+        # e.g. carried in through a YAML --config file.
+        cfg.endure.chain_genesis_hash = TESTNET_GENESIS_HASH
+
+        resolve_chain_identity(cfg, read_genesis=self._reader(None))
+
+        assert owner_vote_network(cfg) == "mainnet"
+        assert uses_mainnet_consensus_policy(cfg)
+
+    def test_genesis_hex_is_normalized_before_comparison(
+        self, production_validator_config: bt.Config
+    ) -> None:
+        cfg = production_validator_config
+        cfg.subtensor.network = "local"
+        cfg.subtensor.chain_endpoint = ""
+
+        resolve_chain_identity(
+            cfg, read_genesis=self._reader(MAINNET_GENESIS_HASH[2:].upper())
+        )
+
+        assert owner_vote_network(cfg) == "mainnet"

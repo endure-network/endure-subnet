@@ -51,31 +51,10 @@ class TestSyntheticScheduler:
         assert scheduler.active_window(EPOCH - timedelta(seconds=1)) is None
         assert scheduler.active_window(EPOCH + timedelta(seconds=100 * 10)) is None
 
-    def test_resolution_due_after_horizon_periods(self) -> None:
-        scheduler = SyntheticScheduler(
-            sessions=SESSIONS, epoch=EPOCH, period_seconds=100
-        )
-
-        # Round 0 (2023-03-06), horizon 1: resolves once period 1 fully closes.
-        not_yet = EPOCH + timedelta(seconds=150)
-        due = EPOCH + timedelta(seconds=210)
-
-        assert scheduler.resolution_due("2023-03-06", 1, not_yet) is False
-        assert scheduler.resolution_due("2023-03-06", 1, due) is True
-
-    def test_resolution_never_due_beyond_fixture_sessions(self) -> None:
-        scheduler = SyntheticScheduler(
-            sessions=SESSIONS, epoch=EPOCH, period_seconds=100
-        )
-
-        far_future = EPOCH + timedelta(seconds=100 * 50)
-
-        assert scheduler.resolution_due("2023-03-09", 5, far_future) is False
-
 
 class TestNyseScheduler:
     def test_active_window_on_a_session_day(self) -> None:
-        scheduler = NyseScheduler(fetch_delay_seconds=72000)
+        scheduler = NyseScheduler()
 
         # 2026-06-09 15:00 UTC is inside the default commit window.
         window = scheduler.active_window(datetime(2026, 6, 9, 15, 0, tzinfo=UTC))
@@ -84,33 +63,15 @@ class TestNyseScheduler:
         assert window.round_id == "2026-06-09"
 
     def test_no_window_on_weekends(self) -> None:
-        scheduler = NyseScheduler(fetch_delay_seconds=72000)
+        scheduler = NyseScheduler()
 
         assert scheduler.active_window(datetime(2026, 6, 7, 15, 0, tzinfo=UTC)) is None
 
     def test_publication_waits_for_the_next_session_commit_close(self) -> None:
-        scheduler = NyseScheduler(fetch_delay_seconds=72000)
+        scheduler = NyseScheduler()
         window = scheduler.active_window(datetime(2026, 6, 9, 15, 0, tzinfo=UTC))
 
         assert window is not None
         assert scheduler.publication_available_at(window) == datetime(
             2026, 6, 10, 19, 30, tzinfo=UTC
-        )
-
-    def test_resolution_due_after_fetch_delay(self) -> None:
-        scheduler = NyseScheduler(fetch_delay_seconds=72000)
-
-        # Round 2026-06-09, horizon 1 resolves at 2026-06-10 close (20:00 UTC);
-        # fetch-ready 20 hours later: 2026-06-11 16:00 UTC.
-        assert (
-            scheduler.resolution_due(
-                "2026-06-09", 1, datetime(2026, 6, 11, 15, 0, tzinfo=UTC)
-            )
-            is False
-        )
-        assert (
-            scheduler.resolution_due(
-                "2026-06-09", 1, datetime(2026, 6, 11, 17, 0, tzinfo=UTC)
-            )
-            is True
         )

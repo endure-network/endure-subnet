@@ -40,10 +40,10 @@ _REGISTERED_SCHEMA_IDS: frozenset[str] = frozenset(default_registry().schema_ids
 # while still pinning the exact comparison.
 _ALLOWLIST: frozenset[tuple[str, str]] = frozenset(
     {
-        # Serving-stage safety gate (config gate stack).
+        # Serving decision safety gate (watched consensus policy).
         (
-            "endure/utils/config.py",
-            "entry.schema.schema_id == RISK_SCHEMA_ID",
+            "endure/protocol/consensus_policy.py",
+            "schema_id == RISK_SCHEMA_ID",
         ),
         # Miner composition root: served Alpha, then dev-gated Forge.
         ("neurons/miner.py", "self._schema_id == RISK_SCHEMA_ID"),

@@ -10,10 +10,10 @@ so constants cannot drift outside the contract again.
 from pathlib import Path
 
 ACTIVATED_VERSION_REGISTRY_DIGEST = (
-    "fb198ab167ffc24e94fd4b870a983127b8b15f18d3014a8909ce061b6664d694"
+    "e52b5bfa53ba0443bfd427887fdc0fdb93c3dbc9c915d7581fa41f239a83f2c1"
 )
 ACTIVATED_VERSION_HISTORY_DIGEST = (
-    "d9d7c8b59cf36386d2087e87db158b81f82d03977fcead6ec9c54207f714a8aa"
+    "1cd6c2a53bbf4d4d11cbdaefada0327afb67640b10f1a04e7d18656c38c4ee32"
 )
 
 WATCHED_PATHS = (
@@ -22,14 +22,17 @@ WATCHED_PATHS = (
     Path("endure/aggregation"),
     Path("endure/scoring"),
     Path("endure/publication"),
+    # Admission, snapshot membership and historical eligibility are semantic,
+    # even though their transactions live in the persistence boundary.
+    Path("endure/storage/repository.py"),
 )
 
 # Previous accepted protocol snapshot. When watched paths change, promote the
 # current values into the previous fields, then write the new digest and bump
 # the current version key.
-PREVIOUS_VERSION_KEY = 30
+PREVIOUS_VERSION_KEY = 2041
 PREVIOUS_VERSION_DIGEST = (
-    "3904a799a6560082a05b0ff62274cf4c71547cf1f5dfd0311418d2f4e574ef14"
+    "570989ed4a3e73bc1283e99742c3931712ec0e3c4aebc96a5aebcc1375ea87f7"
 )
 
 # Production serving status and CURRENT_VERSION_KEY stay unchanged until R6.
@@ -122,7 +125,23 @@ PREVIOUS_VERSION_DIGEST = (
 # must deploy together. This shared release key clears the SN30 chain floor.
 # Includes the 15-netuid mainnet universe refresh; mainnet serving opens
 # behind the explicit --endure.serving_stage mainnet acknowledgement.
-CURRENT_VERSION_KEY = 2041
+# 2042: release-pinned admission on served testnet and mainnet (operator values
+# ignored with a warning; axon-off emission refused on mainnet), atomic
+# reveal/snapshot closure and immutable empty snapshots. Watched
+# decisions: storage admission/selection; miner axon admission; the scoring set
+# (expected miners, archival) and deregistration confirmation; which schema is
+# served, genesis-based chain classification, where the consensus settings are
+# pinned, mainnet-policy applicability and
+# the owner-vote network; emission planning from one chain snapshot (identity,
+# permit, strict rate limit, scored UIDs matching the snapshot, the on-chain
+# SubnetOwnerHotkey recipient pinned to the SN30 owner on mainnet) and its
+# pre-submission recheck; the score-to-u16 composition; and Alpha market-data
+# sampling (canonical blocks, boundary searches, gap policy, the scoring retry
+# budget, and the missing-value and gap-versus-outage classification of archive
+# reads). Unwatched runtime code performs RPC/SQLite I/O, CLI plumbing, process
+# lifecycle, the startup archive-probe schedule, and non-consensus health
+# severity.
+CURRENT_VERSION_KEY = 2042
 CURRENT_VERSION_DIGEST = (
-    "570989ed4a3e73bc1283e99742c3931712ec0e3c4aebc96a5aebcc1375ea87f7"
+    "224eebd7dfcaa588c0a6aa94116d95a7851e44cb7c3a2e3260046de354f2b4a2"
 )

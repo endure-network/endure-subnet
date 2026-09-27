@@ -573,6 +573,37 @@ def test_gated_subtensor_reads_finalized_weight_evidence() -> None:
     )
 
 
+def test_gated_subtensor_caches_only_a_successful_genesis_read() -> None:
+    delegate = _Delegate()
+    reads: list[int | None] = []
+    results: list[str | None | Exception] = [
+        OSError("socket closed"),
+        None,
+        "0xgenesis",
+    ]
+
+    def block_hash(block: int | None = None) -> str | None:
+        reads.append(block)
+        if block != 0:
+            return f"hash-{block}"
+        result = results.pop(0)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    delegate.get_block_hash = block_hash
+    subtensor = GatedSubtensor(delegate, AdaptiveRpcGate())
+
+    with pytest.raises(OSError, match="socket closed"):
+        subtensor.get_block_hash(0)
+    # A None read keeps its pre-cache rendering and is retried next time.
+    assert subtensor.get_block_hash(0) == "None"
+    assert [subtensor.get_block_hash(0) for _ in range(3)] == ["0xgenesis"] * 3
+    # Other block hashes can be reorged away and are never cached.
+    assert subtensor.get_block_hash(90) == subtensor.get_block_hash(90) == "hash-90"
+    assert reads == [0, 0, 0, 90, 90]
+
+
 def test_gated_subtensor_rejects_truncated_commitment_evidence(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

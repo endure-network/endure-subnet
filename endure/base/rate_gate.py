@@ -491,6 +491,9 @@ class GatedSubtensor(bt.Subtensor):
         self._priority = ContextVar(
             f"rpc_priority_{id(self)}", default=RpcPriority.METAGRAPH
         )
+        # One facade wraps one transport generation; a rebuild constructs a new
+        # facade, so the immutable genesis hash is re-read once per generation.
+        self._genesis_hash: str | None = None
 
     @contextmanager
     def priority(self, priority: RpcPriority):
@@ -506,14 +509,18 @@ class GatedSubtensor(bt.Subtensor):
         self._gate.close_generation()
 
     def get_block_hash(self, block: int | None = None) -> str:
+        if block == 0 and self._genesis_hash is not None:
+            return self._genesis_hash
         delegate = self._weight_evidence_delegate()
-        return str(
-            self._gate.call(
-                self._priority.get(),
-                lambda: delegate.get_block_hash(block),
-                operation_name="get_block_hash",
-            )
+        block_hash = self._gate.call(
+            self._priority.get(),
+            lambda: delegate.get_block_hash(block),
+            operation_name="get_block_hash",
         )
+        # Only a real hash is cached; a failed read is retried on next use.
+        if block == 0 and isinstance(block_hash, str) and block_hash:
+            self._genesis_hash = block_hash
+        return str(block_hash)
 
     def commit_reveal_enabled(self, *, netuid: int) -> bool:
         delegate = self._weight_evidence_delegate()
@@ -686,6 +693,7 @@ class GatedSubtensor(bt.Subtensor):
             "_delegate",
             "_gate",
             "_priority",
+            "_genesis_hash",
             "priority",
             "close",
             "get_block_hash",

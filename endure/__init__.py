@@ -43,5 +43,5 @@ def _encode_spec_version(version: str) -> int:
     )
 
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 __spec_version__ = _encode_spec_version(__version__)

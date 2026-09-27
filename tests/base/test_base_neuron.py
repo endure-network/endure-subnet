@@ -66,7 +66,10 @@ class TestConstructor:
         mock_runtime_provider: MockRuntimeProvider,
     ) -> None:
         secret = "super-secret-token"
-        mock_config_base.subtensor.chain_endpoint = (
+        # Keyed providers ride --subtensor.network: bittensor >=10.3 resolves
+        # the network before an unset chain_endpoint, and the log names the
+        # endpoint the SDK actually dials.
+        mock_config_base.subtensor.network = (
             f"wss://operator:{secret}@rpc.example.org:9944/private?token={secret}"
         )
         mock_config_base.endure.market_data_endpoint = (
