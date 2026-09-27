@@ -27,9 +27,11 @@ counted again by callers, retries, health snapshots, or scrapes.
 ## Counter semantics and restart behavior
 
 Each Counter starts at zero when the validator process starts and is monotonic
-until that process exits. Replacement RPC generations inherit their existing
-process total; a full validator restart intentionally starts a new process
-series at zero.
+until that process exits. Replacement RPC generations share one per-process
+counter, so events recorded by a generation are preserved whether that
+generation is adopted or discarded — including when rebuilding the connection
+fails during a provider rate limit or a cooldown deferral. A full validator
+restart intentionally starts a new process series at zero.
 
 The implementation does not persist these counts, introduce a process-identity
 label, or reconstruct a historical total from durable weight-submission rows.
@@ -75,10 +77,13 @@ need their own Prometheus Counters and their source-event semantics.
    and emit accurate `HELP` and `TYPE` metadata.
 2. Each source event increments once; a scrape, health projection, duplicate
    read, or retry observation does not add another increment.
-3. A replacement RPC generation preserves its current process total; a new
-   validator process starts all three Counter families at zero.
+3. A replacement RPC generation preserves its current process total — including
+   a generation discarded because the rebuild failed; a new validator process
+   starts all three Counter families at zero.
 4. Provider rate limits, cooldown deferrals, explicit unsuccessful weight
    responses, ambiguous outcomes, and successful outcomes have focused tests.
+   Counter conservation is covered for a discarded rebuild generation, an
+   adopted generation (with no double counting), and a fresh process (zero).
 5. The `/metrics` parser tests cover Counter type, the three names, monotonic
    in-process increments, and reset-on-new-process behavior.
 6. Phase 1's seven shipped Gauges remain unchanged and no excluded label or
