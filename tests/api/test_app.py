@@ -244,7 +244,7 @@ class TestRuntimeHealth:
 
         assert response.status_code == 503
         assert response.json()["status"] == "degraded"
-        assert "endure_validator_rpc_degraded 1.0" in client.get("/metrics").text
+        assert "endure_validator_ready 0.0" in client.get("/metrics").text
 
     def test_metrics_are_parseable_while_health_is_degraded(
         self, storage: Storage
@@ -375,14 +375,7 @@ class TestMetricsResponse:
             rpc_deferred_total=3,
             weight_submissions_failed_total=1,
         )
-        runtime.update(
-            {
-                "last_confirmed_weights_at": NOW,
-                "open_weight_submissions": 2,
-                "oldest_open_weight_submission_age_blocks": 7,
-                "latest_unconfirmed_weight_submission_block": 123,
-            }
-        )
+        runtime["last_confirmed_weights_at"] = NOW
         response = _metrics_response(
             HealthSnapshot(
                 runtime=runtime,
@@ -402,29 +395,16 @@ class TestMetricsResponse:
         assert response.headers["content-type"].startswith("text/plain")
         assert "# HELP endure_validator_ready" in response.body.decode()
         assert "# TYPE endure_validator_ready gauge" in response.body.decode()
-        assert "endure_validator_weight_submissions_open 2.0" in response.body.decode()
 
         metric_families = list(text_string_to_metric_families(response.body.decode()))
         assert {family.name for family in metric_families} == {
             "endure_validator_live",
             "endure_validator_ready",
-            "endure_validator_unfinished_rounds",
-            "endure_validator_pending_rounds",
-            "endure_validator_overdue_rounds",
-            "endure_validator_loop_alive",
             "endure_validator_tick_stale",
             "endure_validator_tick_age_seconds",
-            "endure_validator_tick_failures_consecutive",
-            "endure_validator_resolution_failures_consecutive",
-            "endure_validator_universe_failures_consecutive",
-            "endure_validator_empty_scored_rounds_consecutive",
-            "endure_validator_set_weights_failures_consecutive",
+            "endure_validator_overdue_rounds",
             "endure_validator_weight_emission_degraded",
             "endure_validator_weights_last_confirmed_timestamp_seconds",
-            "endure_validator_weight_submissions_open",
-            "endure_validator_weight_submissions_oldest_open_age_blocks",
-            "endure_validator_weight_submissions_latest_unconfirmed_block",
-            "endure_validator_rpc_degraded",
             "endure_validator_rpc_rate_limited",
             "endure_validator_rpc_deferred",
             "endure_validator_weight_submissions_failed",
@@ -453,14 +433,7 @@ class TestMetricsResponse:
         from prometheus_client.parser import text_string_to_metric_families
 
         runtime = _runtime()
-        runtime.update(
-            {
-                "last_confirmed_weights_at": "not-a-timestamp",
-                "open_weight_submissions": 0,
-                "oldest_open_weight_submission_age_blocks": 0,
-                "latest_unconfirmed_weight_submission_block": 0,
-            }
-        )
+        runtime["last_confirmed_weights_at"] = "not-a-timestamp"
         response = _metrics_response(
             HealthSnapshot(
                 runtime=runtime,
@@ -480,22 +453,15 @@ class TestMetricsResponse:
             "endure_validator_weights_last_confirmed_timestamp_seconds"
             not in metric_families
         )
-        assert "endure_validator_weight_submissions_open" in metric_families
-        assert (
-            "endure_validator_weight_submissions_oldest_open_age_blocks"
-            in metric_families
-        )
-        assert (
-            "endure_validator_weight_submissions_latest_unconfirmed_block"
-            in metric_families
-        )
+        assert "endure_validator_live" in metric_families
+        assert "endure_validator_ready" in metric_families
+        assert "endure_validator_tick_stale" in metric_families
 
-    def test_boolean_optional_count_is_omitted_but_zero_is_preserved(self) -> None:
+    def test_absent_confirmed_timestamp_is_omitted_not_zero_filled(self) -> None:
         from prometheus_client.parser import text_string_to_metric_families
 
         runtime = _runtime()
-        runtime["open_weight_submissions"] = True
-        runtime["oldest_open_weight_submission_age_blocks"] = 0
+        assert "last_confirmed_weights_at" not in runtime
         response = _metrics_response(
             HealthSnapshot(
                 runtime=runtime,
@@ -506,37 +472,18 @@ class TestMetricsResponse:
             )
         )
 
+        exposition = response.body.decode()
         metric_families = {
-            family.name
-            for family in text_string_to_metric_families(response.body.decode())
+            family.name for family in text_string_to_metric_families(exposition)
         }
-        assert "endure_validator_weight_submissions_open" not in metric_families
         assert (
-            "endure_validator_weight_submissions_oldest_open_age_blocks"
-            in metric_families
+            "endure_validator_weights_last_confirmed_timestamp_seconds"
+            not in metric_families
         )
-
-    def test_malformed_optional_rpc_gate_is_omitted(self) -> None:
-        from prometheus_client.parser import text_string_to_metric_families
-
-        runtime = _runtime()
-        del runtime["rpc_gate"]["degraded"]
-        response = _metrics_response(
-            HealthSnapshot(
-                runtime=runtime,
-                unfinished_round_count=0,
-                unfinished_rounds=(),
-                round_resolution=None,
-                degraded=False,
-            )
+        assert (
+            "endure_validator_weights_last_confirmed_timestamp_seconds"
+            not in exposition
         )
-
-        assert response.status_code == 200
-        metric_families = {
-            family.name
-            for family in text_string_to_metric_families(response.body.decode())
-        }
-        assert "endure_validator_rpc_degraded" not in metric_families
 
 
 class TestRiskRoundResolutionHealth:

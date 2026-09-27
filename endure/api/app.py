@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal, localcontext
@@ -430,6 +430,9 @@ def _health_snapshot(
 
 
 def _metrics_response(snapshot: HealthSnapshot) -> Response:
+    # Exactly the families an operator alert consumes. Every other runtime
+    # lifecycle signal stays available on /health; it is not re-exported here
+    # (see docs/specs/2026-09-01-validator-lifecycle-metrics.md).
     metrics: list[tuple[str, str, int | float]] = [
         ("endure_validator_live", "Whether the API process is serving.", 1),
         (
@@ -437,47 +440,23 @@ def _metrics_response(snapshot: HealthSnapshot) -> Response:
             "Whether the validator health snapshot is not degraded.",
             int(not snapshot.degraded),
         ),
-        (
-            "endure_validator_unfinished_rounds",
-            "Current count of non-terminal rounds.",
-            snapshot.unfinished_round_count,
-        ),
     ]
     if snapshot.round_resolution is not None:
-        metrics.extend(
-            [
-                (
-                    "endure_validator_pending_rounds",
-                    "Current rounds awaiting realized targets.",
-                    snapshot.round_resolution["pending_round_count"],
-                ),
-                (
-                    "endure_validator_overdue_rounds",
-                    "Current rounds past the resolution deadline.",
-                    snapshot.round_resolution["overdue_round_count"],
-                ),
-            ]
+        metrics.append(
+            (
+                "endure_validator_overdue_rounds",
+                "Current rounds past the resolution deadline.",
+                snapshot.round_resolution["overdue_round_count"],
+            )
         )
     if snapshot.runtime is not None:
         runtime = snapshot.runtime
-        metrics.extend(
-            [
-                (
-                    "endure_validator_loop_alive",
-                    "Whether the validator loop is alive.",
-                    int(runtime["validator_loop_alive"]),
-                ),
-                (
-                    "endure_validator_tick_stale",
-                    "Whether the latest completed tick is beyond its freshness window.",
-                    int(runtime["tick_stale"]),
-                ),
-                (
-                    "endure_validator_tick_failures_consecutive",
-                    "Current consecutive validator tick failures.",
-                    runtime["consecutive_tick_failures"],
-                ),
-            ]
+        metrics.append(
+            (
+                "endure_validator_tick_stale",
+                "Whether the latest completed tick is beyond its freshness window.",
+                int(runtime["tick_stale"]),
+            )
         )
         tick_age = runtime["seconds_since_last_tick"]
         if tick_age is not None:
@@ -488,47 +467,6 @@ def _metrics_response(snapshot: HealthSnapshot) -> Response:
                     tick_age,
                 )
             )
-        optional_counts = (
-            (
-                "consecutive_resolution_failures",
-                "endure_validator_resolution_failures_consecutive",
-                "Current consecutive resolution failures.",
-            ),
-            (
-                "consecutive_universe_failures",
-                "endure_validator_universe_failures_consecutive",
-                "Current consecutive universe-opening failures.",
-            ),
-            (
-                "consecutive_empty_scored_rounds",
-                "endure_validator_empty_scored_rounds_consecutive",
-                "Current consecutive empty scored rounds.",
-            ),
-            (
-                "consecutive_set_weights_failures",
-                "endure_validator_set_weights_failures_consecutive",
-                "Current consecutive set-weights failures.",
-            ),
-            (
-                "open_weight_submissions",
-                "endure_validator_weight_submissions_open",
-                "Current weight submissions awaiting confirmation.",
-            ),
-            (
-                "oldest_open_weight_submission_age_blocks",
-                "endure_validator_weight_submissions_oldest_open_age_blocks",
-                "Age of the oldest open weight submission in blocks.",
-            ),
-            (
-                "latest_unconfirmed_weight_submission_block",
-                "endure_validator_weight_submissions_latest_unconfirmed_block",
-                "Latest unconfirmed weight-submission block height.",
-            ),
-        )
-        for runtime_key, metric_name, documentation in optional_counts:
-            value = runtime.get(runtime_key)
-            if type(value) is int:
-                metrics.append((metric_name, documentation, value))
         weight_emission_degraded = runtime.get("weight_emission_degraded")
         if isinstance(weight_emission_degraded, bool):
             metrics.append(
@@ -538,8 +476,8 @@ def _metrics_response(snapshot: HealthSnapshot) -> Response:
                     int(weight_emission_degraded),
                 )
             )
-        confirmed_timestamp: datetime | None = None
         confirmed_at = runtime.get("last_confirmed_weights_at")
+        confirmed_timestamp: datetime | None = None
         if isinstance(confirmed_at, str):
             try:
                 confirmed_timestamp = datetime.fromisoformat(confirmed_at)
@@ -551,18 +489,6 @@ def _metrics_response(snapshot: HealthSnapshot) -> Response:
                     "endure_validator_weights_last_confirmed_timestamp_seconds",
                     "Last confirmed on-chain weight-emission time as Unix seconds.",
                     confirmed_timestamp.timestamp(),
-                )
-            )
-        rpc_gate = runtime.get("rpc_gate")
-        rpc_degraded = (
-            rpc_gate.get("degraded") if isinstance(rpc_gate, Mapping) else None
-        )
-        if isinstance(rpc_degraded, bool):
-            metrics.append(
-                (
-                    "endure_validator_rpc_degraded",
-                    "Whether the RPC gate is currently degraded.",
-                    int(rpc_degraded),
                 )
             )
     registry = CollectorRegistry()

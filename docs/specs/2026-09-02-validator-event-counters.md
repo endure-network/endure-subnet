@@ -47,8 +47,8 @@ degraded, as defined by Phase 1.
 
 ## Boundaries
 
-This phase does not change the 19 Phase 1 Gauges, their fresh per-scrape
-registry, or their missing-value behavior. Counter collectors must have a
+This phase does not change the seven shipped Phase 1 Gauges, their fresh
+per-scrape registry, or their missing-value behavior. Counter collectors must have a
 process lifetime that survives individual scrapes; a snapshot integer rendered
 as a Gauge remains prohibited.
 
@@ -81,5 +81,5 @@ need their own Prometheus Counters and their source-event semantics.
    responses, ambiguous outcomes, and successful outcomes have focused tests.
 5. The `/metrics` parser tests cover Counter type, the three names, monotonic
    in-process increments, and reset-on-new-process behavior.
-6. Phase 1's 19 Gauges remain unchanged and no excluded label or historical
-   persistence behavior is introduced.
+6. Phase 1's seven shipped Gauges remain unchanged and no excluded label or
+   historical persistence behavior is introduced.
