@@ -225,8 +225,9 @@ hotkey and coldkey at the submission block, and refuses the attempt if the
 owner changed or any UID in the vector changed hands or withheld status
 (`owner_snapshot_inconsistent` or `chain_snapshot_inconsistent`), so a burned
 share never reaches a former owner. The re-read has to observe that block, so
-no cached copy can stand in for it; a transient RPC error is retried in place,
-up to three attempts at the same block, before the attempt is refused.
+no cached copy can stand in for it; a read error is retried in place, up to
+three attempts at the same block, before the attempt is refused. The RPC gate's
+own throttle and stall signals are not retried there; the gate handles them.
 
 The vote is one u16 vector with the owner's entry at the maximum, so at high
 rates the miners' pool is about `65535 × (1 − b) / b` units, roughly 1,337 at

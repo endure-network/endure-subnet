@@ -246,7 +246,8 @@ the submission-block owner-state recheck are digest-covered in
 [emission_policy.py](../endure/scoring/emission_policy.py); the query itself is
 unwatched RPC I/O, and the emission snapshot now also reads the owner coldkey
 and per-UID coldkeys. The `--endure.devnet_owner_vote` opt-in, which lets only a
-mock or local chain run the testnet owner vote for devnet rehearsals, is
+development chain run the testnet owner vote for devnet rehearsals (the
+validator refuses it on the mock chain), is
 digest-covered in [consensus_policy.py](../endure/protocol/consensus_policy.py). No schema migration is introduced; scoring coefficients,
 the target universe and the no-score owner vote are unchanged. Miners and
 validators must upgrade together. See the

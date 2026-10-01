@@ -130,7 +130,7 @@ from endure.utils.config import (
     owner_vote_network,
     permits_dev_only_runtime,
     require_compression_runtime_allowed,
-    require_dev_only_runtime,
+    require_devnet_owner_vote_allowed,
     require_explicit_netuid,
     require_mainnet_validator_policy,
     require_serving_stage_allowed,
@@ -251,9 +251,7 @@ class Validator(BaseValidatorNeuron):
             require_compression_runtime_allowed(resolved_config)
         if devnet_owner_vote_enabled(resolved_config):
             # Genesis may have shown a loopback endpoint to be a live chain.
-            require_dev_only_runtime(
-                resolved_config, feature="--endure.devnet_owner_vote"
-            )
+            require_devnet_owner_vote_allowed(resolved_config)
         if (
             active_runtime_schema_id(resolved_config) == RISK_SCHEMA_ID
             and int(resolved_config.neuron.num_concurrent_forwards) != 1

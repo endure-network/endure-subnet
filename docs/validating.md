@@ -186,8 +186,8 @@ after three in-place attempts abstains with `owner_commitment_unavailable`. The 
 and rate limit allow the attempt. Every such scored vote, at any rate, requires
 chain `min_allowed_weights` and `max_weight_limit` of `1` and no earned weight
 on a withheld UID, and the owner and the vector's UIDs are re-read at the
-submission block, retrying a transient RPC error in place; a change refuses
-the attempt. Because the rate comes from the owner key, scored attempts on
+submission block, retrying a read error in place (the RPC gate's throttle
+and stall signals excepted); a change refuses the attempt. Because the rate comes from the owner key, scored attempts on
 these networks need a valid owner and abstain with the owner block reasons
 below otherwise. The owner's audit row has null provenance; miners sharing a
 burned vote keep theirs.

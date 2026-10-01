@@ -40,6 +40,7 @@ from endure.utils.config import (
     permits_dev_only_runtime,
     require_compression_runtime_allowed,
     require_dev_only_runtime,
+    require_devnet_owner_vote_allowed,
     require_explicit_netuid,
     require_mainnet_validator_policy,
     require_serving_stage_allowed,
@@ -639,6 +640,21 @@ class TestCheckConfig:
         ):
             check_config(_FakeCls, cfg)
 
+    def test_devnet_owner_vote_is_refused_on_the_mock_chain(
+        self, tmp_path: Path
+    ) -> None:
+        cfg = config(_FakeCls)
+        cfg.logging.logging_dir = str(tmp_path)
+        cfg.wallet.name = "cold"
+        cfg.wallet.hotkey = "hot"
+        cfg.neuron.name = "n"
+        cfg.runtime = argparse.Namespace(mode="mock")
+        cfg.endure.devnet_owner_vote = True
+
+        # The mock chain has no subnet owner or commitment to vote for.
+        with pytest.raises(DevOnlyConfigError, match="needs a local subtensor chain"):
+            check_config(_FakeCls, cfg)
+
     def test_devnet_owner_vote_needs_the_flags_literal_true(self) -> None:
         # A truthy non-bool, such as an auto-created mock attribute, never
         # switches a dev chain onto the owner vote.
@@ -945,7 +961,7 @@ class TestChainIdentityByGenesis:
         # refuses to start with it once genesis names the chain.
         assert owner_vote_network(cfg) == "mainnet"
         with pytest.raises(DevOnlyConfigError):
-            require_dev_only_runtime(cfg, feature="--endure.devnet_owner_vote")
+            require_devnet_owner_vote_allowed(cfg)
 
     @pytest.mark.parametrize(("network", "endpoint"), _LOOPBACK)
     def test_loopback_testnet_node_is_testnet(

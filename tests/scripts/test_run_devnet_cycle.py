@@ -21,6 +21,7 @@ from endure.assessment.coordinates import (
 )
 from endure.assessment.schemas.subnet_alpha_risk import RISK_HORIZONS, RiskOutput
 from endure.assessment.universe import UniverseSnapshot
+from endure.protocol.consensus_policy import MAINNET_GENESIS_HASH, TESTNET_GENESIS_HASH
 from endure.scoring.assessment_orchestrator import REALIZED_TARGET_RESOLVED
 from endure.scoring.risk.orchestrator import risk_coordinate
 from scripts.run_devnet_cycle import (
@@ -351,6 +352,50 @@ def test_burn_mode_runs_only_the_validator_on_the_owner_vote() -> None:
     assert validator[validator.index("--endure.api_port") + 1] == "8714"
     assert "--endure.devnet_owner_vote" not in _command("miner", args=args)
     assert "--endure.devnet_owner_vote" not in _command("validator")
+
+
+DEVNET_GENESIS = "0x" + "ab" * 32
+
+
+@pytest.mark.parametrize(
+    ("network", "genesis"),
+    [
+        ("finney", DEVNET_GENESIS),
+        ("wss://entrypoint-finney.opentensor.ai:443", MAINNET_GENESIS_HASH),
+        # A loopback tunnel to a live node is a live chain.
+        ("ws://127.0.0.1:9944", MAINNET_GENESIS_HASH),
+        ("ws://127.0.0.1:9944", TESTNET_GENESIS_HASH),
+        ("ws://127.0.0.1:9944", None),
+    ],
+)
+def test_run_refuses_a_live_chain_before_any_wallet_or_publish(
+    monkeypatch: pytest.MonkeyPatch, network: str, genesis: str | None
+) -> None:
+    monkeypatch.setattr(runner, "read_chain_genesis", lambda _endpoint: genesis)
+    touched = MagicMock(side_effect=AssertionError("ran before the chain guard"))
+    for name in ("_create_layout", "_wallet_hotkey", "_resolve_bindings"):
+        monkeypatch.setattr(runner, name, touched)
+    monkeypatch.setattr(runner, "_publish_burn_rate", touched)
+
+    with pytest.raises(RuntimeError, match="devnet cycle|cannot identify the chain"):
+        runner._run(_args(network=network, netuid=30, burn_bps=9800, round_seconds=240))
+    touched.assert_not_called()
+
+
+def test_dev_chain_guard_accepts_a_local_devnet(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    endpoints: list[str] = []
+
+    def genesis(endpoint: str) -> str:
+        endpoints.append(endpoint)
+        return DEVNET_GENESIS
+
+    monkeypatch.setattr(runner, "read_chain_genesis", genesis)
+
+    runner._require_dev_chain("ws://127.0.0.1:9946")
+
+    assert endpoints == ["ws://127.0.0.1:9946"]
 
 
 def test_validate_args_requires_a_round_that_outlasts_an_owner_vote() -> None:
@@ -831,6 +876,7 @@ def test_run_stops_the_started_neuron_when_a_later_launch_fails(
 ) -> None:
     args = _args(artifact_root=tmp_path, run_id="p2b")
     layout = _create_layout(args, now=datetime(2026, 8, 20, tzinfo=UTC))
+    monkeypatch.setattr(runner, "read_chain_genesis", lambda _endpoint: DEVNET_GENESIS)
     monkeypatch.setattr(runner, "_create_layout", lambda a, *, now: layout)
     monkeypatch.setattr(runner, "_run_migrations", lambda _url: None)
     monkeypatch.setattr(runner, "_wallet_hotkey", lambda _a, wallet: f"{wallet}-hotkey")

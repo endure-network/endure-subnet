@@ -397,8 +397,11 @@ make devnet-burn-cycle NETUID=2 NETWORK=ws://127.0.0.1:9946 BURN_BPS=9800
 The runner first publishes the rate from the seeded `owner` hotkey with
 `scripts/set_burn_rate.py --publish`, the tool an owner uses on a live chain,
 then starts the validator with `--endure.devnet_owner_vote`. That flag runs the
-testnet owner-vote rules on a mock or local chain and is refused on testnet and
-mainnet, including a loopback endpoint whose genesis names a live chain. On top
+testnet owner-vote rules on a local chain and is refused on the mock chain,
+testnet and mainnet, including a loopback endpoint whose genesis names a live
+chain. Before it reads a wallet or publishes anything, the runner itself
+refuses any endpoint that is not a loopback URL with a development-chain
+genesis, so a mistyped `NETWORK` cannot publish a live burn rate. On top
 of the full-cycle checklist, a passing run requires a confirmed vote that pays
 the miner and gives the owner the published share (checked with the
 validator's own pre-submission rounding bound) and `/health` reporting the

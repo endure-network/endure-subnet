@@ -34,10 +34,16 @@ from endure.assessment.schemas.subnet_alpha_risk import (
     RiskOutput,
 )
 from endure.assessment.subnet_alpha_universe import parse_alpha_risk_universe_members
+from endure.live.alpha_market_data import read_chain_genesis
+from endure.protocol.consensus_policy import (
+    LOCAL_CHAIN_HOSTS,
+    classify_chain,
+    endpoint_host,
+)
 from endure.scoring.emission_policy import BURN_BPS_DENOMINATOR, FULL_BURN_BPS
 from endure.scoring.weight_processing import U16_MAX
 from endure.storage.repository import Storage
-from endure.utils.logging import safe_error
+from endure.utils.logging import safe_endpoint_label, safe_error
 from neurons.validator import _run_migrations
 
 FAULT_NONE = "none"
@@ -262,6 +268,33 @@ def _validate_args(args: DevnetCycleArgs) -> None:
         raise ValueError(
             f"fault runs require --round-seconds >= {MIN_FAULT_ROUND_SECONDS} "
             "so a restarted neuron can rejoin before the reveal window"
+        )
+
+
+def _require_dev_chain(network: str) -> None:
+    """Refuse every chain but a local development one, before any wallet or signature.
+
+    A name cannot tell a devnet from a loopback tunnel to Finney; the genesis
+    hash can. The endpoint must be a loopback URL whose genesis is neither the
+    mainnet nor the testnet one.
+    """
+    label = safe_endpoint_label(network)
+    if (
+        not network.startswith(("ws://", "wss://"))
+        or endpoint_host(network) not in LOCAL_CHAIN_HOSTS
+    ):
+        raise RuntimeError(
+            f"the devnet cycle needs a loopback ws:// endpoint; {label} is refused"
+        )
+    genesis = read_chain_genesis(network)
+    if genesis is None:
+        raise RuntimeError(f"cannot identify the chain at {label}")
+    chain = classify_chain(
+        mock=False, endpoint=network, network=network, genesis=genesis
+    )
+    if chain != "dev":
+        raise RuntimeError(
+            f"the devnet cycle runs only on a local development chain; {label} is {chain}"
         )
 
 
@@ -900,8 +933,9 @@ def _run_succeeded(
 
 def _run(args: DevnetCycleArgs) -> int:
     _validate_args(args)
-    started_at = datetime.now(UTC)
-    layout = _create_layout(args, now=started_at)
+    # Before any wallet read, chain action or signed publish.
+    _require_dev_chain(args.network)
+    layout = _create_layout(args, now=datetime.now(UTC))
     database_url = f"sqlite:///{layout.database}"
     _run_migrations(database_url)
     validator_hotkey = _wallet_hotkey(args, args.validator_wallet)

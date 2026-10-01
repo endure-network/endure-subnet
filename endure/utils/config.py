@@ -251,6 +251,19 @@ def require_dev_only_runtime(config: "bt.Config", *, feature: str) -> None:
     )
 
 
+def require_devnet_owner_vote_allowed(config: "bt.Config") -> None:
+    """Allow the devnet owner vote only on a local chain, never the mock one.
+
+    The mock chain has no subnet owner or burn-rate commitment to vote for.
+    """
+    require_dev_only_runtime(config, feature="--endure.devnet_owner_vote")
+    if _is_mock_runtime(config):
+        raise DevOnlyConfigError(
+            "--endure.devnet_owner_vote needs a local subtensor chain; the mock "
+            "chain has no subnet owner or burn-rate commitment"
+        )
+
+
 def require_explicit_netuid(config: "bt.Config") -> None:
     """Refuse the argparse ``--netuid`` default outside mock/local chains.
 
@@ -408,7 +421,7 @@ def check_config(cls, config: "bt.Config"):
     ):
         require_compression_runtime_allowed(config)
     if devnet_owner_vote_enabled(config):
-        require_dev_only_runtime(config, feature="--endure.devnet_owner_vote")
+        require_devnet_owner_vote_allowed(config)
 
     warn_ignored_options(config)
 
@@ -540,9 +553,9 @@ def add_args(cls, parser):
         action="store_true",
         default=False,
         help=(
-            "Run the testnet owner vote and owner burn rate on a mock/local "
-            "chain, so a devnet rehearses the live emission path; refused on "
-            "testnet/mainnet."
+            "Run the testnet owner vote and owner burn rate on a local chain, "
+            "so a devnet rehearses the live emission path; refused on the mock "
+            "chain, testnet and mainnet."
         ),
     )
     parser.add_argument(
