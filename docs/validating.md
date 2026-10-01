@@ -220,10 +220,14 @@ loops.
 
 The pre-submission recheck re-resolves the snapshot's owner hotkey against the
 exact metagraph, chain identity, and chain constraints the vector was prepared
-from; it does not re-read the on-chain owner. A recheck failure
+from, and from key `2043` re-reads the owner hotkey, owner coldkey, and every
+UID's hotkey and coldkey at the submission block. A recheck failure
 (`owner_vote_vector_invalid` for chain `min_allowed_weights` or
-`max_weight_limit` not `1`, or `owner_snapshot_inconsistent` if the owner UID
-moved) aborts before sending, counts as one failed `set_weights` attempt so
+`max_weight_limit` not `1`, earned weight on a withheld UID, or a vector that
+is not max-scaled with the owner share of the rate; `owner_snapshot_inconsistent`
+if the owner UID moved or the owner or a vector UID's withheld status changed;
+`chain_snapshot_inconsistent` if no owner state was read at the submission
+block or a vector UID changed hands) aborts before sending, counts as one failed `set_weights` attempt so
 health degrades through the failure counter, sets `emission_blocked_reason`,
 and retries at the next epoch rather than in a hot loop. The refused vector is
 recorded in the weight-emission history as a `failed` batch that was never
