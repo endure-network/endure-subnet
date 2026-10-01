@@ -256,11 +256,16 @@ def require_devnet_owner_vote_allowed(config: "bt.Config") -> None:
 
     The mock chain has no subnet owner or burn-rate commitment to vote for.
     """
-    require_dev_only_runtime(config, feature="--endure.devnet_owner_vote")
     if _is_mock_runtime(config):
         raise DevOnlyConfigError(
             "--endure.devnet_owner_vote needs a local subtensor chain; the mock "
             "chain has no subnet owner or burn-rate commitment"
+        )
+    if not permits_dev_only_runtime(config):
+        endpoint = safe_endpoint_label(_effective_chain(config)[0])
+        raise DevOnlyConfigError(
+            "--endure.devnet_owner_vote needs a local subtensor chain; configured "
+            f"endpoint {endpoint!r} is a live or unrecognized chain"
         )
 
 

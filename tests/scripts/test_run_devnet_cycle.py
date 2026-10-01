@@ -548,6 +548,32 @@ def test_miner_burned_decodes_from_its_fixed_point_bits() -> None:
     assert runner._u96f32("unavailable") is None
 
 
+def test_chain_evidence_survives_a_runtime_without_miner_burned(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    subtensor = MagicMock()
+    subtensor.get_metagraph_info.return_value = SimpleNamespace(
+        block=7,
+        hotkeys=["owner-hotkey", "miner-hotkey"],
+        incentives=[0.98, 0.02],
+        emission=["1.0", "0.02"],
+    )
+    subtensor.query_module.side_effect = ValueError(
+        'Storage function "SubtensorModule.MinerBurned" not found'
+    )
+    monkeypatch.setattr(runner.bt, "Subtensor", lambda network: subtensor)
+
+    runner._chain_evidence(
+        _args(), hotkeys={"owner": "owner-hotkey", "miner": "miner-hotkey"}
+    )
+
+    out = capsys.readouterr().out
+    assert "MinerBurned=unavailable (" in out
+    assert "chain owner uid=0: incentive=0.98" in out
+    assert "chain miner uid=1: incentive=0.02" in out
+    subtensor.close.assert_called_once()
+
+
 def test_publish_burn_rate_does_nothing_without_a_rate(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

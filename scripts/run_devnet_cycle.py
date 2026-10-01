@@ -18,6 +18,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
@@ -636,8 +637,9 @@ def _owner_share(
         if weights.get(miner_hotkey, 0) <= 0 or total <= 0:
             continue  # An owner vote, or a vote that does not pay the miner.
         owner = weights.get(owner_hotkey, 0)
-        # The validator's own pre-submission bound on a max-normalized vector:
-        # u16 rounding moves each entry by at most half a unit.
+        # The validator's pre-submission rounding bound on a max-normalized
+        # vector (each u16 entry is off by at most half a unit), counted over
+        # the vote's entries rather than every UID, so slightly stricter.
         within = max(weights.values()) == U16_MAX and 2 * abs(
             BURN_BPS_DENOMINATOR * owner - burn_bps * total
         ) <= BURN_BPS_DENOMINATOR * (len(weights) + 1)
@@ -667,22 +669,34 @@ def _u96f32(value: object) -> Decimal | None:
     return Decimal(bits) / Decimal(2**32) if type(bits) is int else None
 
 
-def _chain_evidence(args: DevnetCycleArgs, *, hotkeys: dict[str, str]) -> None:
-    """Print what the chain did with the vote; evidence, never the verdict."""
+def _evidence[T](read: Callable[[], T]) -> T | str:
     try:
-        subtensor = bt.Subtensor(network=args.network)
-        try:
-            info = subtensor.get_metagraph_info(netuid=args.netuid)
-            burned = subtensor.query_module(
+        return read()
+    except Exception as error:  # noqa: BLE001 - evidence only, never the verdict.
+        return f"unavailable ({safe_error(error)})"
+
+
+def _chain_evidence(args: DevnetCycleArgs, *, hotkeys: dict[str, str]) -> None:
+    """Print what the chain did with the vote; evidence, never the verdict.
+
+    Each read stands alone: runtimes older than ``MinerBurned`` (such as the
+    pinned CI localnet) still print every UID's incentive and emission.
+    """
+    subtensor = _evidence(lambda: bt.Subtensor(network=args.network))
+    if isinstance(subtensor, str):
+        print(f"chain evidence {subtensor}")
+        return
+    try:
+        info = _evidence(lambda: subtensor.get_metagraph_info(netuid=args.netuid))
+        burned = _evidence(
+            lambda: subtensor.query_module(
                 "SubtensorModule", "MinerBurned", params=[args.netuid]
             )
-        finally:
-            subtensor.close()
-    except Exception as error:  # noqa: BLE001 - older runtimes lack MinerBurned.
-        print(f"chain evidence unavailable: {safe_error(error)}")
-        return
-    if info is None:
-        print("chain: subnet metagraph unavailable")
+        )
+    finally:
+        subtensor.close()
+    if info is None or isinstance(info, str):
+        print(f"chain metagraph {info or 'unavailable'}")
         return
     withheld = _u96f32(burned)
     print(

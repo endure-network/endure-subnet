@@ -1245,6 +1245,39 @@ def test_local_chain_keeps_custom_consensus_values(
     assert validator.config.neuron.epoch_length == 7
 
 
+def test_a_loopback_live_node_refuses_the_devnet_owner_vote(
+    production_validator_config: bt.Config,
+) -> None:
+    from endure.protocol.consensus_policy import MAINNET_GENESIS_HASH
+    from endure.utils.config import DevOnlyConfigError
+    from neurons.validator import Validator
+
+    cfg = production_validator_config
+    cfg.netuid = 30
+    cfg.subtensor.network = "local"
+    cfg.subtensor.chain_endpoint = ""
+    cfg.endure.serving_stage = "mainnet"
+    cfg.endure.devnet_owner_vote = True
+    probe = MagicMock(side_effect=AssertionError("archive probe reached"))
+    transport = MagicMock(side_effect=AssertionError("transport opened"))
+
+    # The endpoint says local; the genesis says mainnet, so the opt-in stops
+    # startup before any chain-facing step.
+    with (
+        patch(
+            "neurons.validator.read_chain_genesis", return_value=MAINNET_GENESIS_HASH
+        ),
+        patch("neurons.validator.validate_mainnet_archive", probe),
+        patch("neurons.validator.resolve_runtime_provider", transport),
+        patch("neurons.validator._require_hotkey"),
+        pytest.raises(DevOnlyConfigError, match="needs a local subtensor chain"),
+    ):
+        Validator(config=cfg)
+
+    probe.assert_not_called()
+    transport.assert_not_called()
+
+
 def test_mainnet_compression_is_refused_before_the_archive_probe(
     production_validator_config: bt.Config,
 ) -> None:

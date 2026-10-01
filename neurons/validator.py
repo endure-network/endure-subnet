@@ -149,9 +149,10 @@ _IMMEDIATE_EMISSION_BLOCKS: Final = frozenset(
     {"owner_hotkey_mismatch", "owner_unregistered", "owner_vote_chain_mismatch"}
 )
 _TRANSIENT_EMISSION_BLOCK_EPOCHS: Final = 2
-# An owner read that fails with a transient RPC error is retried in place,
-# paced by the RPC gate; only after the last attempt does the vote wait for
-# the next epoch.
+# An owner read that fails with a read error is retried in place at once: the
+# emission path runs at ESSENTIAL priority, so only the wire-level message
+# limiter spaces the attempts. The vote waits for the next epoch only after the
+# last attempt.
 _OWNER_READ_ATTEMPTS: Final = 3
 # /health reuses the durable confirmation summary this long, so public polling
 # cannot turn into one database query per request; emission events drop it.

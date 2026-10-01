@@ -403,9 +403,9 @@ chain. Before it reads a wallet or publishes anything, the runner itself
 refuses any endpoint that is not a loopback URL with a development-chain
 genesis, so a mistyped `NETWORK` cannot publish a live burn rate. On top
 of the full-cycle checklist, a passing run requires a confirmed vote that pays
-the miner and gives the owner the published share (checked with the
-validator's own pre-submission rounding bound) and `/health` reporting the
-rate, then prints the chain's view of the vote:
+the miner and gives the owner the published share (checked against the
+validator's u16 rounding bound, counted over the vote's entries) and `/health`
+reporting the rate, then prints the chain's view of the vote:
 
 ```text
 [x] owner published burn rate 9800 bps
@@ -416,6 +416,11 @@ chain block <n>: MinerBurned=<withheld proportion>
 chain owner uid=0: incentive=<...> emission=<...>
 chain miner uid=1: incentive=<...> emission=<...>
 ```
+
+The chain lines are evidence, not part of the verdict. On subtensor `v470` a
+9500 bps run showed owner incentive `0.95`, miner `0.05` and `MinerBurned`
+`0.9500`; runtimes older than `MinerBurned`, such as the pinned CI localnet,
+print it as unavailable and still show the incentive and emission lines.
 
 Burn runs use 240-second rounds. The owner vote submits from the first epoch,
 and each SDK `set_weights` call holds the validator loop for tens of seconds on

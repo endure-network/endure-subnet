@@ -635,9 +635,7 @@ class TestCheckConfig:
         cfg.endure.serving_stage = "testnet" if network == "test" else "mainnet"
         cfg.subtensor.network = network
 
-        with pytest.raises(
-            RuntimeError, match="--endure.devnet_owner_vote is dev-only"
-        ):
+        with pytest.raises(DevOnlyConfigError, match="needs a local subtensor chain"):
             check_config(_FakeCls, cfg)
 
     def test_devnet_owner_vote_is_refused_on_the_mock_chain(
