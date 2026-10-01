@@ -1,5 +1,35 @@
 # Changelog
 
+## Unreleased — owner burn rate
+
+Protocol key `2043`; miners and validators must upgrade together. Published
+key-2042 images and chain parameters are not changed by this source update.
+
+- Add an owner-controlled burn rate. On served mainnet SN30 and testnet, a
+  scored weight attempt reads the subnet owner hotkey's commitment at the
+  emission snapshot block. `endure.burn_bps=<0..10000>` gives that share of the
+  vote to the owner UID, whose miner emission the chain burns; miners share the
+  rest by earned weight, and the owner's own score is excluded. A missing or
+  malformed commitment burns the whole vote, so miners are paid only on the
+  owner's explicit instruction; `endure.burn_bps=0` keeps the key-2042 earned
+  vector. A new rate applies at each validator's next weight attempt, with no
+  flag change or restart. With no positive score the owner vote is unchanged.
+- Scored votes on owner-vote networks now require a valid subnet owner (the
+  pinned SN30 owner on mainnet) and abstain with the owner-vote block reasons
+  otherwise, because the burn rate is only as trustworthy as the key that
+  publishes it. A failed commitment read propagates like a failed snapshot read.
+- Extend the pre-submission recheck to burned vectors: it requires chain
+  `min_allowed_weights` and `max_weight_limit` of `1` and an owner u16 share
+  within the encoding's rounding bound of the burn rate.
+- Record no score provenance on the owner's audit row while miners sharing a
+  burned vote keep theirs, and report the last planned rate as
+  `emission_burn_bps` in `/health`.
+- Add `scripts/set_burn_rate.py` to read the rate, or publish one from the
+  owner hotkey and read it back after finalization.
+- Digest-cover the commitment record decoding and grammar, the full-burn
+  default, the blended raw vector and the burn-share recheck
+  (`emission_policy.py`). No schema migration or new dependency.
+
 ## v0.1.1 — SN30 correctness cutover
 
 Protocol key `2042`; miners and validators must upgrade together. Chain

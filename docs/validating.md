@@ -116,6 +116,7 @@ Beyond `round_resolution`, monitor the `runtime` block of `/health`:
 | `weight_emission_degraded`, `consecutive_set_weights_failures` | `false`, `0` | any degradation — emissions at risk |
 | `emission_mode`, `emission_reason`, `emission_blocked_reason` | intended mode and a known progress/wait reason | unexpected mode, an owner/chain-safety abstain reason (`/health` 503 immediately or after 2 epochs, see below), or a retained identity/vector failure |
 | `emission_expected`, `emission_next_eligible_block` | expected only after eligibility; next block where known | eligibility fails to advance without an explained gate |
+| `emission_burn_bps` | the rate the owner published; `10000` during the owner vote | `10000` while scored when the owner intended a lower rate (its commitment is missing or malformed) |
 | `emission_submission_overdue`, `emission_deadline_in_seconds` | `false`; nonnegative while expected | overdue, including when no first batch was ever persisted |
 | `emission_confirmation_deadline_block` | pending submission remains within its deadline | cached chain block passes the durable deadline without confirmation |
 | `last_confirmed_weights_at` | advances when emission is eligible | it stalls for multiple epochs during an eligible owner vote or while positive earned scores exist |
@@ -173,6 +174,16 @@ accuracy. Validator permit, chain constraints, rate limits, startup fencing,
 one-in-flight submission, and finalized confirmation still gate the normal
 durable emission pipeline. Owner-vote audit rows have null earned-score and
 precap provenance.
+
+From key `2043`, a scored attempt on those networks also gives the owner UID
+the [owner burn rate](running_on_mainnet.md#owner-burn-rate): the basis points
+the owner hotkey publishes as its subnet commitment `endure.burn_bps=<0..10000>`,
+read at the snapshot block. Miners share the rest by earned weight. A missing or
+malformed commitment burns the whole vote, and a zero rate keeps the earned
+vector unchanged. Because the rate comes from the owner key, scored attempts on
+these networks need a valid owner and abstain with the owner block reasons
+below otherwise. The owner's audit row has null provenance; miners sharing a
+burned vote keep theirs.
 
 Both `scored` and `owner_vote` plan each attempt from one chain snapshot:
 validator identity, validator permit, and Subtensor's strict weights rate limit

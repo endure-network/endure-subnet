@@ -69,6 +69,24 @@ disables both modes indefinitely and is never auto-enabled by scores. Follow the
 external weight setter or later flag-changing restart. Key `2042` ships as
 [`v0.1.1`](releases/v0.1.1.md); it does not change chain parameters.
 
+## Owner burn rate
+
+Key `2043` gives the subnet owner a standing share of every scored vote: the
+burn rate its hotkey publishes as its subnet commitment,
+`endure.burn_bps=<0..10000>`. Miners share the rest by earned weight; the chain
+burns the owner's share. A missing or malformed commitment burns the whole vote.
+The rate lets the owner open miner emission gradually: for example 98% at
+launch, stepped down as miner quality and independence are established. It is
+an allocation decision by the owner, not a measure of miner accuracy, and it
+does not address the qualification requirements above.
+
+The rate has an emission cost. Subtensor scales a subnet's share of network TAO
+emission by `1 − MinerBurned`, the share of miner emission withheld by owner
+hotkeys, so a high rate keeps SN30's TAO emission near zero while it lasts.
+Validators read the rate independently at their next weight attempt, so during
+a change they can briefly disagree; Yuma consensus applies the rate held by the
+stake majority. See the [owner burn rate](running_on_mainnet.md#owner-burn-rate).
+
 ## Conditional determinism
 
 Equal protocol keys do not imply equal live weights. Independent push delivery,

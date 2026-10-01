@@ -119,6 +119,7 @@ class RuntimeHealth(TypedDict):
     emission_reason: NotRequired[str]
     emission_blocked_reason: NotRequired[str | None]
     emission_expected: NotRequired[bool]
+    emission_burn_bps: NotRequired[int | None]
     emission_next_eligible_block: NotRequired[int | None]
     emission_expected_seconds: NotRequired[float | None]
     emission_deadline_in_seconds: NotRequired[float | None]

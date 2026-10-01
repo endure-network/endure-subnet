@@ -187,6 +187,24 @@ disables both modes indefinitely; neither positive scores nor elapsed time
 automatically enables emission. See the
 [mainnet cutover](../running_on_mainnet.md#coordinated-cutover).
 
+**Owner burn rate (key `2043`)**: on the same networks, a scored attempt also
+reads the commitment of the snapshot's `SubnetOwnerHotkey` on the subnet at the
+snapshot block. The exact text `endure.burn_bps=<n>`, with `n` an integer from
+`0` to `10000` written without sign, leading zero or whitespace, gives the
+owner UID `n / 10000` of the raw vector; every other UID receives
+`(1 − n / 10000)` times its normalized positive score, and the owner's own
+score is excluded. The commitment record must be exactly one UTF-8 `Raw` field.
+Anything else, including no record, burns the whole vote (the owner vote
+vector), as does a burn with no other positive score; `n = 0` leaves the earned
+vector unchanged. Scored attempts on owner-vote networks therefore require the
+owner resolution above, even at `n = 0`. The pre-submission recheck requires
+chain `min_allowed_weights` and `max_weight_limit` of `1` and bounds the owner's
+u16 share: `2 * |10000 * u_owner - n * sum(u)| <= 10000 * (N + 1)` for a
+metagraph of `N` UIDs, the worst case of half-unit rounding per entry. The rate
+is an owner allocation, not miner reputation; it writes no scores or EMAs, and
+the owner's audit row has null provenance. See the
+[owner burn rate](../running_on_mainnet.md#owner-burn-rate).
+
 ### Round lifecycle and per-horizon resolution
 
 Rounds keep `open → revealed → closed`. On each validator tick, every

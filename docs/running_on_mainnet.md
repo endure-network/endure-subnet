@@ -155,8 +155,9 @@ again whenever every scored miner has been archived (EMA below the archive
 epsilon, or deregistration confirmed over 2 consecutive metagraph resyncs) — one
 emission-enabled Endure process submits its whole vote (u16 `65535`) to the UID
 of the on-chain `SubnetOwnerHotkey`. As soon as any score is positive, the same
-process submits earned score-derived weights; no flag change or restart is
-needed in either direction, and there is no operator flag for the fallback.
+process submits earned score-derived weights, less the
+[owner burn rate](#owner-burn-rate) from key `2043`; no flag change or restart
+is needed in either direction, and there is no operator flag for the fallback.
 Mock and local chains keep abstaining in the all-zero case. The owner vote is a
 fallback allocation, not earned miner reputation and not evidence of model
 accuracy. It writes no synthetic scores/EMAs, and its audit rows have null
@@ -174,6 +175,63 @@ pipeline; a submission is not an immediate finalized confirmation. The
 [reference setter](https://github.com/endure-network/bittensor-validator-repo/blob/main/validator.py)
 is context for the owner, permit, and rate checks, not a second writer to run
 alongside Endure.
+
+### Owner burn rate
+
+Key `2043` lets the owner keep part of every earned vote. At each scored
+attempt on served mainnet SN30 or testnet, the validator reads the subnet owner
+hotkey's commitment on the subnet at the snapshot block:
+
+```text
+endure.burn_bps=<0..10000>
+```
+
+The owner UID receives that many basis points of the vote and miners share the
+rest by earned weight; the owner's own score, if any, is excluded. The chain
+burns miner emission that reaches the owner hotkey (SN30's `RecycleOrBurn` is
+`Burn`). The rule is strict:
+
+| Owner commitment | Vote of a scored attempt |
+| --- | --- |
+| `endure.burn_bps=9800` | 98% to the owner UID, 2% to miners by earned weight |
+| `endure.burn_bps=0` | the earned vector alone, as in key `2042` |
+| `endure.burn_bps=10000`, missing, or anything else | the whole vote to the owner UID |
+
+Anything else includes surrounding whitespace, a leading zero or plus sign, a
+value above `10000`, a second field and non-UTF-8 data, so miners are paid only
+on the owner's explicit instruction. With no positive score the owner vote
+applies whatever the commitment says. Because the rate comes from the owner
+key, scored votes on owner-vote networks also need a valid owner: the owner
+block reasons below stop earned weights too, even at a zero rate. A failed
+commitment read is handled like a failed snapshot read and retried at the next
+attempt. The pre-submission recheck requires chain `min_allowed_weights` and
+`max_weight_limit` of `1` and an owner u16 share within the encoding's
+rounding bound of the rate.
+
+Read or publish the rate with the owner tool. Publishing is signed by the owner
+hotkey, waits for finalization and reads the value back; it refuses any other
+hotkey:
+
+```bash
+python scripts/set_burn_rate.py --network finney --netuid 30
+python scripts/set_burn_rate.py --network finney --netuid 30 \
+  --wallet-name <owner-wallet> --wallet-hotkey <owner-hotkey> --publish 9800
+```
+
+Each validator applies a new rate at its next weight attempt, about every 40
+minutes on SN30, without a flag change or restart. Validators read the
+commitment independently, so for one attempt cycle they can disagree; Yuma
+consensus clips each UID's weight to the stake-weighted median (`Kappa` 0.5),
+so a change takes full effect once validators holding a stake majority apply
+it. `/health` reports the rate of the last planned attempt as
+`emission_burn_bps`: `10000` for the owner vote, `null` before the first plan
+and on development chains.
+
+Burning has a chain-level cost. Subtensor records the share of each tempo's
+miner emission withheld by owner hotkeys, burned or recycled alike, as
+`MinerBurned`, and scales the subnet's share of TAO emission by
+`1 − MinerBurned`. At a 98% rate SN30's TAO emission therefore stays near zero,
+and it recovers as the owner lowers the rate.
 
 Both modes, `scored` and `owner_vote`, plan each attempt from one chain
 snapshot: validator identity, validator permit, and Subtensor's strict weights
@@ -258,9 +316,12 @@ RPC/inclusion/finality delays, and the health detection window below. Postpone a
 cutover with insufficient headroom; this release cannot instantly rescue a
 validator already approaching inactivity.
 
-1. Agree the key-2042 release and canonical policy with independently operated
+1. Agree the key-2043 release and canonical policy with independently operated
    validators before asking miners to register. Promote qualified images through
-   the existing release process and pin their digests.
+   the existing release process and pin their digests. Miners upgrade in the
+   same window: validators reject submissions carrying another protocol key.
+   Publish the intended [owner burn rate](#owner-burn-rate) before the cutover;
+   until it is published, key-2043 validators burn the whole vote.
 2. Back up and preserve the distinct mainnet database and use a read-only
    host-mounted mainnet hotkey. Never copy testnet score state or use the
    testnet wallet-archive bootstrap. Use a consistent SQLite backup
@@ -272,24 +333,25 @@ validator already approaching inactivity.
    `--endure.max_reveals_per_round` and `--neuron.epoch_length` (the
    `MIN_MINER_STAKE` and `EPOCH_LENGTH` template variables) from start scripts.
    The v0.1.0 validator logged advice to pass `--endure.min_miner_stake` with a
-   positive TAO floor on live networks; key 2042 ignores that value with a
-   warning and runs the protocol floor `0`, so leftover values are harmless but
-   misleading.
+   positive TAO floor on live networks; since key 2042 the validator ignores
+   that value with a warning and runs the protocol floor `0`, so leftover values
+   are harmless but misleading.
    Also delete the [options that no longer do anything](#ignored-options).
 3. Stop the old weight writer before starting Endure. Keep exactly one writer
    per hotkey; do not run an external weight setter beside it.
 4. Start one final emission-enabled Endure process, with the axon on and
    `--neuron.disable_set_weights` omitted (default `false`). Verify archive
    readiness, accepted submissions, and durable weight confirmations. The
-   process submits the owner vote while no score is positive and earned
-   weights as soon as one is. No later operator flag flip or restart is needed.
+   process submits the owner vote while no score is positive and, as soon as
+   one is, earned weights less the owner burn rate. No later operator flag flip
+   or restart is needed.
 5. An explicitly true `disable_set_weights` is an indefinite off switch for both
    modes, not an unattended cutover configuration. Scores never auto-enable it.
    Do not raise chain `weights_version` for this cutover: SN30's value is
-   `2040` and Subtensor accepts a `version_key` at or above it, so key-`2042`
+   `2040` and Subtensor accepts a `version_key` at or above it, so key-`2043`
    submissions are accepted unchanged. Raising it is a later, deliberate owner
-   decision only after every permit validator runs `2042`; raising it earlier
-   would reject validators still on `2040`.
+   decision only after every permit validator runs the new key; raising it
+   earlier would reject validators still on an older key.
 
 First emission is not immediate even with healthy RPC. In direct mode with the
 default 100-block epoch, an example schedule is: block `1000` seeds pacing;

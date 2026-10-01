@@ -10,10 +10,10 @@ so constants cannot drift outside the contract again.
 from pathlib import Path
 
 ACTIVATED_VERSION_REGISTRY_DIGEST = (
-    "e52b5bfa53ba0443bfd427887fdc0fdb93c3dbc9c915d7581fa41f239a83f2c1"
+    "18d9ff6663b5d1217feef3e04da9c61e7e2dc2d007170cddb276f0a58690095e"
 )
 ACTIVATED_VERSION_HISTORY_DIGEST = (
-    "1cd6c2a53bbf4d4d11cbdaefada0327afb67640b10f1a04e7d18656c38c4ee32"
+    "3ffe412a94b4670520fcb90a400c8ebdc2d0af21bebe149e8114d70a8cc0ec48"
 )
 
 WATCHED_PATHS = (
@@ -30,9 +30,9 @@ WATCHED_PATHS = (
 # Previous accepted protocol snapshot. When watched paths change, promote the
 # current values into the previous fields, then write the new digest and bump
 # the current version key.
-PREVIOUS_VERSION_KEY = 2041
+PREVIOUS_VERSION_KEY = 2042
 PREVIOUS_VERSION_DIGEST = (
-    "570989ed4a3e73bc1283e99742c3931712ec0e3c4aebc96a5aebcc1375ea87f7"
+    "224eebd7dfcaa588c0a6aa94116d95a7851e44cb7c3a2e3260046de354f2b4a2"
 )
 
 # Production serving status and CURRENT_VERSION_KEY stay unchanged until R6.
@@ -141,7 +141,18 @@ PREVIOUS_VERSION_DIGEST = (
 # reads). Unwatched runtime code performs RPC/SQLite I/O, CLI plumbing, process
 # lifecycle, the startup archive-probe schedule, and non-consensus health
 # severity.
-CURRENT_VERSION_KEY = 2042
+# 2043: the owner burn rate. On served mainnet SN30 and testnet, a scored vote
+# gives the subnet owner UID the burn rate its hotkey publishes as its subnet
+# commitment ``endure.burn_bps=<0..10000>``, read at the emission snapshot
+# block; miners share the rest by earned weight, the owner's own score
+# excluded. A missing or malformed commitment burns the whole vote and a zero
+# rate keeps the key-2042 earned vector, so scored votes on owner-vote networks
+# now require a valid owner (the pinned SN30 owner on mainnet). Watched
+# decisions: the commitment record decoding and grammar, the full-burn default,
+# the blended raw vector, and the pre-submission recheck bounding the owner's
+# u16 share by the encoding's rounding. The commitment read is unwatched RPC
+# I/O; no schema migration.
+CURRENT_VERSION_KEY = 2043
 CURRENT_VERSION_DIGEST = (
-    "224eebd7dfcaa588c0a6aa94116d95a7851e44cb7c3a2e3260046de354f2b4a2"
+    "ea4863747bcfead6848f3a3012e1c4d532fb16f9db7b97f80299eab7bfe90a23"
 )

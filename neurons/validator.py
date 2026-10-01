@@ -89,6 +89,7 @@ from endure.scoring.assessment_orchestrator import ResolutionBudget
 from endure.scoring.eligibility import DeregistrationTracker, scoring_set
 from endure.scoring.emission_policy import (
     CHAIN_SNAPSHOT_METAGRAPH_INDICES,
+    FULL_BURN_BPS,
     ChainSnapshot,
     EmissionBlocked,
     EmissionBlockReason,
@@ -284,6 +285,7 @@ class Validator(BaseValidatorNeuron):
         self._emission_next_eligible_block: int | None = None
         self._emission_chain_due_block: int | None = None
         self._emission_blocked_reason: str | None = None
+        self._emission_burn_bps: int | None = None
         self._handlers = SubmissionHandlers(
             storage=self._storage,
             schema_id=self._schema_id,
@@ -530,6 +532,7 @@ class Validator(BaseValidatorNeuron):
                 or getattr(self, "_emission_block", None)
             ),
             "emission_expected": self._emission_expected_since is not None,
+            "emission_burn_bps": getattr(self, "_emission_burn_bps", None),
             "emission_next_eligible_block": self._emission_next_eligible_block,
             "emission_expected_seconds": (
                 None
@@ -973,7 +976,7 @@ class Validator(BaseValidatorNeuron):
         return due
 
     def set_weights(self) -> None:
-        """Emit earned weights, or the owner vote whenever no score is positive.
+        """Emit earned weights less the owner's burn, or the owner vote when idle.
 
         The score vector is rebuilt from durable EMAs first, so a restart, a
         failed tick or a metagraph resync never reads as zero scores. The
@@ -1153,6 +1156,19 @@ class Validator(BaseValidatorNeuron):
                 weights_rate_limit=info.weights_rate_limit,
             )
         )
+        # The burn rate of an earned vote is the owner's commitment at the
+        # snapshot block; a read failure propagates like the snapshot read.
+        owner_commitment = (
+            self.subtensor.get_commitment_metadata(
+                netuid, snapshot.owner_hotkey, block=block
+            )
+            if mode == "scored"
+            and network is not None
+            and snapshot is not None
+            and snapshot.block == block
+            and snapshot.owner_hotkey
+            else None
+        )
         try:
             plan = plan_emission(
                 mode=mode,
@@ -1165,6 +1181,7 @@ class Validator(BaseValidatorNeuron):
                 validator_hotkey=str(self.wallet.hotkey.ss58_address),
                 local_hotkeys=self.metagraph.hotkeys,
                 scores=self.scores,
+                owner_commitment=owner_commitment,
             )
         except EmissionBlocked as blocked:
             self._block_emission(blocked, block)
@@ -1174,6 +1191,7 @@ class Validator(BaseValidatorNeuron):
             self._emission_chain_due_block = plan.next_eligible_block
             self._emission_snapshot_permit = plan.permit
             self._emission_snapshot_block = block
+            self._emission_burn_bps = plan.burn_bps
         if not plan.due:
             self._defer_emission(
                 "no_validator_permit" if not plan.permit else "chain_rate_limit"
@@ -1197,18 +1215,24 @@ class Validator(BaseValidatorNeuron):
         storage = getattr(self, "_storage", None)
         if storage is None:
             return []
+        recipient: OwnerVoteRecipient | None = getattr(
+            self, "_owner_vote_recipient", None
+        )
+        # The owner's allocation is never earned: its row has no score
+        # provenance, while miners sharing a burned vote keep theirs.
         blended = (
             {}
-            if getattr(self, "_owner_vote_recipient", None) is not None
+            if recipient is not None and recipient.burn_bps == FULL_BURN_BPS
             else self._emission_blended_snapshot()
         )
+        owner_uid = None if recipient is None else recipient.uid
         u16_by_uid = dict(zip(attempt.uint_uids, attempt.uint_weights, strict=True))
         rows: list[WeightEmissionRow] = []
         for uid, processed in zip(
             attempt.processed_uids, attempt.processed_weights, strict=True
         ):
             hotkey = attempt.hotkeys[uid] if uid < len(attempt.hotkeys) else ""
-            score = blended.get(hotkey)
+            score = None if uid == owner_uid else blended.get(hotkey)
             precap = (
                 attempt.raw_weights[uid]
                 if score is not None and uid < len(attempt.raw_weights)
