@@ -169,6 +169,7 @@ class MockSubtensor(Subtensor):
 
 class NeuronInfo:
     hotkey: str
+    coldkey: str
     validator_permit: bool
     last_update: int
 

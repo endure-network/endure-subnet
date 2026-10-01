@@ -22,10 +22,14 @@ key-2042 images and chain parameters are not changed by this source update.
   publishes it. The commitment is read from the snapshot's owner at the
   snapshot block, and a record newer than that block is refused. A failed read
   abstains with `owner_commitment_unavailable` and is retried next epoch.
-- Extend the pre-submission recheck to burned vectors: it requires chain
-  `min_allowed_weights` and `max_weight_limit` of `1`, a max-scaled u16 vector
-  with unique UIDs, and an owner share within the encoding's rounding bound of
-  the burn rate.
+- Recheck every scored vote on owner-vote networks before sending, at any rate
+  including zero: chain `min_allowed_weights` and `max_weight_limit` of `1`, no
+  earned weight on a withheld UID, a max-scaled u16 vector with unique UIDs,
+  and an owner share within the encoding's rounding bound of the burn rate.
+  The owner and the vector's UIDs are then re-read at the submission block, and
+  an owner, coldkey or registration change refuses the attempt.
+- Read the owner commitment only once owner resolution, permit and the strict
+  rate limit allow the attempt.
 - Record no score provenance on the owner's audit row while miners sharing a
   burned vote keep theirs, and report the planned rate as `emission_burn_bps`
   in `/health` (`null` while abstaining or disabled).

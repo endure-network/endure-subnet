@@ -240,8 +240,9 @@ hotkeys, so scored votes on owner-vote networks now require a valid owner (the
 pinned SN30 owner on mainnet); an unreadable commitment abstains with
 `owner_commitment_unavailable`. The commitment read decision and its binding to
 the snapshot owner and block, the record decoding and grammar, the full-burn
-default, the chain-withheld set, the blended raw vector, and the pre-submission
-recheck bounding the owner's u16 share are digest-covered in
+default, the chain-withheld set, the blended raw vector, the pre-submission
+recheck at every rate (chain limits, withheld UIDs, the owner's u16 share), and
+the submission-block owner-state recheck are digest-covered in
 [emission_policy.py](../endure/scoring/emission_policy.py); the query itself is
 unwatched RPC I/O, and the emission snapshot now also reads the owner coldkey
 and per-UID coldkeys. No schema migration is introduced; scoring coefficients,
@@ -250,12 +251,12 @@ validators must upgrade together. See the
 [owner burn rate](running_on_mainnet.md#owner-burn-rate).
 
 Its watched-tree digest is
-`04e57e3a3c049940d32502a93fe81edae9bba7072c112b443542940a81d92ecd`.
+`a99ca1c68ea0af88ab9ed9cc972d4520bc93f1cc6cdd1528a3f2dc4fc4a3893f`.
 The public lease authority receipt uses
 `PREVIOUS_RECEIPT=bf6e2d6b4c21e0b2568db7253ebcfd43c5a8422f2f8dbcf6dfebf4294c4b6714`,
 `CURRENT_VERSION_KEY=2043`, and
-`CURRENT_VERSION_DIGEST=04e57e3a3c049940d32502a93fe81edae9bba7072c112b443542940a81d92ecd`
+`CURRENT_VERSION_DIGEST=a99ca1c68ea0af88ab9ed9cc972d4520bc93f1cc6cdd1528a3f2dc4fc4a3893f`
 under the `LEASE_AUTHORITY` format above, producing
-`0c07d240cdb8bf658084d543447b41d9b590871a53c8e05fd5d6e5175e4e93d5`.
+`2a8a5b685ed97af2f24a69d24b332a194d24ccb0f74b49528ad1a3f5b9286b3f`.
 SN30's chain `weights_version` of `2040` accepts key-`2043` submissions
 unchanged.

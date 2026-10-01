@@ -39,7 +39,11 @@ from endure.protocol.round_engine import DEFAULT_OFFSETS, compute_fixed_utc_wind
 from endure.protocol.schedulers import FixedUtcScheduler
 from endure.protocol.version_contract import CURRENT_VERSION_KEY
 from endure.protocol.vertical import AssessmentRoundProgram, VerticalRuntime
-from endure.scoring.emission_policy import FULL_BURN_BPS, owner_burn_weights
+from endure.scoring.emission_policy import (
+    FULL_BURN_BPS,
+    OWNER_STATE_METAGRAPH_INDICES,
+    owner_burn_weights,
+)
 from endure.scoring.market_data import recorded_mainnet_fixture_provider
 from endure.scoring.risk.orchestrator import RiskScoringOrchestrator, risk_coordinate
 from endure.scoring.weight_processing import chain_weight_vector, emission_candidate
@@ -1064,8 +1068,10 @@ def test_scored_mainnet_vote_abstains_while_the_owner_is_not_the_pinned_key(
     publish_burn(chain, 0)
     validator.set_weights()
 
-    # A burn rate from an unpinned key is never trusted, even a zero one.
+    # A burn rate from an unpinned key is never trusted, even a zero one,
+    # and is not even read.
     assert chain.submissions == []
+    assert chain.commitment_reads == []
     assert validator._observed_emission_mode() == "abstain"
     assert validator._emission_reason == "owner_hotkey_mismatch"
 
@@ -1179,3 +1185,81 @@ def test_a_miner_under_the_owner_coldkey_never_earns_weight(
     assert abs(Decimal(shares[176]) / sum(weights) - Decimal("0.98")) < Decimal(
         "0.0001"
     )
+
+
+def test_a_zero_rate_is_refused_rather_than_padded_onto_withheld_uids(
+    storage: Storage, mock_validator_config: bt.Config
+) -> None:
+    chain = ReplayChain(storage)
+    record_resolved_scores(storage, chain)
+    validator = replay_validator(storage, mock_validator_config, chain)
+    advance_past_startup_fence(validator, chain)
+    # A chain minimum above the miner count pads every UID with a floor
+    # weight, the owner and its coldkey's hotkeys included.
+    chain.minimum = 3
+    validator.set_weights()
+
+    assert chain.submissions == []
+    assert validator._emission_reason == "owner_vote_vector_invalid"
+    [batch] = storage.weight_emission_history(RISK_SCHEMA_ID)
+    assert batch["status"] == "failed"
+
+
+@pytest.mark.parametrize("change", ["owner_coldkey", "owner_hotkey", "miner_coldkey"])
+def test_owner_changes_before_submission_refuse_the_prepared_vote(
+    storage: Storage, mock_validator_config: bt.Config, change: str
+) -> None:
+    chain = ReplayChain(storage)
+    publish_burn(chain, 9800)
+    record_resolved_scores(storage, chain)
+    validator = replay_validator(storage, mock_validator_config, chain)
+    advance_past_startup_fence(validator, chain)
+    original = chain.get_metagraph_info
+
+    def transferred(
+        netuid: int, *, selected_indices: list[int], block: int
+    ) -> SimpleNamespace:
+        info = original(netuid, selected_indices=selected_indices, block=block)
+        if selected_indices == list(OWNER_STATE_METAGRAPH_INDICES):
+            # The subnet changes owner between planning and sending.
+            if change == "owner_coldkey":
+                info.owner_coldkey = "buyer-coldkey"
+            elif change == "owner_hotkey":
+                info.owner_hotkey = "buyer-hotkey"
+            else:
+                info.coldkeys = [*info.coldkeys]
+                info.coldkeys[1] = chain.owner_coldkey
+        return info
+
+    chain.get_metagraph_info = transferred
+    validator.set_weights()
+
+    # The 98% share would otherwise pay a former owner instead of burning.
+    assert chain.submissions == []
+    assert validator._emission_reason == "owner_snapshot_inconsistent"
+    [batch] = storage.weight_emission_history(RISK_SCHEMA_ID)
+    assert batch["status"] == "failed"
+
+    chain.get_metagraph_info = original
+    validator._last_weights_attempt = None
+    validator.set_weights()
+    assert chain.submissions == [burned_vector(validator, chain, 9800)]
+
+
+def test_an_ineligible_attempt_never_reads_the_burn_rate(
+    storage: Storage, mock_validator_config: bt.Config
+) -> None:
+    chain = ReplayChain(storage)
+    publish_burn(chain, 9800)
+    record_resolved_scores(storage, chain)
+    validator = replay_validator(storage, mock_validator_config, chain)
+    advance_past_startup_fence(validator, chain)
+    chain.permits[0] = False
+    validator.set_weights()
+    chain.permits[0] = True
+    chain.last_updates[0] = chain.block - chain.weights_rate_limit
+    validator.set_weights()
+
+    assert validator._emission_reason == "chain_rate_limit"
+    assert chain.commitment_reads == []
+    assert chain.submissions == []

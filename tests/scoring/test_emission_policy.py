@@ -4,7 +4,6 @@ import dataclasses
 import random
 import re
 from decimal import Decimal
-from typing import Literal
 
 import pytest
 from bittensor.core.chain_data.metagraph_info import (
@@ -25,8 +24,8 @@ from endure.scoring.emission_policy import (
     ChainSnapshot,
     EmissionBlocked,
     OwnerCommitment,
+    OwnerState,
     OwnerVoteRecipient,
-    burn_commitment_owner,
     burn_commitment_text,
     chain_withheld_uids,
     commitment_text,
@@ -35,6 +34,7 @@ from endure.scoring.emission_policy import (
     owner_vote_weights,
     parse_burn_rate,
     plan_emission,
+    recheck_owner_state,
     recheck_owner_vote,
     resolve_owner_vote_uid,
     select_emission_mode,
@@ -384,11 +384,18 @@ def test_both_modes_plan_the_strict_rate_limit_from_one_snapshot(
     assert plan.due is due
     assert plan.next_eligible_block == last_update + 181
     if mode == "scored":
-        assert plan.weights == tuple(scores) and plan.recipient is None
-        assert plan.burn_bps == 0
+        assert plan.weights == tuple(scores) and plan.burn_bps == 0
+        assert plan.recipient is not None and plan.recipient.burn_bps == 0
     else:
         assert plan.weights == (Decimal(0), Decimal(0), Decimal(1))
-        assert plan.recipient == OwnerVoteRecipient("mainnet", SN30_OWNER_HOTKEY, 2)
+        assert plan.recipient == OwnerVoteRecipient(
+            "mainnet",
+            SN30_OWNER_HOTKEY,
+            2,
+            FULL_BURN_BPS,
+            OWNER_COLDKEY,
+            frozenset({2}),
+        )
         assert plan.burn_bps == FULL_BURN_BPS
 
 
@@ -603,14 +610,15 @@ def test_a_scored_plan_applies_the_published_burn_rate() -> None:
     plan = _plan_scored(commitment_record("endure.burn_bps=9800"))
 
     assert plan.burn_bps == 9800
-    assert plan.recipient == OwnerVoteRecipient("mainnet", SN30_OWNER_HOTKEY, 3, 9800)
+    assert plan.recipient == OwnerVoteRecipient(
+        "mainnet", SN30_OWNER_HOTKEY, 3, 9800, OWNER_COLDKEY, frozenset({3})
+    )
     assert plan.weights == owner_burn_weights(BURN_SCORES, owner_uid=3, burn_bps=9800)
 
 
 @pytest.mark.parametrize(
     "commitment",
     [
-        None,
         "",
         commitment_record("endure.burn_bps=9800\n"),
         {"deposit": 0, "block": 1, "info": {"fields": ["ResetBondsFlag"]}},
@@ -624,7 +632,7 @@ def test_a_scored_plan_without_a_usable_burn_rate_is_the_owner_vote(
 
     assert plan.burn_bps == FULL_BURN_BPS
     assert plan.weights == owner_vote_weights(len(BURN_HOTKEYS), 3)
-    assert plan.recipient == OwnerVoteRecipient("mainnet", SN30_OWNER_HOTKEY, 3)
+    assert plan.recipient is not None and plan.recipient.burn_bps == FULL_BURN_BPS
 
 
 def test_a_zero_burn_rate_keeps_the_earned_vector_unchanged() -> None:
@@ -632,7 +640,10 @@ def test_a_zero_burn_rate_keeps_the_earned_vector_unchanged() -> None:
 
     assert plan.burn_bps == 0
     assert plan.weights == BURN_SCORES
-    assert plan.recipient is None
+    # The owner context stays attached so the recheck still runs at 0%.
+    assert plan.recipient == OwnerVoteRecipient(
+        "mainnet", SN30_OWNER_HOTKEY, 3, 0, OWNER_COLDKEY, frozenset({3})
+    )
 
 
 def test_development_chains_never_read_a_burn_rate() -> None:
@@ -752,37 +763,30 @@ def test_the_recheck_refuses_a_vector_that_misstates_the_burn(
     assert blocked.value.reason == "owner_vote_vector_invalid"
 
 
-@pytest.mark.parametrize(
-    ("mode", "network", "snapshot", "block", "expected"),
-    [
-        ("scored", "mainnet", _burn_snapshot(), 1000, SN30_OWNER_HOTKEY),
-        ("scored", "testnet", _burn_snapshot(), 1000, SN30_OWNER_HOTKEY),
-        ("owner_vote", "mainnet", _burn_snapshot(), 1000, None),
-        ("scored", None, _burn_snapshot(), 1000, None),
-        ("scored", "mainnet", None, 1000, None),
-        ("scored", "mainnet", _burn_snapshot(), 1001, None),
-        (
-            "scored",
-            "mainnet",
-            dataclasses.replace(_burn_snapshot(), owner_hotkey=None),
-            1000,
-            None,
-        ),
-    ],
-)
-def test_only_a_scored_vote_network_attempt_reads_the_owner_commitment(
-    mode: Literal["scored", "owner_vote"],
-    network: OwnerVoteNetwork | None,
-    snapshot: ChainSnapshot | None,
-    block: int,
-    expected: str | None,
-) -> None:
-    assert (
-        burn_commitment_owner(
-            mode=mode, network=network, snapshot=snapshot, block=block
-        )
-        == expected
+def test_only_a_due_scored_vote_asks_for_the_owner_commitment() -> None:
+    # Owner, permit and rate limit pass first; the plan has nothing to send.
+    plan = _plan_scored(None)
+    assert plan.commitment_owner == SN30_OWNER_HOTKEY
+    assert plan.weights == () and plan.recipient is None and plan.burn_bps is None
+
+    rate_limited = dataclasses.replace(_burn_snapshot(), last_update=[900, 0, 0, 0])
+    assert _plan_scored(None, snapshot=rate_limited).commitment_owner is None
+    assert _plan_scored(None, network=None).commitment_owner is None
+    only_withheld = (Decimal(0), Decimal(0), Decimal(0), Decimal(1))
+    assert _plan_scored(None, scores=only_withheld).commitment_owner is None
+    owner_vote = plan_emission(
+        mode="owner_vote",
+        network="mainnet",
+        snapshot=_burn_snapshot(),
+        block=1000,
+        chain_identity=MAINNET_GENESIS_HASH,
+        netuid=SN30_NETUID,
+        validator_uid=0,
+        validator_hotkey="validator",
+        local_hotkeys=list(BURN_HOTKEYS),
+        scores=[Decimal(0)] * len(BURN_HOTKEYS),
     )
+    assert owner_vote.commitment_owner is None
 
 
 def test_every_hotkey_of_the_owner_coldkey_is_withheld() -> None:
@@ -817,8 +821,10 @@ def test_a_scored_owner_coldkey_sibling_earns_nothing_at_any_rate(
     )
 
     earned_by_a = (Decimal(0), Decimal("0.5"), Decimal(0), Decimal(0))
+    assert plan.recipient is not None
+    assert plan.recipient.withheld == frozenset({2, 3})
     if burn_bps == 0:
-        assert plan.weights == earned_by_a and plan.recipient is None
+        assert plan.weights == earned_by_a
     else:
         assert plan.weights == owner_burn_weights(
             earned_by_a, owner_uid=3, burn_bps=burn_bps
@@ -905,3 +911,100 @@ def test_the_burn_recheck_enforces_its_rounding_premises(
         "owner_vote_vector_invalid",
         "owner_snapshot_inconsistent",
     }
+
+
+@pytest.mark.parametrize(
+    ("burn_bps", "uids", "weights"),
+    [
+        (0, [1, 3], [65535, 100]),
+        (0, [1, 2], [65535, 100]),
+        (9800, [1, 2, 3], [668, 669, 65535]),
+    ],
+)
+def test_the_recheck_refuses_earned_weight_on_a_withheld_uid(
+    burn_bps: int, uids: list[int], weights: list[int]
+) -> None:
+    # UID 2 shares the owner coldkey; chain padding or a stale plan could put
+    # weight on it or on the owner even at a zero rate.
+    recipient = OwnerVoteRecipient(
+        "mainnet", SN30_OWNER_HOTKEY, 3, burn_bps, OWNER_COLDKEY, frozenset({2, 3})
+    )
+
+    def recheck(minimum: int, uids: list[int], weights: list[int]) -> None:
+        recheck_owner_vote(
+            recipient,
+            chain_identity=MAINNET_GENESIS_HASH,
+            netuid=SN30_NETUID,
+            hotkeys=BURN_HOTKEYS,
+            uint_uids=uids,
+            uint_weights=weights,
+            min_allowed_weights=minimum,
+            max_weight_limit=Decimal(1),
+        )
+
+    if burn_bps == 0:
+        recheck(1, [1], [65535])
+        with pytest.raises(EmissionBlocked) as padded:
+            recheck(2, [1], [65535])
+        assert padded.value.reason == "owner_vote_vector_invalid"
+    with pytest.raises(EmissionBlocked) as blocked:
+        recheck(1, uids, weights)
+    assert blocked.value.reason == "owner_vote_vector_invalid"
+
+
+def _owner_state(**changes: object) -> OwnerState:
+    state = OwnerState(
+        block=1001,
+        owner_hotkey=SN30_OWNER_HOTKEY,
+        owner_coldkey=OWNER_COLDKEY,
+        hotkeys=BURN_HOTKEYS,
+        coldkeys=("ck-validator", "ck-a", "ck-b", OWNER_COLDKEY),
+    )
+    return dataclasses.replace(state, **changes)
+
+
+@pytest.mark.parametrize(
+    ("state", "block", "reason"),
+    [
+        (None, 1001, "chain_snapshot_inconsistent"),
+        (_owner_state(), 1002, "chain_snapshot_inconsistent"),
+        (_owner_state(), None, "chain_snapshot_inconsistent"),
+        (_owner_state(owner_hotkey="new-owner"), 1001, "owner_snapshot_inconsistent"),
+        (_owner_state(owner_coldkey="buyer"), 1001, "owner_snapshot_inconsistent"),
+        (
+            _owner_state(
+                hotkeys=("validator", "re-registered", "miner-b", SN30_OWNER_HOTKEY)
+            ),
+            1001,
+            "chain_snapshot_inconsistent",
+        ),
+        (
+            _owner_state(
+                coldkeys=("ck-validator", OWNER_COLDKEY, "ck-b", OWNER_COLDKEY)
+            ),
+            1001,
+            "owner_snapshot_inconsistent",
+        ),
+        (_owner_state(coldkeys=("ck-validator",)), 1001, "owner_snapshot_inconsistent"),
+    ],
+)
+def test_the_owner_facts_a_vector_relies_on_must_hold_at_submission(
+    state: OwnerState | None, block: int | None, reason: str
+) -> None:
+    recipient = OwnerVoteRecipient(
+        "mainnet", SN30_OWNER_HOTKEY, 3, 9800, OWNER_COLDKEY, frozenset({3})
+    )
+
+    def recheck(state: OwnerState | None, block: int | None) -> None:
+        recheck_owner_state(
+            recipient,
+            state,
+            block=block,
+            prepared_hotkeys=BURN_HOTKEYS,
+            uint_uids=[1, 2, 3],
+        )
+
+    recheck(_owner_state(), 1001)
+    with pytest.raises(EmissionBlocked) as blocked:
+        recheck(state, block)
+    assert blocked.value.reason == reason

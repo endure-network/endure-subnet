@@ -204,15 +204,24 @@ value above `10000`, a second field and non-UTF-8 data, so miners are paid only
 on the owner's explicit instruction. With no positive score the owner vote
 applies whatever the commitment says. Because the rate comes from the owner
 key, scored votes on owner-vote networks also need a valid owner: the owner
-block reasons below stop earned weights too, even at a zero rate. A failed
-commitment read abstains with `owner_commitment_unavailable` and is retried at
-the next attempt. The rate is bound to the snapshot: the commitment is read
-from the snapshot's owner at the snapshot block, and a record newer than that
-block is refused. A rate or owner change after the snapshot applies from the
-next attempt. The pre-submission recheck requires chain `min_allowed_weights`
-and `max_weight_limit` of `1` and a max-scaled u16 vector whose owner share is
-within the encoding's rounding bound of the rate (about ±19 bps for SN30's 256
-UIDs), so it guards gross errors rather than distinguishing nearby rates.
+block reasons below stop earned weights too, even at a zero rate. The
+commitment is read only once owner, permit and rate limit allow the attempt,
+from the snapshot's owner at the snapshot block; a record newer than that
+block is refused, and a failed read abstains with
+`owner_commitment_unavailable` and is retried at the next attempt.
+
+Every scored vote on an owner-vote network, at any rate including zero, passes
+the pre-submission recheck. It requires chain `min_allowed_weights` and
+`max_weight_limit` of `1` (otherwise chain padding would hand floor weights to
+the owner and its coldkey's hotkeys), no earned weight on a withheld UID, and a
+max-scaled u16 vector whose owner share is within the encoding's rounding
+bound of the rate (about ±19 bps for SN30's 256 UIDs), so it guards gross
+errors rather than distinguishing nearby rates. Immediately before sending,
+the validator also re-reads the owner hotkey, owner coldkey, and every UID's
+hotkey and coldkey at the submission block, and refuses the attempt if the
+owner changed or any UID in the vector changed hands or withheld status
+(`owner_snapshot_inconsistent` or `chain_snapshot_inconsistent`), so a burned
+share never reaches a former owner.
 
 The vote is one u16 vector with the owner's entry at the maximum, so at high
 rates the miners' pool is about `65535 × (1 − b) / b` units, roughly 1,337 at
@@ -287,8 +296,11 @@ re-observes it never pages. While blocked, the validator's last weights age towa
 block every key-`2042` or later validator at once; from key `2043` it stops
 earned weights as well as the owner vote, so every such validator stops
 emitting and the last submitted weights stay in force until a release updates
-the pin. Never rotate or swap the SN30 owner hotkey without that release.
-These conditions must page an operator.
+the pin. Weights already on chain are not withdrawn: after a change of subnet
+owner coldkey, the former owner's hotkey may no longer be withheld and would
+receive those weights as incentive until validators submit again. Never rotate
+the SN30 owner hotkey or transfer subnet ownership without a coordinated
+release and validator update. These conditions must page an operator.
 Container healthchecks use `/live`, so a 503 on `/health` pages without restart
 loops.
 

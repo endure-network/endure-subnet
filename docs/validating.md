@@ -182,7 +182,11 @@ read at the snapshot block. Miners share the rest by earned weight; hotkeys of
 the owner's coldkey never earn, because the chain withholds their incentive. A
 missing or malformed commitment burns the whole vote, a zero rate pays the
 earned vector without those hotkeys, and an unreadable commitment abstains with
-`owner_commitment_unavailable`. Because the rate comes from the owner key, scored attempts on
+`owner_commitment_unavailable`. The commitment is read only once owner, permit
+and rate limit allow the attempt. Every such scored vote, at any rate, requires
+chain `min_allowed_weights` and `max_weight_limit` of `1` and no earned weight
+on a withheld UID, and the owner and the vector's UIDs are re-read at the
+submission block; a change refuses the attempt. Because the rate comes from the owner key, scored attempts on
 these networks need a valid owner and abstain with the owner block reasons
 below otherwise. The owner's audit row has null provenance; miners sharing a
 burned vote keep theirs.
