@@ -216,7 +216,9 @@ the pre-submission recheck. It requires chain `min_allowed_weights` and
 the owner and its coldkey's hotkeys), no earned weight on a withheld UID, and a
 max-scaled u16 vector whose owner share is within the encoding's rounding
 bound of the rate (about ±19 bps for SN30's 256 UIDs), so it guards gross
-errors rather than distinguishing nearby rates. Immediately before sending,
+errors rather than distinguishing nearby rates. Keep SN30's
+`min_allowed_weights` and `max_weight_limit` at `1`: any other value halts
+Endure emission at every rate. Immediately before sending,
 the validator also re-reads the owner hotkey, owner coldkey, and every UID's
 hotkey and coldkey at the submission block, and refuses the attempt if the
 owner changed or any UID in the vector changed hands or withheld status

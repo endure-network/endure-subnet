@@ -1210,7 +1210,10 @@ class Validator(BaseValidatorNeuron):
             self._emission_chain_due_block = plan_result.next_eligible_block
             self._emission_snapshot_permit = plan_result.permit
             self._emission_snapshot_block = block
-            self._emission_burn_bps = plan_result.burn_bps
+            # A not-yet-due scored plan stops before reading the rate; keep the
+            # last known one instead of reporting it as unknown.
+            if plan_result.burn_bps is not None or network is None:
+                self._emission_burn_bps = plan_result.burn_bps
         if not plan_result.due:
             self._defer_emission(
                 "no_validator_permit" if not plan_result.permit else "chain_rate_limit"

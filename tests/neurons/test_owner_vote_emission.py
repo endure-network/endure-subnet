@@ -1270,3 +1270,25 @@ def test_an_ineligible_attempt_never_reads_the_burn_rate(
     assert validator._emission_reason == "chain_rate_limit"
     assert chain.commitment_reads == []
     assert chain.submissions == []
+
+
+def test_a_rate_limited_attempt_keeps_the_known_burn_rate(
+    storage: Storage, mock_validator_config: bt.Config
+) -> None:
+    chain = ReplayChain(storage)
+    publish_burn(chain, 9800)
+    record_resolved_scores(storage, chain)
+    validator = replay_validator(storage, mock_validator_config, chain)
+    advance_past_startup_fence(validator, chain)
+    validator.set_weights()
+    assert validator._emission_burn_bps == 9800
+
+    # Confirmed, but inside the chain rate limit: the plan stops before
+    # reading the rate, and /health keeps the last known one.
+    chain.resolve(confirmed=True)
+    reads = len(chain.commitment_reads)
+    validator.set_weights()
+
+    assert validator._emission_reason == "chain_rate_limit"
+    assert validator._emission_burn_bps == 9800
+    assert len(chain.commitment_reads) == reads
