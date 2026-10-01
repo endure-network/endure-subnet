@@ -694,7 +694,7 @@ def _chain_evidence(args: DevnetCycleArgs, *, hotkeys: dict[str, str]) -> None:
             )
         )
     finally:
-        subtensor.close()
+        _evidence(subtensor.close)
     if info is None or isinstance(info, str):
         print(f"chain metagraph {info or 'unavailable'}")
         return
@@ -721,7 +721,10 @@ def _burn_outcome(
     ok = reported == args.burn_bps
     print(f"[{'x' if ok else ' '}] /health emission_burn_bps {reported}", flush=True)
     if ok:
-        _chain_evidence(args, hotkeys=hotkeys)
+        # Evidence never changes the verdict, whatever fails while printing it.
+        failed = _evidence(lambda: _chain_evidence(args, hotkeys=hotkeys))
+        if isinstance(failed, str):
+            print(f"chain evidence {failed}")
     return ok
 
 

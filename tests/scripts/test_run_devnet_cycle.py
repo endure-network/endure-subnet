@@ -574,6 +574,34 @@ def test_chain_evidence_survives_a_runtime_without_miner_burned(
     subtensor.close.assert_called_once()
 
 
+@pytest.mark.parametrize("fault", ["close", "short-metagraph"])
+def test_an_evidence_failure_never_fails_a_passing_burn_run(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], fault: str
+) -> None:
+    subtensor = MagicMock()
+    subtensor.get_metagraph_info.return_value = SimpleNamespace(
+        block=7,
+        hotkeys=["owner-hotkey"],
+        incentives=[] if fault == "short-metagraph" else [0.98],
+        emission=["1.0"],
+    )
+    subtensor.query_module.return_value = {"bits": 4209067950}
+    if fault == "close":
+        subtensor.close.side_effect = RuntimeError("close failed")
+    monkeypatch.setattr(runner.bt, "Subtensor", lambda network: subtensor)
+    monkeypatch.setattr(runner, "_health_burn_bps", lambda _port: 9800)
+
+    assert runner._burn_outcome(
+        _args(burn_bps=9800), api_port=8714, hotkeys={"owner": "owner-hotkey"}
+    )
+    out = capsys.readouterr().out
+    assert "[x] /health emission_burn_bps 9800" in out
+    if fault == "close":
+        assert "chain owner uid=0: incentive=0.98" in out
+    else:
+        assert "chain evidence unavailable (" in out
+
+
 def test_publish_burn_rate_does_nothing_without_a_rate(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
