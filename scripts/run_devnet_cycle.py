@@ -627,6 +627,13 @@ def _health_burn_bps(api_port: int) -> object:
     return runtime.get("emission_burn_bps") if isinstance(runtime, dict) else None
 
 
+def _u96f32(value: object) -> Decimal | None:
+    """Decode a Subtensor U96F32 storage value such as ``MinerBurned``."""
+    raw = getattr(value, "value", value)
+    bits = raw.get("bits") if isinstance(raw, dict) else None
+    return Decimal(bits) / Decimal(2**32) if type(bits) is int else None
+
+
 def _chain_evidence(args: DevnetCycleArgs, *, hotkeys: dict[str, str]) -> None:
     """Print what the chain did with the vote; evidence, never the verdict."""
     try:
@@ -644,7 +651,11 @@ def _chain_evidence(args: DevnetCycleArgs, *, hotkeys: dict[str, str]) -> None:
     if info is None:
         print("chain: subnet metagraph unavailable")
         return
-    print(f"chain block {info.block}: MinerBurned={burned}")
+    withheld = _u96f32(burned)
+    print(
+        f"chain block {info.block}: MinerBurned="
+        f"{burned if withheld is None else f'{withheld:.4f}'}"
+    )
     for role, hotkey in hotkeys.items():
         if hotkey not in info.hotkeys:
             continue

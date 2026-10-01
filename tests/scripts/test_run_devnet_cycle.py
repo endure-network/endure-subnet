@@ -495,6 +495,14 @@ def test_health_burn_bps_reads_the_runtime_section_even_when_degraded(
     assert runner._health_burn_bps(8714) == 9800
 
 
+def test_miner_burned_decodes_from_its_fixed_point_bits() -> None:
+    assert runner._u96f32(SimpleNamespace(value={"bits": 4080231384})) == (
+        Decimal(4080231384) / Decimal(2**32)
+    )
+    assert runner._u96f32({"bits": 0}) == 0
+    assert runner._u96f32("unavailable") is None
+
+
 def test_publish_burn_rate_does_nothing_without_a_rate(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
