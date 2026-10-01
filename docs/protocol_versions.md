@@ -251,12 +251,12 @@ validators must upgrade together. See the
 [owner burn rate](running_on_mainnet.md#owner-burn-rate).
 
 Its watched-tree digest is
-`a99ca1c68ea0af88ab9ed9cc972d4520bc93f1cc6cdd1528a3f2dc4fc4a3893f`.
+`1115d85096ff37cc057b531ef74aa7b8dd69039ac7cf9ff536525eb0fc38dc94`.
 The public lease authority receipt uses
 `PREVIOUS_RECEIPT=bf6e2d6b4c21e0b2568db7253ebcfd43c5a8422f2f8dbcf6dfebf4294c4b6714`,
 `CURRENT_VERSION_KEY=2043`, and
-`CURRENT_VERSION_DIGEST=a99ca1c68ea0af88ab9ed9cc972d4520bc93f1cc6cdd1528a3f2dc4fc4a3893f`
+`CURRENT_VERSION_DIGEST=1115d85096ff37cc057b531ef74aa7b8dd69039ac7cf9ff536525eb0fc38dc94`
 under the `LEASE_AUTHORITY` format above, producing
-`2a8a5b685ed97af2f24a69d24b332a194d24ccb0f74b49528ad1a3f5b9286b3f`.
+`2e782252887c9695352f699b73918dc47951afa85ac630a6e3a16a6d0d549261`.
 SN30's chain `weights_version` of `2040` accepts key-`2043` submissions
 unchanged.

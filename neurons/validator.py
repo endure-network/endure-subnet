@@ -893,6 +893,11 @@ class Validator(BaseValidatorNeuron):
                 self._emission_blocked_reason = None
                 self._emission_expected_since = None
                 self._emission_deadline = None
+                # The owner vote burns everything; a new scored mode's rate is
+                # unknown until its next plan reads the commitment.
+                self._emission_burn_bps = (
+                    FULL_BURN_BPS if mode == "owner_vote" else None
+                )
             self._emission_next_eligible_block = None
             reason = self._emission_wait_reason(
                 mode, current_block, open_confirmation, startup_fence

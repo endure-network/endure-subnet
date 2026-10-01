@@ -887,30 +887,34 @@ def test_a_commitment_read_must_describe_the_snapshot(
         ([3, 1], [1, 1]),
         ([3, 1], [65535, 65535 * 2]),
         ([3, 1, 1], [65535, 668, 669]),
-        ([3, 4], [65535, 1337]),
+        ([3, 256], [65535, 1337]),
     ],
 )
 def test_the_burn_recheck_enforces_its_rounding_premises(
     uids: list[int], weights: list[int]
 ) -> None:
-    # A vector that is not max-scaled, repeats a UID or leaves the metagraph
-    # escapes the rounding bound, so it is refused before the share check.
-    hotkeys = ["validator", "miner-a", "miner-b", SN30_OWNER_HOTKEY]
-    with pytest.raises(EmissionBlocked) as blocked:
+    # In a 256-UID metagraph the rounding tolerance alone would accept every
+    # one of these (even a 50% owner share), so only the premises refuse them:
+    # a max-scaled vector, entries within u16, unique UIDs inside the metagraph.
+    hotkeys = [f"hk-{uid}" for uid in range(256)]
+    hotkeys[3] = SN30_OWNER_HOTKEY
+
+    def recheck(uids: list[int], weights: list[int]) -> None:
         recheck_owner_vote(
             OwnerVoteRecipient("mainnet", SN30_OWNER_HOTKEY, 3, 9800),
             chain_identity=MAINNET_GENESIS_HASH,
             netuid=SN30_NETUID,
-            hotkeys=hotkeys * 64,
+            hotkeys=hotkeys,
             uint_uids=uids,
             uint_weights=weights,
             min_allowed_weights=1,
             max_weight_limit=Decimal(1),
         )
-    assert blocked.value.reason in {
-        "owner_vote_vector_invalid",
-        "owner_snapshot_inconsistent",
-    }
+
+    recheck([3, 1], [65535, 1337])
+    with pytest.raises(EmissionBlocked) as blocked:
+        recheck(uids, weights)
+    assert blocked.value.reason == "owner_vote_vector_invalid"
 
 
 @pytest.mark.parametrize(

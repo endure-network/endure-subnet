@@ -357,6 +357,13 @@ def test_owner_vote_hands_off_to_scores_and_returns_when_all_miners_archive(
     archive_scored_miners(storage, chain)
     validator._reconstruct_scores()
     assert validator._observed_emission_mode() == "owner_vote"
+    # /health reports the whole burn as soon as the mode changes, not the
+    # earned vote's rate until the next plan.
+    validator._emission_burn_bps = 0
+    validator._refresh_emission_health(
+        chain.block, open_confirmation=False, startup_fence=None
+    )
+    assert validator._emission_burn_bps == FULL_BURN_BPS
     chain.confirm_and_pace()
     validator.set_weights()
     assert chain.submissions == [OWNER_VOTE_176, EARNED, OWNER_VOTE_176]

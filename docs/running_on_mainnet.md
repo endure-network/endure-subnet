@@ -295,10 +295,11 @@ re-observes it never pages. While blocked, the validator's last weights age towa
 `activity_cutoff` of 5000 blocks (~16.7 h), and an owner-hotkey rotation would
 block every key-`2042` or later validator at once; from key `2043` it stops
 earned weights as well as the owner vote, so every such validator stops
-emitting and the last submitted weights stay in force until a release updates
-the pin. Weights already on chain are not withdrawn: after a change of subnet
-owner coldkey, the former owner's hotkey may no longer be withheld and would
-receive those weights as incentive until validators submit again. Never rotate
+emitting until a release updates the pin, and its last submitted weights keep
+counting until they age past `activity_cutoff`. Weights already on chain are
+not withdrawn: after a change of subnet owner coldkey, the former owner's
+hotkey may no longer be withheld and would receive those weights as incentive
+until validators submit again or the weights age out. Never rotate
 the SN30 owner hotkey or transfer subnet ownership without a coordinated
 release and validator update. These conditions must page an operator.
 Container healthchecks use `/live`, so a 503 on `/health` pages without restart

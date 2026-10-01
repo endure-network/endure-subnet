@@ -168,7 +168,12 @@ def chain_withheld_uids(snapshot: ChainSnapshot, owner_uid: int) -> frozenset[in
     The chain burns (or recycles) the incentive of the subnet owner hotkey and
     of every registered hotkey of the owner's coldkey, so none of them earns.
     """
-    if not snapshot.owner_coldkey or len(snapshot.coldkeys) != len(snapshot.hotkeys):
+    coldkeys = snapshot.coldkeys
+    if (
+        not snapshot.owner_coldkey
+        or coldkeys is None
+        or len(coldkeys) != len(snapshot.hotkeys)
+    ):
         raise EmissionBlocked(
             "owner_snapshot_inconsistent",
             "Snapshot lacks the owner coldkey or a coldkey per UID",
@@ -667,7 +672,11 @@ def recheck_owner_state(
         raise EmissionBlocked(
             "owner_snapshot_inconsistent", "Subnet owner changed before submission"
         )
-    if len(state.coldkeys) != len(state.hotkeys):
+    if (
+        state.coldkeys is None
+        or state.hotkeys is None
+        or len(state.coldkeys) != len(state.hotkeys)
+    ):
         raise EmissionBlocked(
             "owner_snapshot_inconsistent", "Owner state lacks a coldkey per UID"
         )
