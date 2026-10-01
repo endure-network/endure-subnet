@@ -189,20 +189,28 @@ automatically enables emission. See the
 
 **Owner burn rate (key `2043`)**: on the same networks, a scored attempt also
 reads the commitment of the snapshot's `SubnetOwnerHotkey` on the subnet at the
-snapshot block. The exact text `endure.burn_bps=<n>`, with `n` an integer from
+snapshot block; the snapshot carries the owner coldkey and every UID's coldkey.
+The chain-withheld set is the owner UID plus every UID whose coldkey is the
+owner coldkey. The exact text `endure.burn_bps=<n>`, with `n` an integer from
 `0` to `10000` written without sign, leading zero or whitespace, gives the
-owner UID `n / 10000` of the raw vector; every other UID receives
-`(1 − n / 10000)` times its normalized positive score, and the owner's own
-score is excluded. The commitment record must be exactly one UTF-8 `Raw` field.
-Anything else, including no record, burns the whole vote (the owner vote
-vector), as does a burn with no other positive score; `n = 0` leaves the earned
-vector unchanged. Scored attempts on owner-vote networks therefore require the
-owner resolution above, even at `n = 0`. The pre-submission recheck requires
-chain `min_allowed_weights` and `max_weight_limit` of `1` and bounds the owner's
-u16 share: `2 * |10000 * u_owner - n * sum(u)| <= 10000 * (N + 1)` for a
-metagraph of `N` UIDs, the worst case of half-unit rounding per entry. The rate
-is an owner allocation, not miner reputation; it writes no scores or EMAs, and
-the owner's audit row has null provenance. See the
+owner UID `n / 10000` of the raw vector; every UID outside the withheld set
+receives `(1 − n / 10000)` times its normalized positive score, and withheld
+UIDs receive nothing at every `n`. The commitment record must be exactly one
+UTF-8 `Raw` field, read from the snapshot owner at the snapshot block, with a
+record `block` no later than that block (otherwise the attempt abstains with
+`chain_snapshot_inconsistent`). Anything else, including no record, burns the
+whole vote (the owner vote vector), as does any rate with no positive score
+outside the withheld set; `n = 0` pays the earned vector without the withheld
+set. Scored attempts on owner-vote networks therefore require the owner
+resolution above, even at `n = 0`, and an unreadable commitment abstains with
+`owner_commitment_unavailable`. The pre-submission recheck requires chain
+`min_allowed_weights` and `max_weight_limit` of `1`, a u16 vector with unique
+in-metagraph UIDs and a maximum entry of `65535`, and bounds the owner's u16
+share: `2 * |10000 * u_owner - n * sum(u)| <= 10000 * (N + 1)` for a
+metagraph of `N` UIDs, a conservative bound on half-unit rounding per entry
+given `sum(u) >= 65535` (about ±19 bps for 256 UIDs). The rate is an owner
+allocation, not miner reputation; it writes no scores or EMAs, and the owner's
+audit row has null provenance. See the
 [owner burn rate](../running_on_mainnet.md#owner-burn-rate).
 
 ### Round lifecycle and per-horizon resolution

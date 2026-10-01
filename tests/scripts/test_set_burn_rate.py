@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from endure.protocol.consensus_policy import MAINNET_GENESIS_HASH, SN30_OWNER_HOTKEY
 from scripts.set_burn_rate import main
 from tests.scoring.test_emission_policy import commitment_record
 
@@ -13,21 +14,39 @@ OWNER = "owner-hotkey"
 
 
 class FakeChain:
-    def __init__(self, commitment: str | None = None) -> None:
+    def __init__(
+        self, commitment: str | None = None, *, genesis: str = "0xtestnet"
+    ) -> None:
+        self.genesis = genesis
+        self.owner = OWNER
         self.records: dict[str, object] = {}
         if commitment is not None:
             self.records[OWNER] = commitment_record(commitment)
         self.published: list[tuple[int, str]] = []
         self.publish_succeeds = True
         self.closed = False
+        self.block = 500
+        self.read_blocks: list[int] = []
+
+    def get_current_block(self) -> int:
+        self.block += 1  # The head moves between calls.
+        return self.block
 
     def get_metagraph_info(
-        self, netuid: int, *, selected_indices: list[int]
+        self, netuid: int, *, selected_indices: list[int], block: int
     ) -> SimpleNamespace:
-        assert selected_indices == [0, 5]
-        return SimpleNamespace(netuid=netuid, owner_hotkey=OWNER)
+        assert selected_indices == [0, 5, 7]
+        self.read_blocks.append(block)
+        return SimpleNamespace(netuid=netuid, block=block, owner_hotkey=self.owner)
 
-    def get_commitment_metadata(self, netuid: int, hotkey_ss58: str) -> object:
+    def get_block_hash(self, block: int) -> str:
+        assert block == 0
+        return self.genesis
+
+    def get_commitment_metadata(
+        self, netuid: int, hotkey_ss58: str, block: int
+    ) -> object:
+        self.read_blocks.append(block)
         return self.records.get(hotkey_ss58, "")
 
     def set_commitment(
@@ -43,9 +62,9 @@ class FakeChain:
         self.closed = True
 
 
-def _run(chain: FakeChain, *argv: str, signer: str = OWNER) -> int:
+def _run(chain: FakeChain, *argv: str, signer: str = OWNER, netuid: int = 30) -> int:
     return main(
-        ["--netuid", "30", *argv],
+        ["--netuid", str(netuid), *argv],
         subtensor_factory=lambda _network: chain,
         wallet_factory=lambda **_kwargs: SimpleNamespace(
             hotkey=SimpleNamespace(ss58_address=signer)
@@ -129,3 +148,39 @@ def test_an_unpublishable_request_never_reaches_the_chain(argv: list[str]) -> No
 
     assert exited.value.code == 2
     assert chain.published == []
+
+
+PUBLISH = ("--publish", "9800", "--wallet-name", "owner", "--wallet-hotkey", "hk")
+
+
+def test_mainnet_publishing_requires_the_pinned_sn30_owner(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    pinned = FakeChain(genesis=MAINNET_GENESIS_HASH)
+    pinned.owner = SN30_OWNER_HOTKEY
+    assert _run(pinned, *PUBLISH, signer=SN30_OWNER_HOTKEY) == 0
+    assert pinned.published == [(30, "endure.burn_bps=9800")]
+
+    # Validators would block on an unpinned owner, so its rate is never published.
+    rotated = FakeChain(genesis=MAINNET_GENESIS_HASH)
+    assert _run(rotated) == 0
+    assert "is not the pinned" in capsys.readouterr().err
+    assert _run(rotated, *PUBLISH) == 1
+    assert rotated.published == []
+
+
+def test_mainnet_publishing_refuses_any_netuid_but_sn30() -> None:
+    chain = FakeChain(genesis=MAINNET_GENESIS_HASH)
+    chain.owner = SN30_OWNER_HOTKEY
+
+    assert _run(chain, *PUBLISH, signer=SN30_OWNER_HOTKEY, netuid=31) == 1
+    assert chain.published == []
+
+
+def test_owner_and_commitment_are_read_at_one_block() -> None:
+    chain = FakeChain("endure.burn_bps=9800")
+    assert _run(chain) == 0
+
+    # The head moves, but both reads stay pinned to the block first observed.
+    [snapshot_block, commitment_block] = chain.read_blocks
+    assert snapshot_block == commitment_block == 501

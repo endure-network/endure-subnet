@@ -232,26 +232,30 @@ The published `v0.1.1` images retain that assignment.
 Key `2043` is leased to the owner burn rate. On served mainnet SN30 and
 testnet, a scored weight attempt gives the subnet owner UID the share that its
 hotkey publishes as its subnet commitment, `endure.burn_bps=<0..10000>`, read
-at the emission snapshot block; miners share the rest by earned weight, the
-owner's own score excluded. A missing or malformed commitment burns the whole
-vote and a zero rate keeps the key-`2042` earned vector, so scored votes on
-owner-vote networks now require a valid owner (the pinned SN30 owner on
-mainnet). The commitment record decoding and grammar, the full-burn default,
-the blended raw vector, and the pre-submission recheck bounding the owner's u16
-share are digest-covered in
-[emission_policy.py](../endure/scoring/emission_policy.py); the commitment read
-is unwatched RPC I/O. No schema migration is introduced; scoring coefficients,
+at the emission snapshot block; miners share the rest by earned weight, and
+the owner hotkey and every hotkey of the owner's coldkey, whose incentive the
+chain withholds, earn nothing at any rate. A missing or malformed commitment
+burns the whole vote and a zero rate pays the earned vector without those
+hotkeys, so scored votes on owner-vote networks now require a valid owner (the
+pinned SN30 owner on mainnet); an unreadable commitment abstains with
+`owner_commitment_unavailable`. The commitment read decision and its binding to
+the snapshot owner and block, the record decoding and grammar, the full-burn
+default, the chain-withheld set, the blended raw vector, and the pre-submission
+recheck bounding the owner's u16 share are digest-covered in
+[emission_policy.py](../endure/scoring/emission_policy.py); the query itself is
+unwatched RPC I/O, and the emission snapshot now also reads the owner coldkey
+and per-UID coldkeys. No schema migration is introduced; scoring coefficients,
 the target universe and the no-score owner vote are unchanged. Miners and
 validators must upgrade together. See the
 [owner burn rate](running_on_mainnet.md#owner-burn-rate).
 
 Its watched-tree digest is
-`ea4863747bcfead6848f3a3012e1c4d532fb16f9db7b97f80299eab7bfe90a23`.
+`04e57e3a3c049940d32502a93fe81edae9bba7072c112b443542940a81d92ecd`.
 The public lease authority receipt uses
 `PREVIOUS_RECEIPT=bf6e2d6b4c21e0b2568db7253ebcfd43c5a8422f2f8dbcf6dfebf4294c4b6714`,
 `CURRENT_VERSION_KEY=2043`, and
-`CURRENT_VERSION_DIGEST=ea4863747bcfead6848f3a3012e1c4d532fb16f9db7b97f80299eab7bfe90a23`
+`CURRENT_VERSION_DIGEST=04e57e3a3c049940d32502a93fe81edae9bba7072c112b443542940a81d92ecd`
 under the `LEASE_AUTHORITY` format above, producing
-`21f7fed0cfa78025d9a364b4646f8575556cb6495917e5c6b8e57a51a704c309`.
+`0c07d240cdb8bf658084d543447b41d9b590871a53c8e05fd5d6e5175e4e93d5`.
 SN30's chain `weights_version` of `2040` accepts key-`2043` submissions
 unchanged.

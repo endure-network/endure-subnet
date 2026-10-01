@@ -23,10 +23,16 @@ from __future__ import annotations
 import argparse
 import sys
 from collections.abc import Callable, Sequence
-from typing import Any
+from typing import Protocol
 
 import bittensor as bt
 
+from endure.protocol.consensus_policy import (
+    MAINNET_GENESIS_HASH,
+    SN30_NETUID,
+    SN30_OWNER_HOTKEY,
+    normalize_genesis_hash,
+)
 from endure.scoring.emission_policy import (
     BURN_BPS_DENOMINATOR,
     burn_commitment_text,
@@ -34,8 +40,40 @@ from endure.scoring.emission_policy import (
     parse_burn_rate,
 )
 
-# SDK SelectiveMetagraphIndex values: Netuid 0 (always decoded), OwnerHotkey 5.
-_OWNER_HOTKEY_INDICES = [0, 5]
+# SDK SelectiveMetagraphIndex values: Netuid 0 (always decoded), OwnerHotkey 5,
+# Block 7.
+_OWNER_HOTKEY_INDICES = [0, 5, 7]
+
+
+class _OwnerInfo(Protocol):
+    block: int
+    owner_hotkey: str | None
+
+
+class _PublishResult(Protocol):
+    success: bool
+    message: str
+
+
+class _Chain(Protocol):
+    def get_current_block(self) -> int: ...
+    def get_metagraph_info(
+        self, netuid: int, *, selected_indices: list[int], block: int
+    ) -> _OwnerInfo | None: ...
+    def get_commitment_metadata(
+        self, netuid: int, hotkey_ss58: str, block: int
+    ) -> object: ...
+    def get_block_hash(self, block: int) -> str: ...
+    def set_commitment(
+        self,
+        wallet: bt.Wallet,
+        netuid: int,
+        data: str,
+        *,
+        wait_for_inclusion: bool,
+        wait_for_finalization: bool,
+    ) -> _PublishResult: ...
+    def close(self) -> None: ...
 
 
 def _percent(burn_bps: int) -> str:
@@ -43,14 +81,40 @@ def _percent(burn_bps: int) -> str:
     return f"{whole}.{fraction * 100 // BURN_BPS_DENOMINATOR:02d}%"
 
 
-def read_burn_rate(subtensor: Any, netuid: int) -> tuple[str, str | None, int]:
-    """The owner hotkey, its commitment text, and the burn rate validators apply."""
-    info = subtensor.get_metagraph_info(netuid, selected_indices=_OWNER_HOTKEY_INDICES)
-    owner_hotkey = None if info is None else info.owner_hotkey
+def read_burn_rate(subtensor: _Chain, netuid: int) -> tuple[str, str | None, int]:
+    """The owner hotkey, its commitment text, and the burn rate validators apply.
+
+    Both reads use one block, as validators do, so an owner change between them
+    cannot pair one owner with another's rate.
+    """
+    block = subtensor.get_current_block()
+    info = subtensor.get_metagraph_info(
+        netuid, selected_indices=_OWNER_HOTKEY_INDICES, block=block
+    )
+    if info is None or info.block != block:
+        raise RuntimeError(f"no netuid {netuid} snapshot at block {block}")
+    owner_hotkey = info.owner_hotkey
     if not owner_hotkey:
         raise RuntimeError(f"netuid {netuid} has no subnet owner hotkey")
-    text = commitment_text(subtensor.get_commitment_metadata(netuid, owner_hotkey))
+    record = subtensor.get_commitment_metadata(netuid, owner_hotkey, block=block)
+    text = commitment_text(record)
     return owner_hotkey, text, parse_burn_rate(text)
+
+
+def mainnet_pin_problem(
+    subtensor: _Chain, netuid: int, owner_hotkey: str
+) -> str | None:
+    """Why mainnet validators would ignore this owner's rate, if they would."""
+    if normalize_genesis_hash(subtensor.get_block_hash(0)) != MAINNET_GENESIS_HASH:
+        return None
+    if netuid != SN30_NETUID:
+        return f"mainnet validators read the burn rate only on netuid {SN30_NETUID}"
+    if owner_hotkey != SN30_OWNER_HOTKEY:
+        return (
+            f"the SN30 owner hotkey {owner_hotkey} is not the pinned "
+            f"{SN30_OWNER_HOTKEY}; validators block instead of reading its rate"
+        )
+    return None
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -71,13 +135,15 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _connect(network: str) -> _Chain:
+    return bt.Subtensor(network=network)
+
+
 def main(
     argv: Sequence[str] | None = None,
     *,
-    subtensor_factory: Callable[[str], Any] = lambda network: bt.Subtensor(
-        network=network
-    ),
-    wallet_factory: Callable[..., Any] = bt.Wallet,
+    subtensor_factory: Callable[[str], _Chain] = _connect,
+    wallet_factory: Callable[..., bt.Wallet] = bt.Wallet,
 ) -> int:
     parser = _parser()
     args = parser.parse_args(argv)
@@ -96,8 +162,16 @@ def main(
         print(f"owner hotkey: {owner_hotkey}")
         print(f"commitment:   {'none' if text is None else repr(text)}")
         print(f"burn rate:    {burn_bps} bps ({_percent(burn_bps)} to the owner)")
+        pin_problem = mainnet_pin_problem(subtensor, args.netuid, owner_hotkey)
+        if pin_problem is not None:
+            print(f"warning:      {pin_problem}", file=sys.stderr)
         if commitment is None:
             return 0
+        if pin_problem is not None:
+            print(
+                "refusing to publish a rate no validator would apply", file=sys.stderr
+            )
+            return 1
 
         wallet = wallet_factory(
             name=args.wallet_name, hotkey=args.wallet_hotkey, path=args.wallet_path

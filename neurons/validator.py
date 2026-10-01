@@ -47,6 +47,11 @@ from endure.assessment.schemas.subnet_alpha_risk import (
 )
 from endure.assessment.subnet_alpha_universe import StaticAlphaRiskUniverseProvider
 from endure.base.axon import authenticated_hotkey
+from endure.base.rate_gate import (
+    ChainRpcRestartRequired,
+    ChainRpcStalled,
+    RateLimited,
+)
 from endure.base.shutdown import (
     STARTUP_SHUTDOWN_GRACE_SECONDS,
     WATCHDOG_TEARDOWN_GRACE_SECONDS,
@@ -94,7 +99,9 @@ from endure.scoring.emission_policy import (
     EmissionBlocked,
     EmissionBlockReason,
     EmissionPlan,
+    OwnerCommitment,
     OwnerVoteRecipient,
+    burn_commitment_owner,
     plan_emission,
     recheck_owner_vote,
     select_emission_mode,
@@ -825,6 +832,9 @@ class Validator(BaseValidatorNeuron):
                 mode == "abstain" and getattr(self, "_emission_block", None) is None
             ):
                 self._emission_blocked_reason = None
+            if mode in ("disabled", "abstain"):
+                # No vote is planned, so no burn rate applies.
+                self._emission_burn_bps = None
             self._set_emission_observation(mode, reason)
 
     def _emission_block_degraded(self) -> bool:
@@ -1151,24 +1161,40 @@ class Validator(BaseValidatorNeuron):
                 block=info.block,
                 hotkeys=info.hotkeys,
                 owner_hotkey=info.owner_hotkey,
+                owner_coldkey=info.owner_coldkey,
+                coldkeys=info.coldkeys,
                 validator_permit=info.validator_permit,
                 last_update=info.last_update,
                 weights_rate_limit=info.weights_rate_limit,
             )
         )
         # The burn rate of an earned vote is the owner's commitment at the
-        # snapshot block; a read failure propagates like the snapshot read.
-        owner_commitment = (
-            self.subtensor.get_commitment_metadata(
-                netuid, snapshot.owner_hotkey, block=block
-            )
-            if mode == "scored"
-            and network is not None
-            and snapshot is not None
-            and snapshot.block == block
-            and snapshot.owner_hotkey
-            else None
+        # snapshot block. A failed read blocks this attempt with its own reason
+        # and is retried next epoch; RPC gate control flow still propagates.
+        owner_commitment: OwnerCommitment | None = None
+        commitment_owner = burn_commitment_owner(
+            mode=mode, network=network, snapshot=snapshot, block=block
         )
+        if commitment_owner is not None:
+            try:
+                owner_commitment = OwnerCommitment(
+                    hotkey=commitment_owner,
+                    block=block,
+                    record=self.subtensor.get_commitment_metadata(
+                        netuid, commitment_owner, block=block
+                    ),
+                )
+            except (RateLimited, ChainRpcStalled, ChainRpcRestartRequired):
+                raise
+            except Exception as error:  # noqa: BLE001 — RPC error types vary by backend
+                self._block_emission(
+                    EmissionBlocked(
+                        "owner_commitment_unavailable",
+                        f"owner commitment unreadable: {safe_error(error)}",
+                    ),
+                    block,
+                )
+                return None
         try:
             plan = plan_emission(
                 mode=mode,

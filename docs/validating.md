@@ -116,7 +116,7 @@ Beyond `round_resolution`, monitor the `runtime` block of `/health`:
 | `weight_emission_degraded`, `consecutive_set_weights_failures` | `false`, `0` | any degradation — emissions at risk |
 | `emission_mode`, `emission_reason`, `emission_blocked_reason` | intended mode and a known progress/wait reason | unexpected mode, an owner/chain-safety abstain reason (`/health` 503 immediately or after 2 epochs, see below), or a retained identity/vector failure |
 | `emission_expected`, `emission_next_eligible_block` | expected only after eligibility; next block where known | eligibility fails to advance without an explained gate |
-| `emission_burn_bps` | the rate the owner published; `10000` during the owner vote | `10000` while scored when the owner intended a lower rate (its commitment is missing or malformed) |
+| `emission_burn_bps` | the rate the owner published; `10000` during the owner vote; `null` while abstaining or disabled | `10000` while scored when the owner intended a lower rate (its commitment is missing or malformed) |
 | `emission_submission_overdue`, `emission_deadline_in_seconds` | `false`; nonnegative while expected | overdue, including when no first batch was ever persisted |
 | `emission_confirmation_deadline_block` | pending submission remains within its deadline | cached chain block passes the durable deadline without confirmation |
 | `last_confirmed_weights_at` | advances when emission is eligible | it stalls for multiple epochs during an eligible owner vote or while positive earned scores exist |
@@ -178,9 +178,11 @@ precap provenance.
 From key `2043`, a scored attempt on those networks also gives the owner UID
 the [owner burn rate](running_on_mainnet.md#owner-burn-rate): the basis points
 the owner hotkey publishes as its subnet commitment `endure.burn_bps=<0..10000>`,
-read at the snapshot block. Miners share the rest by earned weight. A missing or
-malformed commitment burns the whole vote, and a zero rate keeps the earned
-vector unchanged. Because the rate comes from the owner key, scored attempts on
+read at the snapshot block. Miners share the rest by earned weight; hotkeys of
+the owner's coldkey never earn, because the chain withholds their incentive. A
+missing or malformed commitment burns the whole vote, a zero rate pays the
+earned vector without those hotkeys, and an unreadable commitment abstains with
+`owner_commitment_unavailable`. Because the rate comes from the owner key, scored attempts on
 these networks need a valid owner and abstain with the owner block reasons
 below otherwise. The owner's audit row has null provenance; miners sharing a
 burned vote keep theirs.
@@ -200,12 +202,15 @@ set to the block reason. `owner_hotkey_mismatch`, `owner_unregistered`, and
 `owner_vote_chain_mismatch` degrade `/health` (503) immediately;
 `owner_snapshot_inconsistent`, `chain_snapshot_inconsistent` (no or stale chain
 snapshot, incoherent rate data, or a scored UID whose hotkey changed on chain),
-`validator_identity_invalid`, and `score_state_unavailable` degrade it once
+`validator_identity_invalid`, `score_state_unavailable`, and
+`owner_commitment_unavailable` degrade it once
 a continuous blocked streak (across reasons) has been re-observed for 2 epochs
 (200 blocks); a condition that clears before the next attempt never pages. Blocks are retried each epoch and clear
 automatically when chain state is safe. While blocked, the last weights age
 toward SN30's `activity_cutoff` of 5000 blocks (~16.7 h), and an owner-hotkey
-rotation would block every key-`2042` validator at once, so page on these.
+rotation would block every key-`2042` or later validator at once; from key
+`2043` that includes earned weights, so never rotate the SN30 owner hotkey
+without a release that updates the pin. Page on these.
 Container healthchecks use `/live`, so a `/health` 503 pages without restart
 loops.
 

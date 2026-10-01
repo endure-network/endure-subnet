@@ -4,6 +4,7 @@ import dataclasses
 import random
 import re
 from decimal import Decimal
+from typing import Literal
 
 import pytest
 from bittensor.core.chain_data.metagraph_info import (
@@ -23,9 +24,13 @@ from endure.scoring.emission_policy import (
     FULL_BURN_BPS,
     ChainSnapshot,
     EmissionBlocked,
+    OwnerCommitment,
     OwnerVoteRecipient,
+    burn_commitment_owner,
     burn_commitment_text,
+    chain_withheld_uids,
     commitment_text,
+    observed_burn_rate,
     owner_burn_weights,
     owner_vote_weights,
     parse_burn_rate,
@@ -49,6 +54,7 @@ def commitment_record(text: str) -> dict[str, object]:
 
 
 NO_BURN = commitment_record("endure.burn_bps=0")
+OWNER_COLDKEY = "owner-coldkey"
 
 
 def test_selective_metagraph_indices_populate_exactly_the_snapshot_fields() -> None:
@@ -347,6 +353,8 @@ def _snapshot(*, block: int = 1000, last_update: int = 800) -> ChainSnapshot:
         block=block,
         hotkeys=["validator", "miner", SN30_OWNER_HOTKEY],
         owner_hotkey=SN30_OWNER_HOTKEY,
+        owner_coldkey=OWNER_COLDKEY,
+        coldkeys=["ck-validator", "ck-miner", OWNER_COLDKEY],
         validator_permit=[True, False, False],
         last_update=[last_update, 0, 0],
         weights_rate_limit=180,
@@ -370,7 +378,7 @@ def test_both_modes_plan_the_strict_rate_limit_from_one_snapshot(
         validator_hotkey="validator",
         local_hotkeys=["validator", "miner", SN30_OWNER_HOTKEY],
         scores=scores,
-        owner_commitment=NO_BURN,
+        owner_commitment=OwnerCommitment(SN30_OWNER_HOTKEY, 1000, NO_BURN),
     )
 
     assert plan.due is due
@@ -409,6 +417,8 @@ def test_scored_mode_refuses_a_scored_uid_that_changed_hands_on_chain() -> None:
         block=1000,
         hotkeys=["validator", "new-registrant", "miner-2", SN30_OWNER_HOTKEY],
         owner_hotkey=SN30_OWNER_HOTKEY,
+        owner_coldkey=OWNER_COLDKEY,
+        coldkeys=["ck-validator", "ck-new", "ck-2", OWNER_COLDKEY],
         validator_permit=[True, False, False, False],
         last_update=[0, 0, 0, 0],
         weights_rate_limit=180,
@@ -426,7 +436,7 @@ def test_scored_mode_refuses_a_scored_uid_that_changed_hands_on_chain() -> None:
             validator_hotkey="validator",
             local_hotkeys=["validator", "miner-1", "miner-2", SN30_OWNER_HOTKEY],
             scores=scores,
-            owner_commitment=NO_BURN,
+            owner_commitment=OwnerCommitment(SN30_OWNER_HOTKEY, 1000, NO_BURN),
         )
 
     # A zero score on the changed UID sends it nothing and is fine.
@@ -540,12 +550,17 @@ def test_burn_without_another_positive_score_defers_to_the_owner_vote() -> None:
     assert blocked.value.reason == "owner_snapshot_inconsistent"
 
 
-def _burn_snapshot(owner_hotkey: str = SN30_OWNER_HOTKEY) -> ChainSnapshot:
+def _burn_snapshot(
+    owner_hotkey: str = SN30_OWNER_HOTKEY,
+    coldkeys: tuple[str, ...] = ("ck-validator", "ck-a", "ck-b", OWNER_COLDKEY),
+) -> ChainSnapshot:
     hotkeys = [*BURN_HOTKEYS[:-1], owner_hotkey]
     return ChainSnapshot(
         block=1000,
         hotkeys=hotkeys,
         owner_hotkey=owner_hotkey,
+        owner_coldkey=OWNER_COLDKEY,
+        coldkeys=coldkeys,
         validator_permit=[True, False, False, False],
         last_update=[800, 0, 0, 0],
         weights_rate_limit=180,
@@ -553,13 +568,22 @@ def _burn_snapshot(owner_hotkey: str = SN30_OWNER_HOTKEY) -> ChainSnapshot:
 
 
 def _plan_scored(
-    commitment: object,
+    record: object,
     *,
     scores: tuple[Decimal, ...] = BURN_SCORES,
     network: OwnerVoteNetwork | None = "mainnet",
     snapshot: ChainSnapshot | None = None,
 ):
+    """Plan a scored attempt whose owner commitment read returned ``record``.
+
+    ``None`` models an attempt that read no commitment at all.
+    """
     snapshot = snapshot or _burn_snapshot()
+    commitment = (
+        None
+        if record is None or snapshot.owner_hotkey is None
+        else OwnerCommitment(snapshot.owner_hotkey, snapshot.block, record)
+    )
     return plan_emission(
         mode="scored",
         network=network,
@@ -726,3 +750,158 @@ def test_the_recheck_refuses_a_vector_that_misstates_the_burn(
             minimum,
         )
     assert blocked.value.reason == "owner_vote_vector_invalid"
+
+
+@pytest.mark.parametrize(
+    ("mode", "network", "snapshot", "block", "expected"),
+    [
+        ("scored", "mainnet", _burn_snapshot(), 1000, SN30_OWNER_HOTKEY),
+        ("scored", "testnet", _burn_snapshot(), 1000, SN30_OWNER_HOTKEY),
+        ("owner_vote", "mainnet", _burn_snapshot(), 1000, None),
+        ("scored", None, _burn_snapshot(), 1000, None),
+        ("scored", "mainnet", None, 1000, None),
+        ("scored", "mainnet", _burn_snapshot(), 1001, None),
+        (
+            "scored",
+            "mainnet",
+            dataclasses.replace(_burn_snapshot(), owner_hotkey=None),
+            1000,
+            None,
+        ),
+    ],
+)
+def test_only_a_scored_vote_network_attempt_reads_the_owner_commitment(
+    mode: Literal["scored", "owner_vote"],
+    network: OwnerVoteNetwork | None,
+    snapshot: ChainSnapshot | None,
+    block: int,
+    expected: str | None,
+) -> None:
+    assert (
+        burn_commitment_owner(
+            mode=mode, network=network, snapshot=snapshot, block=block
+        )
+        == expected
+    )
+
+
+def test_every_hotkey_of_the_owner_coldkey_is_withheld() -> None:
+    snapshot = _burn_snapshot(
+        coldkeys=("ck-validator", OWNER_COLDKEY, "ck-b", OWNER_COLDKEY)
+    )
+
+    assert chain_withheld_uids(snapshot, 3) == frozenset({1, 3})
+    for broken in (
+        dataclasses.replace(snapshot, owner_coldkey=None),
+        dataclasses.replace(snapshot, coldkeys=("ck-validator", OWNER_COLDKEY)),
+    ):
+        with pytest.raises(EmissionBlocked) as blocked:
+            chain_withheld_uids(broken, 3)
+        assert blocked.value.reason == "owner_snapshot_inconsistent"
+
+
+@pytest.mark.parametrize("burn_bps", [0, 9800])
+def test_a_scored_owner_coldkey_sibling_earns_nothing_at_any_rate(
+    burn_bps: int,
+) -> None:
+    # The chain withholds a sibling's incentive, so its earned share would be
+    # burned on top of the published rate.
+    sibling = _burn_snapshot(
+        coldkeys=("ck-validator", "ck-a", OWNER_COLDKEY, OWNER_COLDKEY)
+    )
+    scores = (Decimal(0), Decimal("0.5"), Decimal("0.5"), Decimal("0.9"))
+    plan = _plan_scored(
+        commitment_record(f"endure.burn_bps={burn_bps}"),
+        scores=scores,
+        snapshot=sibling,
+    )
+
+    earned_by_a = (Decimal(0), Decimal("0.5"), Decimal(0), Decimal(0))
+    if burn_bps == 0:
+        assert plan.weights == earned_by_a and plan.recipient is None
+    else:
+        assert plan.weights == owner_burn_weights(
+            earned_by_a, owner_uid=3, burn_bps=burn_bps
+        )
+        assert plan.weights[2] == 0 and plan.weights[3] == Decimal("0.98")
+    assert plan.burn_bps == burn_bps
+
+
+def test_only_withheld_uids_scoring_is_the_owner_vote() -> None:
+    plan = _plan_scored(
+        NO_BURN,
+        scores=(Decimal(0), Decimal(0), Decimal("0.5"), Decimal("0.9")),
+        snapshot=_burn_snapshot(
+            coldkeys=("ck-validator", "ck-a", OWNER_COLDKEY, OWNER_COLDKEY)
+        ),
+    )
+
+    assert plan.burn_bps == FULL_BURN_BPS
+    assert plan.weights == owner_vote_weights(len(BURN_HOTKEYS), 3)
+
+
+@pytest.mark.parametrize(
+    ("commitment", "reason"),
+    [
+        (
+            OwnerCommitment("another-hotkey", 1000, NO_BURN),
+            "chain_snapshot_inconsistent",
+        ),
+        (
+            OwnerCommitment(SN30_OWNER_HOTKEY, 999, NO_BURN),
+            "chain_snapshot_inconsistent",
+        ),
+        (
+            OwnerCommitment(SN30_OWNER_HOTKEY, 1000, {**NO_BURN, "block": 1001}),
+            "chain_snapshot_inconsistent",
+        ),
+    ],
+)
+def test_a_commitment_read_must_describe_the_snapshot(
+    commitment: OwnerCommitment, reason: str
+) -> None:
+    snapshot = _burn_snapshot()
+    with pytest.raises(EmissionBlocked) as blocked:
+        observed_burn_rate(commitment, snapshot)
+
+    assert blocked.value.reason == reason
+    assert (
+        observed_burn_rate(
+            OwnerCommitment(SN30_OWNER_HOTKEY, 1000, {**NO_BURN, "block": 1000}),
+            snapshot,
+        )
+        == 0
+    )
+    assert observed_burn_rate(None, snapshot) == FULL_BURN_BPS
+
+
+@pytest.mark.parametrize(
+    ("uids", "weights"),
+    [
+        ([3, 1], [1, 1]),
+        ([3, 1], [65535, 65535 * 2]),
+        ([3, 1, 1], [65535, 668, 669]),
+        ([3, 4], [65535, 1337]),
+    ],
+)
+def test_the_burn_recheck_enforces_its_rounding_premises(
+    uids: list[int], weights: list[int]
+) -> None:
+    # A vector that is not max-scaled, repeats a UID or leaves the metagraph
+    # escapes the rounding bound, so it is refused before the share check.
+    hotkeys = ["validator", "miner-a", "miner-b", SN30_OWNER_HOTKEY]
+    with pytest.raises(EmissionBlocked) as blocked:
+        recheck_owner_vote(
+            OwnerVoteRecipient("mainnet", SN30_OWNER_HOTKEY, 3, 9800),
+            chain_identity=MAINNET_GENESIS_HASH,
+            netuid=SN30_NETUID,
+            hotkeys=hotkeys * 64,
+            uint_uids=uids,
+            uint_weights=weights,
+            min_allowed_weights=1,
+            max_weight_limit=Decimal(1),
+        )
+    assert blocked.value.reason in {
+        "owner_vote_vector_invalid",
+        "owner_snapshot_inconsistent",
+    }

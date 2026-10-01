@@ -10,7 +10,7 @@ so constants cannot drift outside the contract again.
 from pathlib import Path
 
 ACTIVATED_VERSION_REGISTRY_DIGEST = (
-    "18d9ff6663b5d1217feef3e04da9c61e7e2dc2d007170cddb276f0a58690095e"
+    "457450e5cc2ef000c719a2a7aa3c9334c20266a28d10621fb41f2232e722d895"
 )
 ACTIVATED_VERSION_HISTORY_DIGEST = (
     "3ffe412a94b4670520fcb90a400c8ebdc2d0af21bebe149e8114d70a8cc0ec48"
@@ -144,15 +144,17 @@ PREVIOUS_VERSION_DIGEST = (
 # 2043: the owner burn rate. On served mainnet SN30 and testnet, a scored vote
 # gives the subnet owner UID the burn rate its hotkey publishes as its subnet
 # commitment ``endure.burn_bps=<0..10000>``, read at the emission snapshot
-# block; miners share the rest by earned weight, the owner's own score
-# excluded. A missing or malformed commitment burns the whole vote and a zero
-# rate keeps the key-2042 earned vector, so scored votes on owner-vote networks
-# now require a valid owner (the pinned SN30 owner on mainnet). Watched
-# decisions: the commitment record decoding and grammar, the full-burn default,
-# the blended raw vector, and the pre-submission recheck bounding the owner's
-# u16 share by the encoding's rounding. The commitment read is unwatched RPC
-# I/O; no schema migration.
+# block; miners share the rest by earned weight, and the owner hotkey and every
+# hotkey of the owner coldkey (whose incentive the chain withholds) earn
+# nothing at any rate. A missing or malformed commitment burns the whole vote
+# and a zero rate pays the earned vector without those hotkeys, so scored votes
+# on owner-vote networks now require a valid owner (the pinned SN30 owner on
+# mainnet). Watched decisions: when the commitment is read and its binding to
+# the snapshot owner and block, the record decoding and grammar, the full-burn
+# default, the chain-withheld set, the blended raw vector, and the
+# pre-submission recheck bounding the owner's u16 share by the encoding's
+# rounding. The query is unwatched RPC I/O; no schema migration.
 CURRENT_VERSION_KEY = 2043
 CURRENT_VERSION_DIGEST = (
-    "ea4863747bcfead6848f3a3012e1c4d532fb16f9db7b97f80299eab7bfe90a23"
+    "04e57e3a3c049940d32502a93fe81edae9bba7072c112b443542940a81d92ecd"
 )

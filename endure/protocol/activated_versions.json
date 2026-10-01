@@ -273,8 +273,8 @@
     }
   ],
   "current_lease": {
-    "authority_sha256": "21f7fed0cfa78025d9a364b4646f8575556cb6495917e5c6b8e57a51a704c309",
-    "digest": "ea4863747bcfead6848f3a3012e1c4d532fb16f9db7b97f80299eab7bfe90a23",
+    "authority_sha256": "0c07d240cdb8bf658084d543447b41d9b590871a53c8e05fd5d6e5175e4e93d5",
+    "digest": "04e57e3a3c049940d32502a93fe81edae9bba7072c112b443542940a81d92ecd",
     "holder": "feat/owner-burn-rate-2043",
     "key": 2043
   },

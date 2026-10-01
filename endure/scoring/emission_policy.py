@@ -9,7 +9,9 @@ allocation never enters scores or EMAs.
 Once a miner scores, the owner still receives the burn rate its hotkey
 publishes as its subnet commitment (``endure.burn_bps=<0..10000>``); miners
 share the rest by earned weight. A missing or malformed commitment burns the
-whole vote, so miners are paid only on the owner's explicit instruction.
+whole vote, so miners are paid only on the owner's explicit instruction. No
+hotkey of the owner's coldkey earns weight at any rate: Subtensor withholds
+their incentive, so the published rate is the whole burn.
 
 Every mode plans from one chain snapshot: validator identity, permit and the
 chain's strict weights rate limit decide whether an attempt is due, so a
@@ -45,6 +47,7 @@ EmissionBlockReason = Literal[
     "validator_identity_invalid",
     "owner_vote_vector_invalid",
     "score_state_unavailable",
+    "owner_commitment_unavailable",
 ]
 
 # Owner burn rate: basis points of each earned vote that go to the owner UID.
@@ -83,16 +86,38 @@ class ChainSnapshot:
     block: int
     hotkeys: Sequence[str]
     owner_hotkey: str | None
+    owner_coldkey: str | None
+    coldkeys: Sequence[str]
     validator_permit: Sequence[bool]
     last_update: Sequence[int]
     weights_rate_limit: int
 
 
 # SDK ``SelectiveMetagraphIndex`` values that populate exactly the
-# ``ChainSnapshot`` fields: Netuid 0 (always decoded), OwnerHotkey 5, Block 7,
-# WeightsRateLimit 27, Hotkeys 52, ValidatorPermit 57, LastUpdate 59. The
-# narrowed ``get_metagraph_info`` skips the stake/axon/identity vectors.
-CHAIN_SNAPSHOT_METAGRAPH_INDICES: Final[tuple[int, ...]] = (0, 5, 7, 27, 52, 57, 59)
+# ``ChainSnapshot`` fields: Netuid 0 (always decoded), OwnerHotkey 5,
+# OwnerColdkey 6, Block 7, WeightsRateLimit 27, Hotkeys 52, Coldkeys 53,
+# ValidatorPermit 57, LastUpdate 59. The narrowed ``get_metagraph_info`` skips
+# the stake/axon/identity vectors.
+CHAIN_SNAPSHOT_METAGRAPH_INDICES: Final[tuple[int, ...]] = (
+    0,
+    5,
+    6,
+    7,
+    27,
+    52,
+    53,
+    57,
+    59,
+)
+
+
+@dataclass(frozen=True, slots=True)
+class OwnerCommitment:
+    """One read of the owner's subnet commitment: whose, at which block, what."""
+
+    hotkey: str
+    block: int
+    record: object
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,6 +138,72 @@ def select_emission_mode(
     if any(score > 0 for score in scores):
         return "scored"
     return "abstain" if owner_vote_network is None else "owner_vote"
+
+
+def burn_commitment_owner(
+    *,
+    mode: Literal["scored", "owner_vote"],
+    network: OwnerVoteNetwork | None,
+    snapshot: ChainSnapshot | None,
+    block: int,
+) -> str | None:
+    """The hotkey whose subnet commitment sets this attempt's burn rate.
+
+    Only a scored attempt on an owner-vote network reads it, from the owner in
+    a snapshot taken at the attempt block, and at that same block. ``None``
+    means no read applies; a read that fails blocks the attempt instead of
+    reaching ``plan_emission``.
+    """
+    if mode != "scored" or network is None or snapshot is None:
+        return None
+    if snapshot.block != block or not snapshot.owner_hotkey:
+        return None
+    return snapshot.owner_hotkey
+
+
+def chain_withheld_uids(snapshot: ChainSnapshot, owner_uid: int) -> frozenset[int]:
+    """UIDs whose miner incentive Subtensor withholds instead of paying.
+
+    The chain burns (or recycles) the incentive of the subnet owner hotkey and
+    of every registered hotkey of the owner's coldkey, so none of them earns.
+    """
+    if not snapshot.owner_coldkey or len(snapshot.coldkeys) != len(snapshot.hotkeys):
+        raise EmissionBlocked(
+            "owner_snapshot_inconsistent",
+            "Snapshot lacks the owner coldkey or a coldkey per UID",
+        )
+    owned = (
+        uid
+        for uid, coldkey in enumerate(snapshot.coldkeys)
+        if coldkey == snapshot.owner_coldkey
+    )
+    return frozenset((*owned, owner_uid))
+
+
+def observed_burn_rate(
+    commitment: OwnerCommitment | None, snapshot: ChainSnapshot
+) -> int:
+    """The burn rate one owner commitment read sets for this snapshot.
+
+    No read burns the whole vote. A read of another hotkey or block, or a
+    record newer than its read block, does not describe this snapshot.
+    """
+    if commitment is None:
+        return FULL_BURN_BPS
+    if commitment.hotkey != snapshot.owner_hotkey or commitment.block != snapshot.block:
+        raise EmissionBlocked(
+            "chain_snapshot_inconsistent",
+            "Owner commitment was not read from the snapshot owner at its block",
+        )
+    record = commitment.record
+    recorded = record.get("block") if isinstance(record, Mapping) else None
+    if isinstance(recorded, int) and not isinstance(recorded, bool):
+        if recorded > commitment.block:
+            raise EmissionBlocked(
+                "chain_snapshot_inconsistent",
+                "Owner commitment is newer than the block it was read at",
+            )
+    return parse_burn_rate(commitment_text(record))
 
 
 def burn_commitment_text(burn_bps: int) -> str:
@@ -167,8 +258,8 @@ def owner_burn_weights(
     """Raw vector giving the owner ``burn_bps`` and miners the earned rest.
 
     Earned shares are the normalized positive scores of every UID but the
-    owner's. ``None`` means no other UID holds a positive score, so the owner
-    vote applies instead.
+    owner's; callers zero the other chain-withheld UIDs first. ``None`` means
+    no other UID holds a positive score, so the owner vote applies instead.
     """
     if not 0 <= owner_uid < len(scores):
         raise EmissionBlocked(
@@ -201,12 +292,13 @@ def plan_emission(  # noqa: PLR0913 — one snapshot plus the attempt's identity
     validator_hotkey: str,
     local_hotkeys: Sequence[str],
     scores: Sequence[Decimal],
-    owner_commitment: object = None,
+    owner_commitment: OwnerCommitment | None = None,
 ) -> EmissionPlan:
     """Plan one attempt from one snapshot, or raise ``EmissionBlocked``.
 
-    ``owner_commitment`` is the owner hotkey's raw commitment record read at
-    the snapshot block; it sets the burn rate of a scored attempt.
+    ``owner_commitment`` is the owner hotkey's commitment read at the snapshot
+    block; it sets the burn rate of a scored attempt, and without it the whole
+    vote burns.
     """
     if snapshot is None or snapshot.block != block:
         raise EmissionBlocked(
@@ -241,20 +333,14 @@ def plan_emission(  # noqa: PLR0913 — one snapshot plus the attempt's identity
             snapshot=snapshot,
             local_hotkeys=local_hotkeys,
         )
-        burn_bps = (
-            FULL_BURN_BPS
-            if mode == "owner_vote"
-            else parse_burn_rate(commitment_text(owner_commitment))
+        weights, burn_bps = _vote_network_weights(
+            mode=mode,
+            snapshot=snapshot,
+            owner_uid=owner_uid,
+            size=len(local_hotkeys),
+            scores=scores,
+            owner_commitment=owner_commitment,
         )
-        if 0 < burn_bps < FULL_BURN_BPS:
-            burned = owner_burn_weights(scores, owner_uid=owner_uid, burn_bps=burn_bps)
-            if burned is None:
-                # No other UID holds a positive score: the owner's vote is whole.
-                burn_bps = FULL_BURN_BPS
-            else:
-                weights = burned
-        if burn_bps == FULL_BURN_BPS:
-            weights = owner_vote_weights(len(local_hotkeys), owner_uid)
         if burn_bps > 0:
             recipient = OwnerVoteRecipient(
                 network, local_hotkeys[owner_uid], owner_uid, burn_bps
@@ -278,6 +364,37 @@ def plan_emission(  # noqa: PLR0913 — one snapshot plus the attempt's identity
         recipient=recipient,
         burn_bps=burn_bps,
     )
+
+
+def _vote_network_weights(  # noqa: PLR0913 — the planned attempt's inputs
+    *,
+    mode: Literal["scored", "owner_vote"],
+    snapshot: ChainSnapshot,
+    owner_uid: int,
+    size: int,
+    scores: Sequence[Decimal],
+    owner_commitment: OwnerCommitment | None,
+) -> tuple[tuple[Decimal, ...], int]:
+    """Raw vector and owner share of an attempt on an owner-vote network."""
+    if mode == "scored":
+        # Weight on a withheld UID would be burned too, so it earns nothing and
+        # the published rate stays the whole burn.
+        withheld = chain_withheld_uids(snapshot, owner_uid)
+        earned = tuple(
+            Decimal(0) if uid in withheld else score for uid, score in enumerate(scores)
+        )
+        if any(score > 0 for score in earned):
+            burn_bps = observed_burn_rate(owner_commitment, snapshot)
+            if burn_bps == 0:
+                return earned, 0
+            burned = (
+                owner_burn_weights(earned, owner_uid=owner_uid, burn_bps=burn_bps)
+                if burn_bps < FULL_BURN_BPS
+                else None
+            )
+            if burned is not None:
+                return burned, burn_bps
+    return owner_vote_weights(size, owner_uid), FULL_BURN_BPS
 
 
 def _local_owner_uid(
@@ -456,18 +573,24 @@ def _recheck_owner_burn_share(
 ) -> None:
     """Require the owner's u16 share to equal the burn rate up to rounding.
 
-    Each u16 entry rounds its exact value by at most one half, so with ``n``
-    UIDs and u16 total ``T`` the owner's share can differ from the burn rate
-    by at most ``(n + 1) / (2T)``; the check is exact integer arithmetic.
+    The encoder scales the largest entry to the u16 maximum and rounds each
+    exact value by at most one half. With ``n`` UIDs and u16 total ``T >= 65535``
+    the owner's share can therefore differ from the burn rate by at most
+    ``(n + 1) / (2T)``, under 0.2% for 256 UIDs; the check is exact integer
+    arithmetic and also enforces its premises.
     """
     if (
-        len(uint_uids) != len(uint_weights)
-        or uint_uids.count(recipient.uid) != 1
+        not uint_weights
+        or len(uint_uids) != len(uint_weights)
+        or len(set(uint_uids)) != len(uint_uids)
+        or recipient.uid not in uint_uids
+        or any(not 0 <= uid < len(hotkeys) for uid in uint_uids)
         or any(weight <= 0 or weight > U16_MAX for weight in uint_weights)
+        or max(uint_weights) != U16_MAX
     ):
         raise EmissionBlocked(
             "owner_vote_vector_invalid",
-            "Owner burn requires one owner entry in a positive u16 vector",
+            "Owner burn requires a max-scaled u16 vector with one owner entry",
         )
     owner_u16 = uint_weights[uint_uids.index(recipient.uid)]
     total = sum(uint_weights)

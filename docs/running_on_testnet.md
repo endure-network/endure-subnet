@@ -76,7 +76,10 @@ no miner has a positive score, and earned weights as soon as one does. See the
 From key `2043`, those earned weights give the testnet owner UID the
 [owner burn rate](running_on_mainnet.md#owner-burn-rate) published by the
 testnet subnet owner hotkey, and a missing rate burns the whole vote. Testnet
-has no owner-hotkey pin. Before a soak that needs miners to receive weight,
+has no owner-hotkey pin. Hotkeys registered under the owner's coldkey never
+earn, because the chain withholds their incentive; register soak miners under
+another coldkey to exercise earned weights. Before a soak that needs miners to
+receive weight,
 publish a rate from the netuid-504 owner hotkey, for example
 `python scripts/set_burn_rate.py --network test --netuid 504 --wallet-name <owner-wallet> --wallet-hotkey <owner-hotkey> --publish 9800`.
 

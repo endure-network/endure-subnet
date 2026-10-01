@@ -187,14 +187,16 @@ endure.burn_bps=<0..10000>
 ```
 
 The owner UID receives that many basis points of the vote and miners share the
-rest by earned weight; the owner's own score, if any, is excluded. The chain
-burns miner emission that reaches the owner hotkey (SN30's `RecycleOrBurn` is
-`Burn`). The rule is strict:
+rest by earned weight. The chain withholds the incentive of the owner hotkey
+and of every registered hotkey of the owner's coldkey, burning it on SN30
+(`RecycleOrBurn` is `Burn`), so none of those UIDs earns weight at any rate and
+the published rate is the whole burn. Do not run miners under the owner
+coldkey. The rule is strict:
 
 | Owner commitment | Vote of a scored attempt |
 | --- | --- |
 | `endure.burn_bps=9800` | 98% to the owner UID, 2% to miners by earned weight |
-| `endure.burn_bps=0` | the earned vector alone, as in key `2042` |
+| `endure.burn_bps=0` | the earned vector alone, without owner-coldkey hotkeys |
 | `endure.burn_bps=10000`, missing, or anything else | the whole vote to the owner UID |
 
 Anything else includes surrounding whitespace, a leading zero or plus sign, a
@@ -203,10 +205,21 @@ on the owner's explicit instruction. With no positive score the owner vote
 applies whatever the commitment says. Because the rate comes from the owner
 key, scored votes on owner-vote networks also need a valid owner: the owner
 block reasons below stop earned weights too, even at a zero rate. A failed
-commitment read is handled like a failed snapshot read and retried at the next
-attempt. The pre-submission recheck requires chain `min_allowed_weights` and
-`max_weight_limit` of `1` and an owner u16 share within the encoding's
-rounding bound of the rate.
+commitment read abstains with `owner_commitment_unavailable` and is retried at
+the next attempt. The rate is bound to the snapshot: the commitment is read
+from the snapshot's owner at the snapshot block, and a record newer than that
+block is refused. A rate or owner change after the snapshot applies from the
+next attempt. The pre-submission recheck requires chain `min_allowed_weights`
+and `max_weight_limit` of `1` and a max-scaled u16 vector whose owner share is
+within the encoding's rounding bound of the rate (about ±19 bps for SN30's 256
+UIDs), so it guards gross errors rather than distinguishing nearby rates.
+
+The vote is one u16 vector with the owner's entry at the maximum, so at high
+rates the miners' pool is about `65535 × (1 − b) / b` units, roughly 1,337 at
+98%. Small shares round coarsely, a miner below about 0.037% of the pool at 98%
+receives nothing, and the realized burn can sit slightly above the published
+rate (98.13% with 250 equal miners at 98%). Allow for this when planning steps
+as miners register.
 
 Read or publish the rate with the owner tool. Publishing is signed by the owner
 hotkey, waits for finalization and reads the value back; it refuses any other
@@ -263,6 +276,7 @@ validator abstains without submitting: `emission_mode=abstain`,
 | `chain_snapshot_inconsistent` | no or stale chain snapshot, incoherent rate data, or a scored UID whose hotkey differs between the local metagraph and the chain snapshot (the earned weight is never sent to the new registrant) | 503 after 2 epochs (200 blocks) |
 | `validator_identity_invalid` | the validator's own UID/hotkey is not valid in the snapshot | 503 after 2 epochs (200 blocks) |
 | `score_state_unavailable` | durable score state (EMAs) cannot be read, at an attempt or after a resync; no owner vote and no stale weights | 503 after 2 epochs (200 blocks) |
+| `owner_commitment_unavailable` | the owner burn-rate commitment cannot be read at a scored attempt | 503 after 2 epochs (200 blocks) |
 
 Blocks are retried each epoch and clear automatically once chain state is safe
 again. The 2-epoch escalation runs on one clock per continuous blocked streak,
@@ -270,7 +284,11 @@ across reasons (a fault flapping between snapshot reasons still pages), and
 counts re-observations: a condition that clears before the next attempt
 re-observes it never pages. While blocked, the validator's last weights age toward SN30's
 `activity_cutoff` of 5000 blocks (~16.7 h), and an owner-hotkey rotation would
-block every key-`2042` validator at once, so these must page an operator.
+block every key-`2042` or later validator at once; from key `2043` it stops
+earned weights as well as the owner vote, so every such validator stops
+emitting and the last submitted weights stay in force until a release updates
+the pin. Never rotate or swap the SN30 owner hotkey without that release.
+These conditions must page an operator.
 Container healthchecks use `/live`, so a 503 on `/health` pages without restart
 loops.
 
