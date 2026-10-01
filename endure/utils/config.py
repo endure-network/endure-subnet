@@ -145,10 +145,8 @@ def uses_mainnet_consensus_policy(config: "bt.Config") -> bool:
 
 
 def devnet_owner_vote_enabled(config: "bt.Config") -> bool:
-    section = getattr(config, "endure", None)
-    return bool(
-        False if section is None else getattr(section, "devnet_owner_vote", False)
-    )
+    """Only the flag's literal ``True`` opts in, never another truthy value."""
+    return getattr(getattr(config, "endure", None), "devnet_owner_vote", False) is True
 
 
 def owner_vote_network(config: "bt.Config") -> OwnerVoteNetwork | None:

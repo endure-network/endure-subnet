@@ -11,7 +11,7 @@ import argparse
 from collections.abc import Callable
 from decimal import Decimal
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import bittensor as bt
 import pytest
@@ -35,6 +35,7 @@ from endure.utils.config import (
     apply_consensus_settings,
     check_config,
     config,
+    devnet_owner_vote_enabled,
     owner_vote_network,
     permits_dev_only_runtime,
     require_compression_runtime_allowed,
@@ -637,6 +638,15 @@ class TestCheckConfig:
             RuntimeError, match="--endure.devnet_owner_vote is dev-only"
         ):
             check_config(_FakeCls, cfg)
+
+    def test_devnet_owner_vote_needs_the_flags_literal_true(self) -> None:
+        # A truthy non-bool, such as an auto-created mock attribute, never
+        # switches a dev chain onto the owner vote.
+        assert devnet_owner_vote_enabled(MagicMock()) is False
+        enabled = MagicMock()
+        enabled.endure.devnet_owner_vote = True
+
+        assert devnet_owner_vote_enabled(enabled) is True
 
     def test_devnet_owner_vote_runs_the_testnet_vote_on_a_local_chain(
         self, tmp_path: Path
