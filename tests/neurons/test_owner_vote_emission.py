@@ -26,6 +26,7 @@ from endure.assessment.schemas.subnet_alpha_risk import (
     RiskOutput,
     RiskSubmissionBundle,
 )
+from endure.base.rate_gate import ChainRpcStalled
 from endure.base.validator import (
     WEIGHT_EMISSION_FINALITY_MARGIN_BLOCKS,
     BaseValidatorNeuron,
@@ -49,7 +50,7 @@ from endure.scoring.risk.orchestrator import RiskScoringOrchestrator, risk_coord
 from endure.scoring.weight_processing import chain_weight_vector, emission_candidate
 from endure.scoring.weights import ema_update
 from endure.storage.repository import Storage, WeightEmissionChainSnapshot
-from neurons.validator import Validator
+from neurons.validator import _OWNER_READ_ATTEMPTS, Validator, _read_owner_fact
 from tests.neurons.test_emission_health import _check_storage_calls
 from tests.scoring.test_emission_policy import commitment_record
 
@@ -538,6 +539,26 @@ def test_local_and_mock_networks_keep_abstaining(
     assert chain.submissions == []
     assert validator._observed_emission_mode() == "abstain"
     assert validator._emission_reason == "no_positive_scores"
+
+
+def test_an_opted_in_local_chain_rehearses_the_owner_vote_and_burn_rate(
+    storage: Storage, mock_validator_config: bt.Config
+) -> None:
+    chain = ReplayChain(storage, genesis="0xdevnet-genesis")
+    publish_burn(chain, 9800)
+    validator = replay_validator(storage, mock_validator_config, chain, network="local")
+    validator.config.endure.devnet_owner_vote = True
+    advance_past_startup_fence(validator, chain)
+    validator.set_weights()
+    assert chain.submissions == [OWNER_VOTE_176]
+
+    record_resolved_scores(storage, chain)
+    validator._reconstruct_scores()
+    chain.confirm_and_pace()
+    validator.set_weights()
+
+    assert chain.submissions == [OWNER_VOTE_176, burned_vector(validator, chain, 9800)]
+    assert validator._emission_burn_bps == 9800
 
 
 def test_local_network_still_emits_earned_weights_when_scored(
@@ -1108,15 +1129,19 @@ def test_an_unreadable_burn_rate_blocks_with_its_reason_and_recovers(
     advance_past_startup_fence(validator, chain)
     validator._emission_burn_bps = 9800
     original = chain.get_commitment_metadata
+    reads: list[int | None] = []
 
     def unreadable(netuid: int, hotkey_ss58: str, block: int | None = None) -> object:
+        reads.append(block)
         raise ConnectionError("commitment storage read failed")
 
     chain.get_commitment_metadata = unreadable
-    # The failure returns to sync() as a named block, so the attempt is paced
-    # to the next epoch instead of re-planning on every loop pass.
+    # Once the in-place retries are spent, the failure returns to sync() as a
+    # named block, so the attempt is paced to the next epoch instead of
+    # re-planning on every loop pass.
     validator.set_weights()
 
+    assert reads == [reads[0]] * _OWNER_READ_ATTEMPTS
     assert chain.submissions == []
     assert validator._observed_emission_mode() == "abstain"
     assert validator._emission_reason == "owner_commitment_unavailable"
@@ -1251,6 +1276,102 @@ def test_owner_changes_before_submission_refuse_the_prepared_vote(
     validator._last_weights_attempt = None
     validator.set_weights()
     assert chain.submissions == [burned_vector(validator, chain, 9800)]
+
+
+def test_a_transient_burn_rate_read_error_is_retried_in_place(
+    storage: Storage, mock_validator_config: bt.Config
+) -> None:
+    chain = ReplayChain(storage)
+    publish_burn(chain, 9800)
+    record_resolved_scores(storage, chain)
+    validator = replay_validator(storage, mock_validator_config, chain)
+    advance_past_startup_fence(validator, chain)
+    original = chain.get_commitment_metadata
+    failures = [ConnectionError("commitment storage read failed")]
+
+    def flaky(netuid: int, hotkey_ss58: str, block: int | None = None) -> object:
+        if failures:
+            raise failures.pop()
+        return original(netuid, hotkey_ss58, block=block)
+
+    chain.get_commitment_metadata = flaky
+    validator.set_weights()
+
+    assert chain.submissions == [burned_vector(validator, chain, 9800)]
+    assert validator._emission_block is None
+    assert validator._emission_burn_bps == 9800
+
+
+@pytest.mark.parametrize("failures", range(1, _OWNER_READ_ATTEMPTS))
+def test_a_transient_owner_state_error_is_retried_at_the_submission_block(
+    storage: Storage, mock_validator_config: bt.Config, failures: int
+) -> None:
+    chain = ReplayChain(storage)
+    publish_burn(chain, 9800)
+    record_resolved_scores(storage, chain)
+    validator = replay_validator(storage, mock_validator_config, chain)
+    advance_past_startup_fence(validator, chain)
+    original = chain.get_metagraph_info
+    reads: list[int] = []
+
+    def flaky(
+        netuid: int, *, selected_indices: list[int], block: int
+    ) -> SimpleNamespace:
+        if selected_indices == list(OWNER_STATE_METAGRAPH_INDICES):
+            reads.append(block)
+            if len(reads) <= failures:
+                raise ConnectionError("owner state read reset")
+        return original(netuid, selected_indices=selected_indices, block=block)
+
+    chain.get_metagraph_info = flaky
+    validator.set_weights()
+
+    # Every retry reads the same submission block again, never a cached copy.
+    assert reads == [reads[0]] * (failures + 1)
+    assert chain.submissions == [burned_vector(validator, chain, 9800)]
+    assert validator._consecutive_set_weights_failures == 0
+
+
+def test_an_owner_state_error_that_persists_refuses_the_vote(
+    storage: Storage, mock_validator_config: bt.Config
+) -> None:
+    chain = ReplayChain(storage)
+    publish_burn(chain, 9800)
+    record_resolved_scores(storage, chain)
+    validator = replay_validator(storage, mock_validator_config, chain)
+    advance_past_startup_fence(validator, chain)
+    original = chain.get_metagraph_info
+    reads: list[int] = []
+
+    def unreadable(
+        netuid: int, *, selected_indices: list[int], block: int
+    ) -> SimpleNamespace:
+        if selected_indices == list(OWNER_STATE_METAGRAPH_INDICES):
+            reads.append(block)
+            raise ConnectionError("owner state read reset")
+        return original(netuid, selected_indices=selected_indices, block=block)
+
+    chain.get_metagraph_info = unreadable
+    validator.set_weights()
+
+    assert len(reads) == _OWNER_READ_ATTEMPTS
+    assert chain.submissions == []
+    assert validator._emission_reason == "chain_snapshot_inconsistent"
+    [batch] = storage.weight_emission_history(RISK_SCHEMA_ID)
+    assert batch["status"] == "failed"
+
+
+def test_owner_reads_never_retry_rpc_gate_signals() -> None:
+    calls: list[str] = []
+
+    def stalled() -> object:
+        calls.append("read")
+        raise ChainRpcStalled(operation_name="get_metagraph_info", timeout_seconds=90)
+
+    # The gate owns stalls and throttles; retrying here would bypass it.
+    with pytest.raises(ChainRpcStalled):
+        _read_owner_fact(stalled, what="owner state")
+    assert calls == ["read"]
 
 
 def test_an_ineligible_attempt_never_reads_the_burn_rate(

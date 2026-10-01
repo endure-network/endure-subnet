@@ -13,7 +13,7 @@ import contextlib
 import copy
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -126,9 +126,11 @@ from endure.utils.config import (
     DevOnlyConfigError,
     active_runtime_schema_id,
     apply_consensus_settings,
+    devnet_owner_vote_enabled,
     owner_vote_network,
     permits_dev_only_runtime,
     require_compression_runtime_allowed,
+    require_dev_only_runtime,
     require_explicit_netuid,
     require_mainnet_validator_policy,
     require_serving_stage_allowed,
@@ -147,9 +149,31 @@ _IMMEDIATE_EMISSION_BLOCKS: Final = frozenset(
     {"owner_hotkey_mismatch", "owner_unregistered", "owner_vote_chain_mismatch"}
 )
 _TRANSIENT_EMISSION_BLOCK_EPOCHS: Final = 2
+# An owner read that fails with a transient RPC error is retried in place,
+# paced by the RPC gate; only after the last attempt does the vote wait for
+# the next epoch.
+_OWNER_READ_ATTEMPTS: Final = 3
 # /health reuses the durable confirmation summary this long, so public polling
 # cannot turn into one database query per request; emission events drop it.
 _CONFIRMATION_SUMMARY_TTL_SECONDS: Final = 5.0
+
+
+def _read_owner_fact[T](read: Callable[[], T], *, what: str) -> T:
+    """Retry a transient owner read in place; RPC gate control flow propagates."""
+    attempt = 1
+    while True:
+        try:
+            return read()
+        except (RateLimited, ChainRpcStalled, ChainRpcRestartRequired):
+            raise
+        except Exception as error:  # noqa: BLE001 — RPC error types vary by backend
+            if attempt >= _OWNER_READ_ATTEMPTS:
+                raise
+            bt.logging.warning(
+                f"{what} unreadable (attempt {attempt} of {_OWNER_READ_ATTEMPTS}), "
+                f"retrying: {safe_error(error)}"
+            )
+            attempt += 1
 
 
 def _cr4_reveal_scan_batch_budget(epoch_length: int) -> int:
@@ -225,6 +249,11 @@ class Validator(BaseValidatorNeuron):
         if compression_enabled(resolved_config):
             # Refuse offline before the network-bound archive probe below.
             require_compression_runtime_allowed(resolved_config)
+        if devnet_owner_vote_enabled(resolved_config):
+            # Genesis may have shown a loopback endpoint to be a live chain.
+            require_dev_only_runtime(
+                resolved_config, feature="--endure.devnet_owner_vote"
+            )
         if (
             active_runtime_schema_id(resolved_config) == RISK_SCHEMA_ID
             and int(resolved_config.neuron.num_concurrent_forwards) != 1
@@ -1226,11 +1255,16 @@ class Validator(BaseValidatorNeuron):
     ) -> OwnerCommitment:
         """Read the owner's burn-rate commitment at the snapshot block.
 
-        A failed read blocks the attempt with its own reason and is retried
-        next epoch; RPC gate control flow still propagates.
+        A read that still fails after its in-place retries blocks the attempt
+        with its own reason until next epoch; RPC gate control flow propagates.
         """
         try:
-            record = self.subtensor.get_commitment_metadata(netuid, hotkey, block=block)
+            record = _read_owner_fact(
+                lambda: self.subtensor.get_commitment_metadata(
+                    netuid, hotkey, block=block
+                ),
+                what="owner commitment",
+            )
         except (RateLimited, ChainRpcStalled, ChainRpcRestartRequired):
             raise
         except Exception as error:  # noqa: BLE001 — RPC error types vary by backend
@@ -1241,14 +1275,21 @@ class Validator(BaseValidatorNeuron):
         return OwnerCommitment(hotkey=hotkey, block=block, record=record)
 
     def _owner_state_at(self, block: int | None) -> OwnerState | None:
-        """Re-read the subnet owner facts at the submission block."""
+        """Re-read the subnet owner facts at the submission block.
+
+        The recheck needs the chain as of this block, so a cached snapshot
+        cannot stand in; a transient error is retried at the same block.
+        """
         if block is None:
             return None
         try:
-            info = self.subtensor.get_metagraph_info(
-                netuid=int(self.config.netuid),
-                selected_indices=list(OWNER_STATE_METAGRAPH_INDICES),
-                block=block,
+            info = _read_owner_fact(
+                lambda: self.subtensor.get_metagraph_info(
+                    netuid=int(self.config.netuid),
+                    selected_indices=list(OWNER_STATE_METAGRAPH_INDICES),
+                    block=block,
+                ),
+                what="owner state",
             )
         except (RateLimited, ChainRpcStalled, ChainRpcRestartRequired):
             raise

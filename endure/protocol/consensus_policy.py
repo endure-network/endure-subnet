@@ -205,16 +205,18 @@ def consensus_settings_pinned(chain: ChainClass, *, served: bool) -> bool:
 
 
 def chain_owner_vote_network(
-    chain: ChainClass, *, served: bool
+    chain: ChainClass, *, served: bool, devnet_owner_vote: bool = False
 ) -> OwnerVoteNetwork | None:
     """Served Alpha Risk on mainnet or testnet votes for the owner when idle.
 
-    Development and unrecognized chains keep abstaining.
+    A development chain runs the testnet rules only when the operator opts in,
+    so a local devnet can rehearse the owner vote and burn rate end to end.
+    Other development and unrecognized chains keep abstaining.
     """
     if not served:
         return None
     if chain == "mainnet":
         return "mainnet"
-    if chain == "testnet":
+    if chain == "testnet" or (chain == "dev" and devnet_owner_vote):
         return "testnet"
     return None

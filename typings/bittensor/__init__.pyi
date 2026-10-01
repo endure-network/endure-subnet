@@ -70,6 +70,9 @@ class MetagraphInfo:
     validator_permit: list[bool]
     last_update: list[int]
     weights_rate_limit: int
+    # Devnet cycle evidence only; Balance values are printed, never computed on.
+    incentives: list[float]
+    emission: list[object]
 
 class Metagraph:
     n: Any

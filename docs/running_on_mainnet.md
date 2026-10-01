@@ -207,8 +207,9 @@ key, scored votes on owner-vote networks also need a valid owner: the owner
 block reasons below stop earned weights too, even at a zero rate. The
 commitment is read only once owner, permit and rate limit allow the attempt,
 from the snapshot's owner at the snapshot block; a record newer than that
-block is refused, and a failed read abstains with
-`owner_commitment_unavailable` and is retried at the next attempt.
+block is refused, and a read that still fails after three in-place attempts
+abstains with `owner_commitment_unavailable` and is retried at the next
+attempt.
 
 Every scored vote on an owner-vote network, at any rate including zero, passes
 the pre-submission recheck. It requires chain `min_allowed_weights` and
@@ -223,7 +224,9 @@ the validator also re-reads the owner hotkey, owner coldkey, and every UID's
 hotkey and coldkey at the submission block, and refuses the attempt if the
 owner changed or any UID in the vector changed hands or withheld status
 (`owner_snapshot_inconsistent` or `chain_snapshot_inconsistent`), so a burned
-share never reaches a former owner.
+share never reaches a former owner. The re-read has to observe that block, so
+no cached copy can stand in for it; a transient RPC error is retried in place,
+up to three attempts at the same block, before the attempt is refused.
 
 The vote is one u16 vector with the owner's entry at the maximum, so at high
 rates the miners' pool is about `65535 × (1 − b) / b` units, roughly 1,337 at
@@ -316,7 +319,7 @@ failure, `owner_vote_vector_invalid` (chain `min_allowed_weights` or
 max-scaled with the owner share of the rate), `owner_snapshot_inconsistent`
 (the owner UID moved, or the owner or a vector UID's withheld status changed
 before submission) or `chain_snapshot_inconsistent` (no owner state at the
-submission block, or a vector UID changed hands), aborts before sending, counts as one failed `set_weights` attempt so
+submission block after three read attempts, or a vector UID changed hands), aborts before sending, counts as one failed `set_weights` attempt so
 health degrades through the failure counter, sets `emission_blocked_reason`,
 and is retried at the next epoch, not in a hot loop. The refused vector is
 recorded in the weight-emission history as a `failed` batch that was never

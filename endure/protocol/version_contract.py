@@ -10,7 +10,7 @@ so constants cannot drift outside the contract again.
 from pathlib import Path
 
 ACTIVATED_VERSION_REGISTRY_DIGEST = (
-    "4f9aba0796c2c8a0d5ba08da3a77d510780f468e6d3adf435c7925a3234522b3"
+    "78663aaacad9b1c1f58fd973b95cf44fe93ed620f5fc62ed41fc8feb0a07ed48"
 )
 ACTIVATED_VERSION_HISTORY_DIGEST = (
     "3ffe412a94b4670520fcb90a400c8ebdc2d0af21bebe149e8114d70a8cc0ec48"
@@ -158,5 +158,5 @@ PREVIOUS_VERSION_DIGEST = (
 # no schema migration.
 CURRENT_VERSION_KEY = 2043
 CURRENT_VERSION_DIGEST = (
-    "1115d85096ff37cc057b531ef74aa7b8dd69039ac7cf9ff536525eb0fc38dc94"
+    "b99135ebe7bde1f22ab7edf33ff581f5cabc2735cde979d22a423b70a6e11cd0"
 )

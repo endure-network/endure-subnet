@@ -80,3 +80,21 @@ def test_served_mainnet_and_testnet_alone_get_policy_and_owner_vote(
     assert mainnet_policy_applies(chain, served=served) is policy
     assert consensus_settings_pinned(chain, served=served) is pinned
     assert chain_owner_vote_network(chain, served=served) == vote
+
+
+@pytest.mark.parametrize(
+    ("chain", "served", "vote"),
+    [
+        ("dev", True, "testnet"),
+        ("mainnet", True, "mainnet"),
+        ("testnet", True, "testnet"),
+        ("unrecognized", True, None),
+        ("dev", False, None),
+    ],
+)
+def test_the_devnet_owner_vote_opt_in_reaches_served_dev_chains_only(
+    chain: ChainClass, served: bool, vote: str | None
+) -> None:
+    assert (
+        chain_owner_vote_network(chain, served=served, devnet_owner_vote=True) == vote
+    )

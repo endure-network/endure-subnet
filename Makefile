@@ -26,7 +26,7 @@ NPM ?= npm
 JSCPD_VERSION := 5.0.16
 JSCPD := $(ROOT)/node_modules/.bin/jscpd
 
-.PHONY: help ensure-bootstrap-python bootstrap seeder-install install dev-install lint format typecheck test test-ci migrations guardrails ensure-node-tools check-duplication verify verify-ci clean dev dev-miner devnet-cycle devnet-fault-miner devnet-fault-validator devnet-fault-miner-state-loss devnet-faults ensure-uv ensure-gitleaks ensure-verify-deps regen-stubs
+.PHONY: help ensure-bootstrap-python bootstrap seeder-install install dev-install lint format typecheck test test-ci migrations guardrails ensure-node-tools check-duplication verify verify-ci clean dev dev-miner devnet-cycle devnet-burn-cycle devnet-fault-miner devnet-fault-validator devnet-fault-miner-state-loss devnet-faults ensure-uv ensure-gitleaks ensure-verify-deps regen-stubs
 
 help:
 	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "  %-22s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -166,6 +166,9 @@ dev-miner: ## Run miner in mock mode (kill with Ctrl+C)
 
 devnet-cycle: ## Run Alpha Risk R5 compressed full cycle against an already-running local subtensor
 	$(PYTHON) scripts/run_devnet_cycle.py --netuid $${NETUID:?set NETUID from scripts/dev/seed_chain.sh} --network $${NETWORK:-ws://127.0.0.1:9946} $(if $(WALLET_PATH),--wallet-path "$(WALLET_PATH)")
+
+devnet-burn-cycle: ## Run the full cycle on the owner vote with a published burn rate (BURN_BPS, default 9800)
+	$(PYTHON) scripts/run_devnet_cycle.py --netuid $${NETUID:?set NETUID from scripts/dev/seed_chain.sh} --network $${NETWORK:-ws://127.0.0.1:9946} $(if $(WALLET_PATH),--wallet-path "$(WALLET_PATH)") --burn-bps $${BURN_BPS:-9800} --round-seconds 240 --timeout-seconds 1200
 
 devnet-fault-miner: ## Restart the Alpha miner after its commit and require full recovery
 	$(PYTHON) scripts/run_devnet_cycle.py --netuid $${NETUID:?set NETUID from scripts/dev/seed_chain.sh} --network $${NETWORK:-ws://127.0.0.1:9946} $(if $(WALLET_PATH),--wallet-path "$(WALLET_PATH)") --fault miner-restart-after-commit --round-seconds 240 --timeout-seconds 720

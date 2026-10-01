@@ -144,9 +144,18 @@ def uses_mainnet_consensus_policy(config: "bt.Config") -> bool:
     )
 
 
+def devnet_owner_vote_enabled(config: "bt.Config") -> bool:
+    section = getattr(config, "endure", None)
+    return bool(
+        False if section is None else getattr(section, "devnet_owner_vote", False)
+    )
+
+
 def owner_vote_network(config: "bt.Config") -> OwnerVoteNetwork | None:
     return chain_owner_vote_network(
-        chain_class(config), served=requires_serving_stage_gate(config)
+        chain_class(config),
+        served=requires_serving_stage_gate(config),
+        devnet_owner_vote=devnet_owner_vote_enabled(config),
     )
 
 
@@ -400,6 +409,8 @@ def check_config(cls, config: "bt.Config"):
         else getattr(endure_section, "devnet_time_compression", False)
     ):
         require_compression_runtime_allowed(config)
+    if devnet_owner_vote_enabled(config):
+        require_dev_only_runtime(config, feature="--endure.devnet_owner_vote")
 
     warn_ignored_options(config)
 
@@ -524,6 +535,16 @@ def add_args(cls, parser):
             "Alpha Risk compressed round windows and horizon due times. Allowed "
             "on mock/local chains, or on Bittensor testnet only with "
             "--endure.serving_stage testnet; always refused on mainnet."
+        ),
+    )
+    parser.add_argument(
+        "--endure.devnet_owner_vote",
+        action="store_true",
+        default=False,
+        help=(
+            "Run the testnet owner vote and owner burn rate on a mock/local "
+            "chain, so a devnet rehearses the live emission path; refused on "
+            "testnet/mainnet."
         ),
     )
     parser.add_argument(

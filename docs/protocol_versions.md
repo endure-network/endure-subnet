@@ -245,18 +245,20 @@ recheck at every rate (chain limits, withheld UIDs, the owner's u16 share), and
 the submission-block owner-state recheck are digest-covered in
 [emission_policy.py](../endure/scoring/emission_policy.py); the query itself is
 unwatched RPC I/O, and the emission snapshot now also reads the owner coldkey
-and per-UID coldkeys. No schema migration is introduced; scoring coefficients,
+and per-UID coldkeys. The `--endure.devnet_owner_vote` opt-in, which lets only a
+mock or local chain run the testnet owner vote for devnet rehearsals, is
+digest-covered in [consensus_policy.py](../endure/protocol/consensus_policy.py). No schema migration is introduced; scoring coefficients,
 the target universe and the no-score owner vote are unchanged. Miners and
 validators must upgrade together. See the
 [owner burn rate](running_on_mainnet.md#owner-burn-rate).
 
 Its watched-tree digest is
-`1115d85096ff37cc057b531ef74aa7b8dd69039ac7cf9ff536525eb0fc38dc94`.
+`b99135ebe7bde1f22ab7edf33ff581f5cabc2735cde979d22a423b70a6e11cd0`.
 The public lease authority receipt uses
 `PREVIOUS_RECEIPT=bf6e2d6b4c21e0b2568db7253ebcfd43c5a8422f2f8dbcf6dfebf4294c4b6714`,
 `CURRENT_VERSION_KEY=2043`, and
-`CURRENT_VERSION_DIGEST=1115d85096ff37cc057b531ef74aa7b8dd69039ac7cf9ff536525eb0fc38dc94`
+`CURRENT_VERSION_DIGEST=b99135ebe7bde1f22ab7edf33ff581f5cabc2735cde979d22a423b70a6e11cd0`
 under the `LEASE_AUTHORITY` format above, producing
-`2e782252887c9695352f699b73918dc47951afa85ac630a6e3a16a6d0d549261`.
+`2bf6bae0a796f277f3412af255602a7ffe62fb52595a68f7ec308e6b199cfa56`.
 SN30's chain `weights_version` of `2040` accepts key-`2043` submissions
 unchanged.
