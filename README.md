@@ -5,8 +5,9 @@
 > mainnet only behind the explicit `--endure.serving_stage mainnet`
 > acknowledgement, on releases promoted to the `:prod` image channel after the
 > owner release decision ([running_on_mainnet.md](docs/running_on_mainnet.md)).
-> The current protocol key is `2042` ([contract](endure/protocol/version_contract.py));
-> miners and validators upgrade together, and `v0.1.0` images (key `2041`) are superseded.
+> This source candidate uses protocol key `2043` ([contract](endure/protocol/version_contract.py));
+> published `v0.1.1` images use key `2042`, and adopting `2043` requires a coordinated
+> release in which miners and validators upgrade together.
 > Activated and retired leases are tracked in the [version registry](docs/protocol_versions.md).
 
 Endure is a Bittensor risk-intelligence subnet: miners submit falsifiable
@@ -51,6 +52,15 @@ or proof of model accuracy. As soon as any score is positive the same process
 submits earned score-derived weights, with no flag change or restart in either
 direction. Mock and local chains keep all-zero abstention. See the
 [identity and emission safety gates](docs/running_on_mainnet.md#weights-and-abstention).
+
+Key `2043` adds the owner burn rate. Once a miner scores, a served validator on
+SN30 or testnet still gives the owner UID the share that the owner hotkey
+publishes as its subnet commitment, `endure.burn_bps=<0..10000>`; miners share
+the rest by earned weight, and the chain burns the owner's share. A missing or
+malformed commitment burns the whole vote, so miners are paid only on the
+owner's explicit instruction. The owner changes the rate with
+[`scripts/set_burn_rate.py`](scripts/set_burn_rate.py), and validators apply it
+at their next weight attempt; see the [owner burn rate](docs/running_on_mainnet.md#owner-burn-rate).
 
 Known limitations: this is a testnet soak with one public validator endpoint;
 outcomes and feeds can diverge between validators; interfaces and
@@ -122,7 +132,7 @@ prefix and stop each process manually.
 
 Use the [standalone miner image](docs/deploy/operator-node.md#run-a-miner)
 or follow the [mining guide](docs/mining.md) for source installation. Acceptance requires
-hotkey registration. Key `2042` validators on testnet and mainnet use the
+hotkey registration. Validators on testnet and mainnet use the
 protocol's zero additional stake floor. Covering the
 [full round universe](docs/mining.md#cover-the-full-universe) is the dominant
 earnings lever — skipped coordinates score zero. Never share a mnemonic, coldkey,
@@ -135,10 +145,12 @@ or follow [validating](docs/validating.md) for source installation. Validators
 need durable database storage, backed-up state, a registered hotkey, and an
 archive market-data endpoint. Mainnet requires a qualified production release
 and the explicit acknowledgement described in [the mainnet guide](docs/running_on_mainnet.md).
-For the key-`2042` cutover, stop the old writer before starting one final Endure
+For a key cutover, stop the old writer before starting one final Endure
 process with the axon on and `disable_set_weights` omitted/default-false.
 Explicitly setting the flag true disables both the owner vote and earned
-emission indefinitely; scores never auto-enable it. Keep the mainnet database
+emission indefinitely; scores never auto-enable it. Before a key-`2043`
+cutover the owner publishes the intended burn rate, since a validator without
+one burns the whole vote. Keep the mainnet database
 durable and back it up consistently (SQLite backup API, or a copy taken while
 stopped); a restored backup reproduces its own scoring state. Never copy a
 testnet database into mainnet.

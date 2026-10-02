@@ -144,9 +144,16 @@ def uses_mainnet_consensus_policy(config: "bt.Config") -> bool:
     )
 
 
+def devnet_owner_vote_enabled(config: "bt.Config") -> bool:
+    """Only the flag's literal ``True`` opts in, never another truthy value."""
+    return getattr(getattr(config, "endure", None), "devnet_owner_vote", False) is True
+
+
 def owner_vote_network(config: "bt.Config") -> OwnerVoteNetwork | None:
     return chain_owner_vote_network(
-        chain_class(config), served=requires_serving_stage_gate(config)
+        chain_class(config),
+        served=requires_serving_stage_gate(config),
+        devnet_owner_vote=devnet_owner_vote_enabled(config),
     )
 
 
@@ -242,6 +249,24 @@ def require_dev_only_runtime(config: "bt.Config", *, feature: str) -> None:
         f"configured endpoint {endpoint!r} is not allowed "
         "(risk scope §Dev-only time compression)"
     )
+
+
+def require_devnet_owner_vote_allowed(config: "bt.Config") -> None:
+    """Allow the devnet owner vote only on a local chain, never the mock one.
+
+    The mock chain has no subnet owner or burn-rate commitment to vote for.
+    """
+    if _is_mock_runtime(config):
+        raise DevOnlyConfigError(
+            "--endure.devnet_owner_vote needs a local subtensor chain; the mock "
+            "chain has no subnet owner or burn-rate commitment"
+        )
+    if not permits_dev_only_runtime(config):
+        endpoint = safe_endpoint_label(_effective_chain(config)[0])
+        raise DevOnlyConfigError(
+            "--endure.devnet_owner_vote needs a local subtensor chain; configured "
+            f"endpoint {endpoint!r} is a live or unrecognized chain"
+        )
 
 
 def require_explicit_netuid(config: "bt.Config") -> None:
@@ -400,6 +425,8 @@ def check_config(cls, config: "bt.Config"):
         else getattr(endure_section, "devnet_time_compression", False)
     ):
         require_compression_runtime_allowed(config)
+    if devnet_owner_vote_enabled(config):
+        require_devnet_owner_vote_allowed(config)
 
     warn_ignored_options(config)
 
@@ -524,6 +551,16 @@ def add_args(cls, parser):
             "Alpha Risk compressed round windows and horizon due times. Allowed "
             "on mock/local chains, or on Bittensor testnet only with "
             "--endure.serving_stage testnet; always refused on mainnet."
+        ),
+    )
+    parser.add_argument(
+        "--endure.devnet_owner_vote",
+        action="store_true",
+        default=False,
+        help=(
+            "Run the testnet owner vote and owner burn rate on a local chain, "
+            "so a devnet rehearses the live emission path; refused on the mock "
+            "chain, testnet and mainnet."
         ),
     )
     parser.add_argument(

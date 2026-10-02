@@ -13,7 +13,7 @@ import contextlib
 import copy
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -47,6 +47,11 @@ from endure.assessment.schemas.subnet_alpha_risk import (
 )
 from endure.assessment.subnet_alpha_universe import StaticAlphaRiskUniverseProvider
 from endure.base.axon import authenticated_hotkey
+from endure.base.rate_gate import (
+    ChainRpcRestartRequired,
+    ChainRpcStalled,
+    RateLimited,
+)
 from endure.base.shutdown import (
     STARTUP_SHUTDOWN_GRACE_SECONDS,
     WATCHDOG_TEARDOWN_GRACE_SECONDS,
@@ -89,12 +94,17 @@ from endure.scoring.assessment_orchestrator import ResolutionBudget
 from endure.scoring.eligibility import DeregistrationTracker, scoring_set
 from endure.scoring.emission_policy import (
     CHAIN_SNAPSHOT_METAGRAPH_INDICES,
+    FULL_BURN_BPS,
+    OWNER_STATE_METAGRAPH_INDICES,
     ChainSnapshot,
     EmissionBlocked,
     EmissionBlockReason,
     EmissionPlan,
+    OwnerCommitment,
+    OwnerState,
     OwnerVoteRecipient,
     plan_emission,
+    recheck_owner_state,
     recheck_owner_vote,
     select_emission_mode,
 )
@@ -116,9 +126,11 @@ from endure.utils.config import (
     DevOnlyConfigError,
     active_runtime_schema_id,
     apply_consensus_settings,
+    devnet_owner_vote_enabled,
     owner_vote_network,
     permits_dev_only_runtime,
     require_compression_runtime_allowed,
+    require_devnet_owner_vote_allowed,
     require_explicit_netuid,
     require_mainnet_validator_policy,
     require_serving_stage_allowed,
@@ -137,9 +149,32 @@ _IMMEDIATE_EMISSION_BLOCKS: Final = frozenset(
     {"owner_hotkey_mismatch", "owner_unregistered", "owner_vote_chain_mismatch"}
 )
 _TRANSIENT_EMISSION_BLOCK_EPOCHS: Final = 2
+# An owner read that fails with a read error is retried in place at once: the
+# emission path runs at ESSENTIAL priority, so only the wire-level message
+# limiter spaces the attempts. The vote waits for the next epoch only after the
+# last attempt.
+_OWNER_READ_ATTEMPTS: Final = 3
 # /health reuses the durable confirmation summary this long, so public polling
 # cannot turn into one database query per request; emission events drop it.
 _CONFIRMATION_SUMMARY_TTL_SECONDS: Final = 5.0
+
+
+def _read_owner_fact[T](read: Callable[[], T], *, what: str) -> T:
+    """Retry a transient owner read in place; RPC gate control flow propagates."""
+    attempt = 1
+    while True:
+        try:
+            return read()
+        except (RateLimited, ChainRpcStalled, ChainRpcRestartRequired):
+            raise
+        except Exception as error:  # noqa: BLE001 — RPC error types vary by backend
+            if attempt >= _OWNER_READ_ATTEMPTS:
+                raise
+            bt.logging.warning(
+                f"{what} unreadable (attempt {attempt} of {_OWNER_READ_ATTEMPTS}), "
+                f"retrying: {safe_error(error)}"
+            )
+            attempt += 1
 
 
 def _cr4_reveal_scan_batch_budget(epoch_length: int) -> int:
@@ -215,6 +250,9 @@ class Validator(BaseValidatorNeuron):
         if compression_enabled(resolved_config):
             # Refuse offline before the network-bound archive probe below.
             require_compression_runtime_allowed(resolved_config)
+        if devnet_owner_vote_enabled(resolved_config):
+            # Genesis may have shown a loopback endpoint to be a live chain.
+            require_devnet_owner_vote_allowed(resolved_config)
         if (
             active_runtime_schema_id(resolved_config) == RISK_SCHEMA_ID
             and int(resolved_config.neuron.num_concurrent_forwards) != 1
@@ -284,6 +322,7 @@ class Validator(BaseValidatorNeuron):
         self._emission_next_eligible_block: int | None = None
         self._emission_chain_due_block: int | None = None
         self._emission_blocked_reason: str | None = None
+        self._emission_burn_bps: int | None = None
         self._handlers = SubmissionHandlers(
             storage=self._storage,
             schema_id=self._schema_id,
@@ -530,6 +569,7 @@ class Validator(BaseValidatorNeuron):
                 or getattr(self, "_emission_block", None)
             ),
             "emission_expected": self._emission_expected_since is not None,
+            "emission_burn_bps": getattr(self, "_emission_burn_bps", None),
             "emission_next_eligible_block": self._emission_next_eligible_block,
             "emission_expected_seconds": (
                 None
@@ -822,6 +862,9 @@ class Validator(BaseValidatorNeuron):
                 mode == "abstain" and getattr(self, "_emission_block", None) is None
             ):
                 self._emission_blocked_reason = None
+            if mode in ("disabled", "abstain"):
+                # No vote is planned, so no burn rate applies.
+                self._emission_burn_bps = None
             self._set_emission_observation(mode, reason)
 
     def _emission_block_degraded(self) -> bool:
@@ -878,6 +921,11 @@ class Validator(BaseValidatorNeuron):
                 self._emission_blocked_reason = None
                 self._emission_expected_since = None
                 self._emission_deadline = None
+                # The owner vote burns everything; a new scored mode's rate is
+                # unknown until its next plan reads the commitment.
+                self._emission_burn_bps = (
+                    FULL_BURN_BPS if mode == "owner_vote" else None
+                )
             self._emission_next_eligible_block = None
             reason = self._emission_wait_reason(
                 mode, current_block, open_confirmation, startup_fence
@@ -973,7 +1021,7 @@ class Validator(BaseValidatorNeuron):
         return due
 
     def set_weights(self) -> None:
-        """Emit earned weights, or the owner vote whenever no score is positive.
+        """Emit earned weights less the owner's burn, or the owner vote when idle.
 
         The score vector is rebuilt from durable EMAs first, so a restart, a
         failed tick or a metagraph resync never reads as zero scores. The
@@ -1148,38 +1196,114 @@ class Validator(BaseValidatorNeuron):
                 block=info.block,
                 hotkeys=info.hotkeys,
                 owner_hotkey=info.owner_hotkey,
+                owner_coldkey=info.owner_coldkey,
+                coldkeys=info.coldkeys,
                 validator_permit=info.validator_permit,
                 last_update=info.last_update,
                 weights_rate_limit=info.weights_rate_limit,
             )
         )
-        try:
-            plan = plan_emission(
+        chain_identity = self.gated_subtensor.get_block_hash(0)
+
+        def plan(commitment: OwnerCommitment | None) -> EmissionPlan:
+            return plan_emission(
                 mode=mode,
                 network=network,
                 snapshot=snapshot,
                 block=block,
-                chain_identity=self.gated_subtensor.get_block_hash(0),
+                chain_identity=chain_identity,
                 netuid=netuid,
                 validator_uid=int(self.uid),
                 validator_hotkey=str(self.wallet.hotkey.ss58_address),
                 local_hotkeys=self.metagraph.hotkeys,
                 scores=self.scores,
+                owner_commitment=commitment,
             )
+
+        try:
+            plan_result = plan(None)
+            # A due scored vote reads the owner's burn rate at the snapshot
+            # block only after owner, permit and rate limit allow the attempt.
+            if plan_result.commitment_owner is not None:
+                plan_result = plan(
+                    self._read_owner_commitment(
+                        netuid, plan_result.commitment_owner, block
+                    )
+                )
         except EmissionBlocked as blocked:
             self._block_emission(blocked, block)
             return None
         with self._emission_state():
             self._clear_emission_block()
-            self._emission_chain_due_block = plan.next_eligible_block
-            self._emission_snapshot_permit = plan.permit
+            self._emission_chain_due_block = plan_result.next_eligible_block
+            self._emission_snapshot_permit = plan_result.permit
             self._emission_snapshot_block = block
-        if not plan.due:
+            # A not-yet-due scored plan stops before reading the rate; keep the
+            # last known one instead of reporting it as unknown.
+            if plan_result.burn_bps is not None or network is None:
+                self._emission_burn_bps = plan_result.burn_bps
+        if not plan_result.due:
             self._defer_emission(
-                "no_validator_permit" if not plan.permit else "chain_rate_limit"
+                "no_validator_permit" if not plan_result.permit else "chain_rate_limit"
             )
             return None
-        return plan
+        return plan_result
+
+    def _read_owner_commitment(
+        self, netuid: int, hotkey: str, block: int
+    ) -> OwnerCommitment:
+        """Read the owner's burn-rate commitment at the snapshot block.
+
+        A read that still fails after its in-place retries blocks the attempt
+        with its own reason until next epoch; RPC gate control flow propagates.
+        """
+        try:
+            record = _read_owner_fact(
+                lambda: self.subtensor.get_commitment_metadata(
+                    netuid, hotkey, block=block
+                ),
+                what="owner commitment",
+            )
+        except (RateLimited, ChainRpcStalled, ChainRpcRestartRequired):
+            raise
+        except Exception as error:  # noqa: BLE001 — RPC error types vary by backend
+            raise EmissionBlocked(
+                "owner_commitment_unavailable",
+                f"owner commitment unreadable: {safe_error(error)}",
+            ) from error
+        return OwnerCommitment(hotkey=hotkey, block=block, record=record)
+
+    def _owner_state_at(self, block: int | None) -> OwnerState | None:
+        """Re-read the subnet owner facts at the submission block.
+
+        The recheck needs the chain as of this block, so a cached snapshot
+        cannot stand in; a transient error is retried at the same block.
+        """
+        if block is None:
+            return None
+        try:
+            info = _read_owner_fact(
+                lambda: self.subtensor.get_metagraph_info(
+                    netuid=int(self.config.netuid),
+                    selected_indices=list(OWNER_STATE_METAGRAPH_INDICES),
+                    block=block,
+                ),
+                what="owner state",
+            )
+        except (RateLimited, ChainRpcStalled, ChainRpcRestartRequired):
+            raise
+        except Exception as error:  # noqa: BLE001 — RPC error types vary by backend
+            bt.logging.warning(f"owner state unreadable: {safe_error(error)}")
+            return None
+        if info is None:
+            return None
+        return OwnerState(
+            block=info.block,
+            owner_hotkey=info.owner_hotkey,
+            owner_coldkey=info.owner_coldkey,
+            hotkeys=info.hotkeys,
+            coldkeys=info.coldkeys,
+        )
 
     def _emission_blended_snapshot(self) -> dict[str, Decimal]:
         cached: dict[str, Decimal] = getattr(self, "_blended_snapshot", {})
@@ -1197,18 +1321,24 @@ class Validator(BaseValidatorNeuron):
         storage = getattr(self, "_storage", None)
         if storage is None:
             return []
+        recipient: OwnerVoteRecipient | None = getattr(
+            self, "_owner_vote_recipient", None
+        )
+        # The owner's allocation is never earned: its row has no score
+        # provenance, while miners sharing a burned vote keep theirs.
         blended = (
             {}
-            if getattr(self, "_owner_vote_recipient", None) is not None
+            if recipient is not None and recipient.burn_bps == FULL_BURN_BPS
             else self._emission_blended_snapshot()
         )
+        owner_uid = None if recipient is None else recipient.uid
         u16_by_uid = dict(zip(attempt.uint_uids, attempt.uint_weights, strict=True))
         rows: list[WeightEmissionRow] = []
         for uid, processed in zip(
             attempt.processed_uids, attempt.processed_weights, strict=True
         ):
             hotkey = attempt.hotkeys[uid] if uid < len(attempt.hotkeys) else ""
-            score = blended.get(hotkey)
+            score = None if uid == owner_uid else blended.get(hotkey)
             precap = (
                 attempt.raw_weights[uid]
                 if score is not None and uid < len(attempt.raw_weights)
@@ -1234,7 +1364,8 @@ class Validator(BaseValidatorNeuron):
         )
         if recipient is not None:
             # Pre-submission recheck against the exact metagraph, chain
-            # identity and constraints that produced this prepared vector.
+            # identity and constraints that produced this prepared vector,
+            # then against the owner facts re-read at the submission block.
             try:
                 recheck_owner_vote(
                     recipient,
@@ -1245,6 +1376,13 @@ class Validator(BaseValidatorNeuron):
                     uint_weights=attempt.uint_weights,
                     min_allowed_weights=attempt.min_allowed_weights,
                     max_weight_limit=attempt.max_weight_limit,
+                )
+                recheck_owner_state(
+                    recipient,
+                    self._owner_state_at(attempt.submission_block),
+                    block=attempt.submission_block,
+                    prepared_hotkeys=attempt.hotkeys,
+                    uint_uids=attempt.uint_uids,
                 )
             except EmissionBlocked:
                 self._record_refused_weight_attempt(attempt)

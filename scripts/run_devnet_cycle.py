@@ -16,6 +16,9 @@ import socket
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.request
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
@@ -32,8 +35,16 @@ from endure.assessment.schemas.subnet_alpha_risk import (
     RiskOutput,
 )
 from endure.assessment.subnet_alpha_universe import parse_alpha_risk_universe_members
+from endure.live.alpha_market_data import read_chain_genesis
+from endure.protocol.consensus_policy import (
+    LOCAL_CHAIN_HOSTS,
+    classify_chain,
+    endpoint_host,
+)
+from endure.scoring.emission_policy import BURN_BPS_DENOMINATOR, FULL_BURN_BPS
+from endure.scoring.weight_processing import U16_MAX
 from endure.storage.repository import Storage
-from endure.utils.logging import safe_error
+from endure.utils.logging import safe_endpoint_label, safe_error
 from neurons.validator import _run_migrations
 
 FAULT_NONE = "none"
@@ -49,6 +60,10 @@ FAULT_CHOICES = (
 # Faults that target the miner rather than the validator.
 FAULT_MINER_ROLES = (FAULT_MINER_RESTART, FAULT_MINER_STATE_LOSS)
 MIN_FAULT_ROUND_SECONDS = 240
+# The owner vote submits from the first epoch, and each SDK set_weights call
+# holds the validator loop for tens of seconds on a local node; a compressed
+# round must outlast that or the round opens after its commit window.
+MIN_OWNER_VOTE_ROUND_SECONDS = 240
 # What the checklist reports when a commit reached the validator but no reveal
 # ever did — the signature of a lost round (transport failure or state loss).
 LOST_SUBMISSION_DETAIL = "commit observed; no reveal reached the handler"
@@ -78,6 +93,10 @@ class DevnetCycleArgs:
     epoch_length_blocks: int = 100
     poll_seconds: int = 1
     fault: str = FAULT_NONE
+    owner_wallet: str = "owner"
+    # Set: the owner publishes this rate and the validator runs the testnet
+    # owner vote, so the run rehearses the live burn path end to end.
+    burn_bps: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,6 +146,8 @@ class Checklist:
     weights_confirmed: bool
     miner_weight_nonzero: bool
     weight_detail: str
+    owner_share_ok: bool = True
+    owner_share_detail: str = ""
 
     def complete(self) -> bool:
         return all(
@@ -141,6 +162,7 @@ class Checklist:
                 self.blended_score_positive,
                 self.weights_confirmed,
                 self.miner_weight_nonzero,
+                self.owner_share_ok,
             )
         )
 
@@ -166,6 +188,15 @@ def _positive_int(raw: str) -> int:
     return value
 
 
+def _burn_bps(raw: str) -> int:
+    value = int(raw)
+    if not 0 <= value < FULL_BURN_BPS:
+        raise argparse.ArgumentTypeError(
+            f"must leave the miner a share: 0..{FULL_BURN_BPS - 1}"
+        )
+    return value
+
+
 def _parse_args(argv: list[str] | None = None) -> DevnetCycleArgs:
     parser = argparse.ArgumentParser()
     parser.add_argument("--netuid", type=int, required=True)
@@ -187,6 +218,13 @@ def _parse_args(argv: list[str] | None = None) -> DevnetCycleArgs:
     parser.add_argument("--epoch-length-blocks", type=_positive_int, default=100)
     parser.add_argument("--poll-seconds", type=_positive_int, default=1)
     parser.add_argument("--fault", choices=FAULT_CHOICES, default=FAULT_NONE)
+    parser.add_argument("--owner-wallet", default="owner")
+    parser.add_argument(
+        "--burn-bps",
+        type=_burn_bps,
+        default=None,
+        help="publish this owner burn rate and run the testnet owner vote",
+    )
     ns = parser.parse_args(argv)
     return DevnetCycleArgs(
         netuid=ns.netuid,
@@ -206,6 +244,8 @@ def _parse_args(argv: list[str] | None = None) -> DevnetCycleArgs:
         epoch_length_blocks=ns.epoch_length_blocks,
         poll_seconds=ns.poll_seconds,
         fault=ns.fault,
+        owner_wallet=ns.owner_wallet,
+        burn_bps=ns.burn_bps,
     )
 
 
@@ -220,10 +260,42 @@ def _validate_args(args: DevnetCycleArgs) -> None:
         raise ValueError("compressed 5d horizon must be before the 30d horizon")
     if args.horizon_30d_seconds >= args.round_seconds:
         raise ValueError("compressed horizons must fit inside the round period")
+    if args.burn_bps is not None and args.round_seconds < MIN_OWNER_VOTE_ROUND_SECONDS:
+        raise ValueError(
+            f"burn runs require --round-seconds >= {MIN_OWNER_VOTE_ROUND_SECONDS} "
+            "so an owner-vote submission cannot outlast the commit window"
+        )
     if args.fault != FAULT_NONE and args.round_seconds < MIN_FAULT_ROUND_SECONDS:
         raise ValueError(
             f"fault runs require --round-seconds >= {MIN_FAULT_ROUND_SECONDS} "
             "so a restarted neuron can rejoin before the reveal window"
+        )
+
+
+def _require_dev_chain(network: str) -> None:
+    """Refuse every chain but a local development one, before any wallet or signature.
+
+    A name cannot tell a devnet from a loopback tunnel to Finney; the genesis
+    hash can. The endpoint must be a loopback URL whose genesis is neither the
+    mainnet nor the testnet one.
+    """
+    label = safe_endpoint_label(network)
+    if (
+        not network.startswith(("ws://", "wss://"))
+        or endpoint_host(network) not in LOCAL_CHAIN_HOSTS
+    ):
+        raise RuntimeError(
+            f"the devnet cycle needs a loopback ws:// endpoint; {label} is refused"
+        )
+    genesis = read_chain_genesis(network)
+    if genesis is None:
+        raise RuntimeError(f"cannot identify the chain at {label}")
+    chain = classify_chain(
+        mock=False, endpoint=network, network=network, genesis=genesis
+    )
+    if chain != "dev":
+        raise RuntimeError(
+            f"the devnet cycle runs only on a local development chain; {label} is {chain}"
         )
 
 
@@ -320,6 +392,7 @@ def _neuron_command(  # noqa: PLR0913 - explicit runtime evidence controls
     external_ip: str | None = None,
     logging_dir: Path | None = None,
     validator_axon_override: str | None = None,
+    api_port: int | None = None,
 ) -> list[str]:
     wallet = args.validator_wallet if role == "validator" else args.miner_wallet
     command = [
@@ -366,7 +439,45 @@ def _neuron_command(  # noqa: PLR0913 - explicit runtime evidence controls
         command.extend(("--logging.logging_dir", str(logging_dir)))
     if role == "miner" and validator_axon_override is not None:
         command.extend(("--endure.validator_axon_overrides", validator_axon_override))
+    if role == "validator" and args.burn_bps is not None:
+        command.append("--endure.devnet_owner_vote")
+    if role == "validator" and api_port is not None:
+        command.extend(("--endure.api_port", str(api_port)))
     return command
+
+
+def _publish_burn_rate(args: DevnetCycleArgs, *, log_path: Path) -> None:
+    """Publish the rate with the owner's operator tool, as on a live chain."""
+    if args.burn_bps is None:
+        return
+    command = [
+        sys.executable,
+        "scripts/set_burn_rate.py",
+        "--network",
+        args.network,
+        "--netuid",
+        str(args.netuid),
+        "--wallet-name",
+        args.owner_wallet,
+        "--wallet-hotkey",
+        args.hotkey,
+        "--wallet-path",
+        args.wallet_path,
+        "--publish",
+        str(args.burn_bps),
+    ]
+    with log_path.open("w", encoding="utf-8") as handle:
+        result = subprocess.run(  # noqa: S603 - operator argv assembled above.
+            command,
+            stdout=handle,
+            stderr=subprocess.STDOUT,
+            text=True,
+            check=False,
+            timeout=300,
+        )
+    if result.returncode != 0:
+        raise RuntimeError(f"publishing the burn rate failed; log: {log_path}")
+    print(f"[x] owner published burn rate {args.burn_bps} bps", flush=True)
 
 
 def _start(command: list[str], log_path: Path) -> subprocess.Popen[str]:
@@ -505,6 +616,118 @@ def _has_nonzero_confirmed_miner_weight(storage: Storage, *, miner_hotkey: str) 
     return False
 
 
+def _owner_share(
+    storage: Storage, *, owner_hotkey: str, miner_hotkey: str, burn_bps: int
+) -> tuple[bool, str]:
+    """Check the owner's share of a confirmed vote that also pays the miner."""
+    for batch in storage.weight_emission_history(RISK_SCHEMA_ID):
+        if batch["confirmation_state"] != "confirmed":
+            continue
+        rows = batch["rows"]
+        if not isinstance(rows, list):
+            continue
+        weights: dict[str, int] = {}
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            hotkey, weight_u16 = row.get("miner_hotkey"), row.get("weight_u16")
+            if isinstance(hotkey, str) and type(weight_u16) is int:
+                weights[hotkey] = weight_u16
+        total = sum(weights.values())
+        if weights.get(miner_hotkey, 0) <= 0 or total <= 0:
+            continue  # An owner vote, or a vote that does not pay the miner.
+        owner = weights.get(owner_hotkey, 0)
+        # The validator's pre-submission rounding bound on a max-normalized
+        # vector (each u16 entry is off by at most half a unit), counted over
+        # the vote's entries rather than every UID, so slightly stricter.
+        within = max(weights.values()) == U16_MAX and 2 * abs(
+            BURN_BPS_DENOMINATOR * owner - burn_bps * total
+        ) <= BURN_BPS_DENOMINATOR * (len(weights) + 1)
+        share = Decimal(BURN_BPS_DENOMINATOR * owner) / total
+        return within, (
+            f"owner share {share:.2f} bps of batch {batch['id']} (published {burn_bps})"
+        )
+    return False, f"no confirmed vote pays the miner (published {burn_bps})"
+
+
+def _health_burn_bps(api_port: int) -> object:
+    url = f"http://127.0.0.1:{api_port}/health"
+    try:
+        with urllib.request.urlopen(url, timeout=5) as response:  # noqa: S310 - loopback.
+            payload = json.load(response)
+    except urllib.error.HTTPError as degraded:
+        # A degraded /health answers 503 with the same JSON body.
+        payload = json.load(degraded)
+    runtime = payload.get("runtime") if isinstance(payload, dict) else None
+    return runtime.get("emission_burn_bps") if isinstance(runtime, dict) else None
+
+
+def _u96f32(value: object) -> Decimal | None:
+    """Decode a Subtensor U96F32 storage value such as ``MinerBurned``."""
+    raw = getattr(value, "value", value)
+    bits = raw.get("bits") if isinstance(raw, dict) else None
+    return Decimal(bits) / Decimal(2**32) if type(bits) is int else None
+
+
+def _evidence[T](read: Callable[[], T]) -> T | str:
+    try:
+        return read()
+    except Exception as error:  # noqa: BLE001 - evidence only, never the verdict.
+        return f"unavailable ({safe_error(error)})"
+
+
+def _chain_evidence(args: DevnetCycleArgs, *, hotkeys: dict[str, str]) -> None:
+    """Print what the chain did with the vote; evidence, never the verdict.
+
+    Each read stands alone: runtimes older than ``MinerBurned`` (such as the
+    pinned CI localnet) still print every UID's incentive and emission.
+    """
+    subtensor = _evidence(lambda: bt.Subtensor(network=args.network))
+    if isinstance(subtensor, str):
+        print(f"chain evidence {subtensor}")
+        return
+    try:
+        info = _evidence(lambda: subtensor.get_metagraph_info(netuid=args.netuid))
+        burned = _evidence(
+            lambda: subtensor.query_module(
+                "SubtensorModule", "MinerBurned", params=[args.netuid]
+            )
+        )
+    finally:
+        _evidence(subtensor.close)
+    if info is None or isinstance(info, str):
+        print(f"chain metagraph {info or 'unavailable'}")
+        return
+    withheld = _u96f32(burned)
+    print(
+        f"chain block {info.block}: MinerBurned="
+        f"{burned if withheld is None else f'{withheld:.4f}'}"
+    )
+    for role, hotkey in hotkeys.items():
+        if hotkey not in info.hotkeys:
+            continue
+        uid = info.hotkeys.index(hotkey)
+        print(
+            f"chain {role} uid={uid}: incentive={info.incentives[uid]} "
+            f"emission={info.emission[uid]}"
+        )
+
+
+def _burn_outcome(
+    args: DevnetCycleArgs, *, api_port: int, hotkeys: dict[str, str]
+) -> bool:
+    """Require /health to report the published rate, then show the chain's view."""
+    reported = _health_burn_bps(api_port)
+    ok = reported == args.burn_bps
+    print(f"[{'x' if ok else ' '}] /health emission_burn_bps {reported}", flush=True)
+    if ok:
+        # Evidence never changes the verdict, whatever fails while printing it.
+        failed = _evidence(lambda: _chain_evidence(args, hotkeys=hotkeys))
+        if isinstance(failed, str):
+            print(f"chain evidence {failed}")
+    return ok
+
+
 def _miner_state_committed(
     *, layout: RunLayout, args: DevnetCycleArgs, round_id: str
 ) -> bool:
@@ -521,7 +744,14 @@ def _miner_state_committed(
     return isinstance(round_state, dict) and round_state.get("committed") is True
 
 
-def _checklist(storage: Storage, *, round_id: str, miner_hotkey: str) -> Checklist:
+def _checklist(
+    storage: Storage,
+    *,
+    round_id: str,
+    miner_hotkey: str,
+    owner_hotkey: str | None = None,
+    burn_bps: int | None = None,
+) -> Checklist:
     expected_coordinates = _expected_coordinates(storage, round_id=round_id)
     targets_5d = storage.assessment_realized_targets_for_horizon(
         round_id, RISK_SCHEMA_ID, HORIZON_5D_SECONDS
@@ -562,6 +792,16 @@ def _checklist(storage: Storage, *, round_id: str, miner_hotkey: str) -> Checkli
         if coordinate.horizon_value == HORIZON_30D_SECONDS
     }
     emas = storage.assessment_ema_states(RISK_SCHEMA_ID)
+    owner_share_ok, owner_share_detail = (
+        (True, "")
+        if burn_bps is None or owner_hotkey is None
+        else _owner_share(
+            storage,
+            owner_hotkey=owner_hotkey,
+            miner_hotkey=miner_hotkey,
+            burn_bps=burn_bps,
+        )
+    )
     return Checklist(
         round_opened=state is not None,
         bundle_accepted=bool(accepted_bundles),
@@ -591,6 +831,8 @@ def _checklist(storage: Storage, *, round_id: str, miner_hotkey: str) -> Checkli
             storage, miner_hotkey=miner_hotkey
         ),
         weight_detail=weight_status.detail,
+        owner_share_ok=owner_share_ok,
+        owner_share_detail=owner_share_detail,
     )
 
 
@@ -607,6 +849,8 @@ def _print_checklist(checklist: Checklist) -> None:
         (checklist.weight_detail, checklist.weights_confirmed),
         ("miner confirmed weight non-zero", checklist.miner_weight_nonzero),
     )
+    if checklist.owner_share_detail:
+        rows = (*rows, (checklist.owner_share_detail, checklist.owner_share_ok))
     for label, ok in rows:
         print(f"[{'x' if ok else ' '}] {label}")
 
@@ -706,12 +950,17 @@ def _run_succeeded(
 
 def _run(args: DevnetCycleArgs) -> int:
     _validate_args(args)
-    started_at = datetime.now(UTC)
-    layout = _create_layout(args, now=started_at)
+    # Before any wallet read, chain action or signed publish.
+    _require_dev_chain(args.network)
+    layout = _create_layout(args, now=datetime.now(UTC))
     database_url = f"sqlite:///{layout.database}"
     _run_migrations(database_url)
     validator_hotkey = _wallet_hotkey(args, args.validator_wallet)
     miner_hotkey = _wallet_hotkey(args, args.miner_wallet)
+    owner_hotkey = (
+        None if args.burn_bps is None else _wallet_hotkey(args, args.owner_wallet)
+    )
+    api_port = None if args.burn_bps is None else _free_local_port()
     miner_binding, validator_binding = _resolve_bindings(
         args, miner_hotkey=miner_hotkey, validator_hotkey=validator_hotkey
     )
@@ -730,6 +979,7 @@ def _run(args: DevnetCycleArgs) -> int:
             axon_port=validator_binding.port,
             external_ip=validator_binding.external_ip,
             logging_dir=layout.state,
+            api_port=api_port,
         ),
         "miner": _neuron_command(
             role="miner",
@@ -759,6 +1009,7 @@ def _run(args: DevnetCycleArgs) -> int:
         "",
     )
     print(f"run: {layout.root}")
+    _publish_burn_rate(args, log_path=layout.root / "burn-rate.log")
     print(f"round: {round_id} epoch={epoch}")
     print(
         "axons: "
@@ -805,10 +1056,24 @@ def _run(args: DevnetCycleArgs) -> int:
                 )
                 fault_injected = True
             checklist = _checklist(
-                storage, round_id=round_id, miner_hotkey=miner_hotkey
+                storage,
+                round_id=round_id,
+                miner_hotkey=miner_hotkey,
+                owner_hotkey=owner_hotkey,
+                burn_bps=args.burn_bps,
             )
             if _run_succeeded(args, checklist, fault_injected=fault_injected):
                 _print_checklist(checklist)
+                if api_port is not None and not _burn_outcome(
+                    args,
+                    api_port=api_port,
+                    hotkeys={
+                        "owner": owner_hotkey or "",
+                        "miner": miner_hotkey,
+                        "validator": validator_hotkey,
+                    },
+                ):
+                    return 1
                 if args.fault == FAULT_MINER_STATE_LOSS:
                     print(
                         "[x] miner state loss surfaced as a stranded commit "
