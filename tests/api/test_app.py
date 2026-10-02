@@ -10,7 +10,13 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import update
 
-from endure.api.app import PublicationIdentity, RuntimeHealth, build_app
+from endure.api.app import (
+    HealthSnapshot,
+    PublicationIdentity,
+    RuntimeHealth,
+    _metrics_response,
+    build_app,
+)
 from endure.assessment.coordinates import (
     AssessmentConsensusRow,
     AssessmentCoordinate,
@@ -100,6 +106,9 @@ def _runtime(
     set_weights_failures: int = 0,
     weight_emission_degraded: bool = False,
     rpc_degraded: bool = False,
+    rpc_rate_limited_total: int = 0,
+    rpc_deferred_total: int = 0,
+    weight_submissions_failed_total: int = 0,
     assessment_due_seconds: dict[int, int] | None = None,
     overdue_grace_seconds: int | None = None,
 ) -> RuntimeHealth:
@@ -120,7 +129,10 @@ def _runtime(
         "last_empty_scored_round": None,
         "consecutive_set_weights_failures": set_weights_failures,
         "weight_emission_degraded": weight_emission_degraded,
-        "failed_weight_submissions_total": 3,
+        "failed_weight_submissions_total": 0,
+        "rpc_rate_limited_process_total": rpc_rate_limited_total,
+        "rpc_deferred_process_total": rpc_deferred_total,
+        "weight_submissions_failed_process_total": weight_submissions_failed_total,
         "rpc_gate": {
             "adaptive_rate": 1.0,
             "degraded": rpc_degraded,
@@ -156,7 +168,10 @@ class TestRuntimeHealth:
         assert response.status_code == 200
         assert response.json()["status"] == "ok"
         assert response.json()["runtime"]["seconds_since_last_tick"] == 1.5
-        assert response.json()["runtime"]["failed_weight_submissions_total"] == 3
+        assert (
+            response.json()["runtime"]["weight_submissions_failed_process_total"] == 0
+        )
+        assert response.json()["runtime"]["failed_weight_submissions_total"] == 0
 
     def test_tick_failures_degrade_to_503(self, storage: Storage) -> None:
         response = self._client(storage, _runtime(tick_failures=3)).get("/health")
@@ -224,10 +239,44 @@ class TestRuntimeHealth:
         assert response.json()["status"] == "degraded"
 
     def test_active_rpc_backoff_degrades_to_503(self, storage: Storage) -> None:
-        response = self._client(storage, _runtime(rpc_degraded=True)).get("/health")
+        client = self._client(storage, _runtime(rpc_degraded=True))
+        response = client.get("/health")
 
         assert response.status_code == 503
         assert response.json()["status"] == "degraded"
+        assert "endure_validator_ready 0.0" in client.get("/metrics").text
+
+    def test_metrics_are_parseable_while_health_is_degraded(
+        self, storage: Storage
+    ) -> None:
+        from prometheus_client.parser import text_string_to_metric_families
+
+        client = self._client(storage, _runtime(rpc_degraded=True))
+
+        live_response = client.get("/live")
+        assert live_response.status_code == 200
+
+        health_response = client.get("/health")
+        assert health_response.status_code == 503
+        assert health_response.json()["status"] == "degraded"
+
+        metrics_response = client.get("/metrics")
+        assert metrics_response.status_code == 200
+        assert metrics_response.headers["content-type"].startswith("text/plain")
+
+        metric_families = {
+            family.name
+            for family in text_string_to_metric_families(metrics_response.text)
+        }
+        assert "endure_validator_live" in metric_families
+        assert "endure_validator_ready" in metric_families
+        assert "endure_validator_ready 0.0" in metrics_response.text
+
+    def test_metrics_route_is_hidden_and_get_only(self, storage: Storage) -> None:
+        client = self._client(storage, _runtime())
+
+        assert "/metrics" not in client.app.openapi()["paths"]
+        assert client.post("/metrics").status_code == 405
 
     def test_live_endpoint_stays_200_during_rpc_backoff(self, storage: Storage) -> None:
         response = self._client(storage, _runtime(rpc_degraded=True)).get("/live")
@@ -244,12 +293,15 @@ class TestRuntimeHealth:
         assert response.json()["status"] == "degraded"
 
     def test_overdue_weight_emission_degrades_to_503(self, storage: Storage) -> None:
-        response = self._client(storage, _runtime(weight_emission_degraded=True)).get(
-            "/health"
-        )
+        client = self._client(storage, _runtime(weight_emission_degraded=True))
+        response = client.get("/health")
 
         assert response.status_code == 503
         assert response.json()["status"] == "degraded"
+        assert (
+            "endure_validator_weight_emission_degraded 1.0"
+            in client.get("/metrics").text
+        )
 
     def test_single_empty_scored_round_stays_ok(self, storage: Storage) -> None:
         response = self._client(storage, _runtime(empty_scored_rounds=1)).get("/health")
@@ -264,6 +316,174 @@ class TestRuntimeHealth:
 
         assert response.status_code == 503
         assert response.json()["status"] == "degraded"
+
+
+class TestMetricsResponse:
+    def test_event_counter_scrapes_follow_process_lifecycle(self) -> None:
+        from prometheus_client.parser import text_string_to_metric_families
+
+        def counter_samples(
+            rate_limited: int, deferred: int, failed_weights: int
+        ) -> dict[str, float]:
+            response = _metrics_response(
+                HealthSnapshot(
+                    runtime=_runtime(
+                        rpc_rate_limited_total=rate_limited,
+                        rpc_deferred_total=deferred,
+                        weight_submissions_failed_total=failed_weights,
+                    ),
+                    unfinished_round_count=0,
+                    unfinished_rounds=(),
+                    round_resolution=None,
+                    degraded=False,
+                )
+            )
+            return {
+                sample.name: sample.value
+                for family in text_string_to_metric_families(response.body.decode())
+                if family.name.startswith("endure_validator_rpc_")
+                or family.name == "endure_validator_weight_submissions_failed"
+                for sample in family.samples
+                if sample.name.endswith("_total")
+            }
+
+        first = counter_samples(2, 3, 1)
+        later = counter_samples(3, 4, 2)
+        restarted = counter_samples(0, 0, 0)
+
+        assert first == {
+            "endure_validator_rpc_rate_limited_total": 2.0,
+            "endure_validator_rpc_deferred_total": 3.0,
+            "endure_validator_weight_submissions_failed_total": 1.0,
+        }
+        assert later == {
+            "endure_validator_rpc_rate_limited_total": 3.0,
+            "endure_validator_rpc_deferred_total": 4.0,
+            "endure_validator_weight_submissions_failed_total": 2.0,
+        }
+        assert restarted == {
+            "endure_validator_rpc_rate_limited_total": 0.0,
+            "endure_validator_rpc_deferred_total": 0.0,
+            "endure_validator_weight_submissions_failed_total": 0.0,
+        }
+
+    def test_catalog_is_unlabelled_and_excludes_private_totals(self) -> None:
+        from prometheus_client.parser import text_string_to_metric_families
+
+        runtime = _runtime(
+            rpc_rate_limited_total=2,
+            rpc_deferred_total=3,
+            weight_submissions_failed_total=1,
+        )
+        runtime["last_confirmed_weights_at"] = NOW
+        response = _metrics_response(
+            HealthSnapshot(
+                runtime=runtime,
+                unfinished_round_count=4,
+                unfinished_rounds=("a", "b", "c", "d"),
+                round_resolution={
+                    "pending_round_count": 2,
+                    "overdue_round_count": 1,
+                    "pending_rounds": [],
+                    "overdue_rounds": [],
+                },
+                degraded=False,
+            )
+        )
+
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("text/plain")
+        assert "# HELP endure_validator_ready" in response.body.decode()
+        assert "# TYPE endure_validator_ready gauge" in response.body.decode()
+
+        metric_families = list(text_string_to_metric_families(response.body.decode()))
+        assert {family.name for family in metric_families} == {
+            "endure_validator_live",
+            "endure_validator_ready",
+            "endure_validator_tick_stale",
+            "endure_validator_tick_age_seconds",
+            "endure_validator_overdue_rounds",
+            "endure_validator_weight_emission_degraded",
+            "endure_validator_weights_last_confirmed_timestamp_seconds",
+            "endure_validator_rpc_rate_limited",
+            "endure_validator_rpc_deferred",
+            "endure_validator_weight_submissions_failed",
+        }
+        assert all(
+            sample.labels == {}
+            for family in metric_families
+            for sample in family.samples
+        )
+        exposition = response.body.decode()
+        assert "endure_validator_rpc_rate_limited_total 2.0" in exposition
+        assert "endure_validator_rpc_deferred_total 3.0" in exposition
+        assert "endure_validator_weight_submissions_failed_total 1.0" in exposition
+        assert "_created" not in exposition
+        assert "# TYPE endure_validator_rpc_rate_limited_total counter" in exposition
+        assert "# TYPE endure_validator_rpc_deferred_total counter" in exposition
+        assert (
+            "# TYPE endure_validator_weight_submissions_failed_total counter"
+            in exposition
+        )
+        assert "hotkey" not in exposition
+        assert "wallet" not in exposition
+        assert "host" not in exposition
+
+    def test_malformed_optional_timestamp_omits_only_timestamp_metric(self) -> None:
+        from prometheus_client.parser import text_string_to_metric_families
+
+        runtime = _runtime()
+        runtime["last_confirmed_weights_at"] = "not-a-timestamp"
+        response = _metrics_response(
+            HealthSnapshot(
+                runtime=runtime,
+                unfinished_round_count=0,
+                unfinished_rounds=(),
+                round_resolution=None,
+                degraded=True,
+            )
+        )
+
+        assert response.status_code == 200
+        metric_families = {
+            family.name
+            for family in text_string_to_metric_families(response.body.decode())
+        }
+        assert (
+            "endure_validator_weights_last_confirmed_timestamp_seconds"
+            not in metric_families
+        )
+        assert "endure_validator_live" in metric_families
+        assert "endure_validator_ready" in metric_families
+        assert "endure_validator_tick_stale" in metric_families
+
+    def test_absent_confirmed_timestamp_is_omitted_not_zero_filled(self) -> None:
+        from prometheus_client.parser import text_string_to_metric_families
+
+        runtime = _runtime()
+        assert "last_confirmed_weights_at" not in runtime
+        response = _metrics_response(
+            HealthSnapshot(
+                runtime=runtime,
+                unfinished_round_count=0,
+                unfinished_rounds=(),
+                round_resolution=None,
+                degraded=False,
+            )
+        )
+
+        exposition = response.body.decode()
+        metric_families = {
+            family.name for family in text_string_to_metric_families(exposition)
+        }
+        assert (
+            "endure_validator_weights_last_confirmed_timestamp_seconds"
+            not in metric_families
+        )
+        assert (
+            "endure_validator_weights_last_confirmed_timestamp_seconds"
+            not in exposition
+        )
 
 
 class TestRiskRoundResolutionHealth:
@@ -325,6 +545,25 @@ class TestRiskRoundResolutionHealth:
         assert [item["horizon_seconds"] for item in overdue["overdue_horizons"]] == [
             HORIZON_5D_SECONDS
         ]
+
+    def test_overdue_round_projects_to_metrics(
+        self, storage: Storage, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        reveal_close = self._open_round(storage)
+        monkeypatch.setattr(
+            "endure.api.app._utc_now", lambda: reveal_close + timedelta(days=6)
+        )
+        client = TestClient(
+            build_app(storage=storage, schema_id=RISK_SCHEMA_ID, publisher="risk")
+        )
+
+        health_response = client.get("/health")
+        assert health_response.status_code == 503
+
+        metrics_response = client.get("/metrics")
+        assert metrics_response.status_code == 200
+        assert "endure_validator_ready 0.0" in metrics_response.text
+        assert "endure_validator_overdue_rounds 1.0" in metrics_response.text
 
     def test_compressed_due_seconds_degrade_after_effective_deadline(
         self, storage: Storage, monkeypatch: pytest.MonkeyPatch

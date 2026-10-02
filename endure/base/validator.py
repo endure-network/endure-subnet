@@ -170,6 +170,7 @@ class BaseValidatorNeuron(BaseNeuron):
         self._chain_rpc_replacement_required_reason: str | None = None
         self._last_set_weights_ok: str | None = None
         self._consecutive_set_weights_failures = 0
+        self._weight_submissions_failed_process_total = 0
 
         # Preserve UID-to-hotkey identity across metagraph refreshes.
         self.hotkeys = copy.deepcopy(self.metagraph.hotkeys)
@@ -714,6 +715,9 @@ class BaseValidatorNeuron(BaseNeuron):
             )
         if not response.success:
             bt.logging.error(f"set_weights failed: {safe_error(response.message)}")
+            self._weight_submissions_failed_process_total = (
+                getattr(self, "_weight_submissions_failed_process_total", 0) + 1
+            )
             return WeightSubmissionResult(
                 status=EMISSION_FAILED,
                 confirmation_state="failed",

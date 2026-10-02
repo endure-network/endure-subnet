@@ -27,9 +27,17 @@ from typing import TYPE_CHECKING, Final, NotRequired, TypedDict
 
 from fastapi import FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
+from prometheus_client import (
+    CONTENT_TYPE_LATEST,
+    CollectorRegistry,
+    Gauge,
+    generate_latest,
+)
+from prometheus_client.core import CounterMetricFamily
+from prometheus_client.registry import Collector
 
 from endure import __version__
-from endure.api import assessment_round_resolution_health
+from endure.api import RoundResolutionHealth, assessment_round_resolution_health
 from endure.assessment.coordinates import (
     AssessmentConsensusRow,
     AssessmentCoordinate,
@@ -130,9 +138,39 @@ class RuntimeHealth(TypedDict):
     oldest_open_weight_submission_age_blocks: NotRequired[int | None]
     latest_unconfirmed_weight_submission_block: NotRequired[int | None]
     failed_weight_submissions_total: NotRequired[int]
+    rpc_rate_limited_process_total: NotRequired[int]
+    rpc_deferred_process_total: NotRequired[int]
+    weight_submissions_failed_process_total: NotRequired[int]
     rpc_gate: NotRequired[RpcGateHealth]
     assessment_due_seconds: NotRequired[dict[int, int]]
     overdue_grace_seconds: NotRequired[int]
+
+
+@dataclass(frozen=True, slots=True)
+class HealthSnapshot:
+    runtime: RuntimeHealth | None
+    unfinished_round_count: int
+    unfinished_rounds: tuple[str, ...]
+    round_resolution: RoundResolutionHealth | None
+    degraded: bool
+
+
+@dataclass(frozen=True, slots=True)
+class _CounterMetric:
+    name: str
+    documentation: str
+    value: int
+
+
+@dataclass(frozen=True, slots=True)
+class _CounterProjection(Collector):
+    metrics: tuple[_CounterMetric, ...]
+
+    def collect(self) -> tuple[CounterMetricFamily, ...]:
+        return tuple(
+            CounterMetricFamily(metric.name, metric.documentation, value=metric.value)
+            for metric in self.metrics
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -332,6 +370,164 @@ def _ensure_embargo_lifted(meta: dict[str, object]) -> None:
     )
 
 
+def _health_snapshot(
+    storage: Storage,
+    schema_id: str,
+    publisher: PublisherProjection,
+    /,
+    *,
+    runtime_health: Callable[[], RuntimeHealth] | None,
+) -> HealthSnapshot:
+    unfinished_rounds = tuple(storage.unfinished_rounds(schema_id))
+    runtime = None if runtime_health is None else runtime_health()
+    round_resolution = None
+    degraded = False
+    if publisher == "risk":
+        round_resolution = assessment_round_resolution_health(
+            storage.unfinished_assessment_resolution_progress(schema_id),
+            RISK_HORIZONS,
+            now=_utc_now(),
+            sample_limit=_HEALTH_ROUNDS_SAMPLE,
+            due_seconds=(
+                None if runtime is None else runtime.get("assessment_due_seconds")
+            ),
+            overdue_grace_seconds=(
+                _OVERDUE_GRACE_SECONDS
+                if runtime is None
+                else runtime.get("overdue_grace_seconds", _OVERDUE_GRACE_SECONDS)
+            ),
+        )
+        degraded = round_resolution["overdue_round_count"] > 0
+    if runtime is not None:
+        missing_counter_keys = [
+            key for key in _RUNTIME_COUNTER_KEYS if key not in runtime
+        ]
+        if missing_counter_keys:
+            logger.warning(
+                "runtime health payload omitted counters: %s",
+                ", ".join(missing_counter_keys),
+            )
+        rpc_gate = runtime.get("rpc_gate")
+        rpc_degraded = rpc_gate is not None and rpc_gate["degraded"]
+        degraded = degraded or (
+            not runtime["validator_loop_alive"]
+            or runtime["tick_stale"]
+            or runtime["consecutive_tick_failures"] > 0
+            or runtime.get("consecutive_universe_failures", 0) > 0
+            or runtime.get("consecutive_resolution_failures", 0) > 0
+            or runtime.get("consecutive_empty_scored_rounds", 0)
+            >= _EMPTY_SCORED_ROUNDS_HEALTH_THRESHOLD
+            or runtime.get("consecutive_set_weights_failures", 0) > 0
+            or runtime.get("weight_emission_degraded", False)
+            or rpc_degraded
+        )
+    return HealthSnapshot(
+        runtime=runtime,
+        unfinished_round_count=len(unfinished_rounds),
+        unfinished_rounds=unfinished_rounds,
+        round_resolution=round_resolution,
+        degraded=degraded,
+    )
+
+
+def _metrics_response(snapshot: HealthSnapshot) -> Response:
+    # Exactly the families an operator alert consumes. Every other runtime
+    # lifecycle signal stays available on /health; it is not re-exported here
+    # (see docs/specs/2026-09-01-validator-lifecycle-metrics.md).
+    metrics: list[tuple[str, str, int | float]] = [
+        ("endure_validator_live", "Whether the API process is serving.", 1),
+        (
+            "endure_validator_ready",
+            "Whether the validator health snapshot is not degraded.",
+            int(not snapshot.degraded),
+        ),
+    ]
+    if snapshot.round_resolution is not None:
+        metrics.append(
+            (
+                "endure_validator_overdue_rounds",
+                "Current rounds past the resolution deadline.",
+                snapshot.round_resolution["overdue_round_count"],
+            )
+        )
+    if snapshot.runtime is not None:
+        runtime = snapshot.runtime
+        metrics.append(
+            (
+                "endure_validator_tick_stale",
+                "Whether the latest completed tick is beyond its freshness window.",
+                int(runtime["tick_stale"]),
+            )
+        )
+        tick_age = runtime["seconds_since_last_tick"]
+        if tick_age is not None:
+            metrics.append(
+                (
+                    "endure_validator_tick_age_seconds",
+                    "Age of the latest completed validator tick in seconds.",
+                    tick_age,
+                )
+            )
+        weight_emission_degraded = runtime.get("weight_emission_degraded")
+        if isinstance(weight_emission_degraded, bool):
+            metrics.append(
+                (
+                    "endure_validator_weight_emission_degraded",
+                    "Whether weight-emission confirmation is degraded.",
+                    int(weight_emission_degraded),
+                )
+            )
+        confirmed_at = runtime.get("last_confirmed_weights_at")
+        confirmed_timestamp: datetime | None = None
+        if isinstance(confirmed_at, str):
+            try:
+                confirmed_timestamp = datetime.fromisoformat(confirmed_at)
+            except (OSError, OverflowError, ValueError):
+                confirmed_timestamp = None
+        if confirmed_timestamp is not None and confirmed_timestamp.tzinfo is not None:
+            metrics.append(
+                (
+                    "endure_validator_weights_last_confirmed_timestamp_seconds",
+                    "Last confirmed on-chain weight-emission time as Unix seconds.",
+                    confirmed_timestamp.timestamp(),
+                )
+            )
+    registry = CollectorRegistry()
+    for name, documentation, value in metrics:
+        Gauge(name, documentation, registry=registry).set(value)
+    if snapshot.runtime is not None:
+        counter_metrics = (
+            (
+                "endure_validator_rpc_rate_limited",
+                "Count of provider rate-limit responses observed by the validator process.",
+                snapshot.runtime.get("rpc_rate_limited_process_total"),
+            ),
+            (
+                "endure_validator_rpc_deferred",
+                "Count of chain-RPC operations deferred during provider cooldown.",
+                snapshot.runtime.get("rpc_deferred_process_total"),
+            ),
+            (
+                "endure_validator_weight_submissions_failed",
+                "Count of explicit unsuccessful weight-submission responses.",
+                snapshot.runtime.get("weight_submissions_failed_process_total"),
+            ),
+        )
+        registry.register(
+            _CounterProjection(
+                tuple(
+                    _CounterMetric(name, documentation, value)
+                    for name, documentation, value in counter_metrics
+                    if type(value) is int
+                )
+            )
+        )
+    return Response(
+        content=generate_latest(registry),
+        headers={"Content-Type": CONTENT_TYPE_LATEST},
+    )
+
+
 def _register_core_routes(  # noqa: PLR0913 — explicit read API dependencies
     app: FastAPI,
     storage: Storage,
@@ -352,63 +548,40 @@ def _register_core_routes(  # noqa: PLR0913 — explicit read API dependencies
 
     @app.get("/health")
     def health(response: Response) -> dict[str, object]:
-        unfinished = storage.unfinished_rounds(schema_id)
-        runtime = None if runtime_health is None else runtime_health()
+        snapshot = _health_snapshot(
+            storage,
+            schema_id,
+            publisher,
+            runtime_health=runtime_health,
+        )
         payload: dict[str, object] = {
             "status": "ok",
             "schema_id": schema_id,
             "version": __version__,
             "protocol_version_key": CURRENT_VERSION_KEY,
             **runtime_identity(),
-            "unfinished_round_count": len(unfinished),
-            "unfinished_rounds": unfinished[:_HEALTH_ROUNDS_SAMPLE],
+            "unfinished_round_count": snapshot.unfinished_round_count,
+            "unfinished_rounds": snapshot.unfinished_rounds[:_HEALTH_ROUNDS_SAMPLE],
         }
-        degraded = False
-        if publisher == "risk":
-            round_resolution = assessment_round_resolution_health(
-                storage.unfinished_assessment_resolution_progress(schema_id),
-                RISK_HORIZONS,
-                now=_utc_now(),
-                sample_limit=_HEALTH_ROUNDS_SAMPLE,
-                due_seconds=(
-                    None if runtime is None else runtime.get("assessment_due_seconds")
-                ),
-                overdue_grace_seconds=(
-                    _OVERDUE_GRACE_SECONDS
-                    if runtime is None
-                    else runtime.get("overdue_grace_seconds", _OVERDUE_GRACE_SECONDS)
-                ),
-            )
-            payload["round_resolution"] = round_resolution
-            degraded = round_resolution["overdue_round_count"] > 0
-        if runtime is not None:
-            payload["runtime"] = runtime
-            missing_counter_keys = [
-                key for key in _RUNTIME_COUNTER_KEYS if key not in runtime
-            ]
-            if missing_counter_keys:
-                logger.warning(
-                    "runtime health payload omitted counters: %s",
-                    ", ".join(missing_counter_keys),
-                )
-            rpc_gate = runtime.get("rpc_gate")
-            rpc_degraded = rpc_gate is not None and rpc_gate["degraded"]
-            degraded = degraded or (
-                not runtime["validator_loop_alive"]
-                or runtime["tick_stale"]
-                or runtime["consecutive_tick_failures"] > 0
-                or runtime.get("consecutive_universe_failures", 0) > 0
-                or runtime.get("consecutive_resolution_failures", 0) > 0
-                or runtime.get("consecutive_empty_scored_rounds", 0)
-                >= _EMPTY_SCORED_ROUNDS_HEALTH_THRESHOLD
-                or runtime.get("consecutive_set_weights_failures", 0) > 0
-                or runtime.get("weight_emission_degraded", False)
-                or rpc_degraded
-            )
-        if degraded:
+        if snapshot.round_resolution is not None:
+            payload["round_resolution"] = snapshot.round_resolution
+        if snapshot.runtime is not None:
+            payload["runtime"] = snapshot.runtime
+        if snapshot.degraded:
             payload["status"] = "degraded"
             response.status_code = 503
         return payload
+
+    @app.get("/metrics", include_in_schema=False)
+    def metrics() -> Response:
+        return _metrics_response(
+            _health_snapshot(
+                storage,
+                schema_id,
+                publisher,
+                runtime_health=runtime_health,
+            )
+        )
 
     @app.get("/schemas")
     def schemas() -> list[dict[str, object]]:

@@ -211,6 +211,23 @@ class TestAdaptiveRpcGate:
         clock.now = 4.0
         assert gate.call(RpcPriority.ESSENTIAL, essential) == 17
 
+    def test_replacement_preserves_process_event_totals(self) -> None:
+        clock = _Clock()
+        gate = AdaptiveRpcGate(clock=clock)
+
+        def rejected() -> None:
+            raise RuntimeError({"code": -32029, "retryAfter": 4})
+
+        with pytest.raises(RateLimited):
+            gate.call(RpcPriority.METAGRAPH, rejected)
+        with pytest.raises(RateLimited):
+            gate.call(RpcPriority.ESSENTIAL, lambda: None)
+
+        replacement = gate.replacement()
+
+        assert replacement.snapshot().rate_limited_total == 1
+        assert replacement.snapshot().deferred_total == 1
+
     def test_success_recovery_shortens_future_pacing_without_bursting(self) -> None:
         clock = _Clock()
         gate = AdaptiveRpcGate(clock=clock, sleeper=clock.sleep)
