@@ -10,8 +10,9 @@ name: Devnet qualification
 #
 # The localnet has no drand beacon, so seed_chain.sh disables chain-side
 # commit/reveal. This job qualifies Endure's own assessment commit/reveal,
-# scoring, and weight-submission lifecycle. Real Subtensor CRv3 weight behavior
-# is still first observed on the testnet soak.
+# scoring, and weight-submission lifecycle, then the owner vote with a published
+# burn rate. Real Subtensor CRv3 weight behavior is still first observed on the
+# testnet soak.
 
 permissions:
   contents: read
@@ -150,6 +151,28 @@ jobs:
             --hotkey default \
             --artifact-root var/devnet-runs \
             --timeout-seconds 900
+
+      # Testnet and mainnet validators vote for the subnet owner and apply its
+      # published burn rate. Rehearse that emission path after the plain cycle;
+      # the same registered wallets keep the two runs serial.
+      - name: Run the owner-vote burn cycle
+        env:
+          NETUID: ${{ steps.seed.outputs.netuid }}
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          .venv/bin/python scripts/run_devnet_cycle.py \
+            --netuid "$NETUID" \
+            --network "ws://127.0.0.1:${CHAIN_RPC_PORT}" \
+            --wallet-path "${GITHUB_WORKSPACE}/var/wallets" \
+            --validator-wallet validator \
+            --miner-wallet miner \
+            --owner-wallet owner \
+            --hotkey default \
+            --artifact-root var/devnet-runs \
+            --burn-bps 9800 \
+            --round-seconds 240 \
+            --timeout-seconds 1200
 
       - name: Collect chain logs
         if: always()

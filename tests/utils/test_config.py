@@ -11,7 +11,7 @@ import argparse
 from collections.abc import Callable
 from decimal import Decimal
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import bittensor as bt
 import pytest
@@ -35,10 +35,12 @@ from endure.utils.config import (
     apply_consensus_settings,
     check_config,
     config,
+    devnet_owner_vote_enabled,
     owner_vote_network,
     permits_dev_only_runtime,
     require_compression_runtime_allowed,
     require_dev_only_runtime,
+    require_devnet_owner_vote_allowed,
     require_explicit_netuid,
     require_mainnet_validator_policy,
     require_serving_stage_allowed,
@@ -619,6 +621,64 @@ class TestCheckConfig:
 
         assert Path(cfg.neuron.full_path).is_dir()
 
+    @pytest.mark.parametrize("network", ["test", "finney"])
+    def test_devnet_owner_vote_is_refused_on_live_networks(
+        self, tmp_path: Path, network: str
+    ) -> None:
+        cfg = config(_FakeCls)
+        cfg.logging.logging_dir = str(tmp_path)
+        cfg.wallet.name = "cold"
+        cfg.wallet.hotkey = "hot"
+        cfg.neuron.name = "n"
+        cfg.runtime = argparse.Namespace(mode="live")
+        cfg.endure.devnet_owner_vote = True
+        cfg.endure.serving_stage = "testnet" if network == "test" else "mainnet"
+        cfg.subtensor.network = network
+
+        with pytest.raises(DevOnlyConfigError, match="needs a local subtensor chain"):
+            check_config(_FakeCls, cfg)
+
+    def test_devnet_owner_vote_is_refused_on_the_mock_chain(
+        self, tmp_path: Path
+    ) -> None:
+        cfg = config(_FakeCls)
+        cfg.logging.logging_dir = str(tmp_path)
+        cfg.wallet.name = "cold"
+        cfg.wallet.hotkey = "hot"
+        cfg.neuron.name = "n"
+        cfg.runtime = argparse.Namespace(mode="mock")
+        cfg.endure.devnet_owner_vote = True
+
+        # The mock chain has no subnet owner or commitment to vote for.
+        with pytest.raises(DevOnlyConfigError, match="needs a local subtensor chain"):
+            check_config(_FakeCls, cfg)
+
+    def test_devnet_owner_vote_needs_the_flags_literal_true(self) -> None:
+        # A truthy non-bool, such as an auto-created mock attribute, never
+        # switches a dev chain onto the owner vote.
+        assert devnet_owner_vote_enabled(MagicMock()) is False
+        enabled = MagicMock()
+        enabled.endure.devnet_owner_vote = True
+
+        assert devnet_owner_vote_enabled(enabled) is True
+
+    def test_devnet_owner_vote_runs_the_testnet_vote_on_a_local_chain(
+        self, tmp_path: Path
+    ) -> None:
+        cfg = config(_FakeCls)
+        cfg.logging.logging_dir = str(tmp_path)
+        cfg.wallet.name = "cold"
+        cfg.wallet.hotkey = "hot"
+        cfg.neuron.name = "n"
+        cfg.runtime = argparse.Namespace(mode="live")
+        cfg.subtensor.network = "ws://127.0.0.1:9946"
+        assert owner_vote_network(cfg) is None
+        cfg.endure.devnet_owner_vote = True
+
+        check_config(_FakeCls, cfg)
+
+        assert owner_vote_network(cfg) == "testnet"
+
     def test_compression_check_config_refuses_testnet_without_stage_ack(
         self, tmp_path: Path
     ) -> None:
@@ -882,6 +942,24 @@ class TestChainIdentityByGenesis:
             require_serving_stage_allowed(cfg)
         with pytest.raises(DevOnlyConfigError):
             require_dev_only_runtime(cfg, feature="--endure.devnet_time_compression")
+
+    @pytest.mark.parametrize(("network", "endpoint"), _LOOPBACK)
+    def test_loopback_mainnet_node_refuses_the_devnet_owner_vote(
+        self, production_validator_config: bt.Config, network: str, endpoint: str
+    ) -> None:
+        cfg = production_validator_config
+        cfg.subtensor.network = network
+        cfg.subtensor.chain_endpoint = endpoint
+        cfg.endure.devnet_owner_vote = True
+        assert owner_vote_network(cfg) == "testnet"
+
+        resolve_chain_identity(cfg, read_genesis=self._reader(MAINNET_GENESIS_HASH))
+
+        # The opt-in never changes a live chain's vote, and the validator
+        # refuses to start with it once genesis names the chain.
+        assert owner_vote_network(cfg) == "mainnet"
+        with pytest.raises(DevOnlyConfigError):
+            require_devnet_owner_vote_allowed(cfg)
 
     @pytest.mark.parametrize(("network", "endpoint"), _LOOPBACK)
     def test_loopback_testnet_node_is_testnet(

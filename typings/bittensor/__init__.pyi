@@ -9,6 +9,7 @@ from collections.abc import Mapping
 from typing import Any, Self
 
 from . import mock as mock
+from .core.types import ExtrinsicResponse
 from .utils.btlogging import logging as logging
 
 class Wallet:
@@ -31,6 +32,23 @@ class Subtensor:
         selected_indices: list[int] | None = ...,
         block: int | None = ...,
     ) -> "MetagraphInfo | None": ...
+    def get_block_hash(self, block: int | None = ...) -> str: ...
+    def get_commitment_metadata(
+        self, netuid: int, hotkey_ss58: str, block: int | None = ...
+    ) -> object: ...
+    def set_commitment(
+        self,
+        wallet: Wallet,
+        netuid: int,
+        data: str,
+        *,
+        mev_protection: bool = ...,
+        period: int | None = ...,
+        raise_error: bool = ...,
+        wait_for_inclusion: bool = ...,
+        wait_for_finalization: bool = ...,
+        wait_for_revealed_execution: bool = ...,
+    ) -> ExtrinsicResponse: ...
     def serve_axon(self, *args: Any, **kwargs: Any) -> Any: ...
     def subnet(self, netuid: int, block: int | None = ...) -> "DynamicInfo": ...
     def is_hotkey_registered(self, *args: Any, **kwargs: Any) -> bool: ...
@@ -46,10 +64,15 @@ class MetagraphInfo:
     """Subset of SDK 10.5's chain snapshot used for emission safety."""
     block: int
     owner_hotkey: str | None
+    owner_coldkey: str | None
     hotkeys: list[str]
+    coldkeys: list[str]
     validator_permit: list[bool]
     last_update: list[int]
     weights_rate_limit: int
+    # Devnet cycle evidence only; Balance values are printed, never computed on.
+    incentives: list[float]
+    emission: list[object]
 
 class Metagraph:
     n: Any
@@ -149,6 +172,7 @@ class MockSubtensor(Subtensor):
 
 class NeuronInfo:
     hotkey: str
+    coldkey: str
     validator_permit: bool
     last_update: int
 

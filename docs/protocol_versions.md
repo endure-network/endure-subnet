@@ -222,3 +222,45 @@ after every permit validator runs `2042`; raising it earlier would reject
 validators still on `2040`.
 Follow the [coordinated cutover](running_on_mainnet.md#coordinated-cutover) after
 qualification and agreement with independently operated validators.
+
+Key `2042` is recorded as `activation-0045`. It first appeared on the public
+first-parent staging lineage in commit
+`b49daada260514830e58115cfbe46879ca71271c`; its source-bound receipt is
+`879daa5ac891ed1b038b99cf77e530fcf52e908dc2ea3ed360208fb8b1270bd2`.
+The published `v0.1.1` images retain that assignment.
+
+Key `2043` is leased to the owner burn rate. On served mainnet SN30 and
+testnet, a scored weight attempt gives the subnet owner UID the share that its
+hotkey publishes as its subnet commitment, `endure.burn_bps=<0..10000>`, read
+at the emission snapshot block; miners share the rest by earned weight, and
+the owner hotkey and every hotkey of the owner's coldkey, whose incentive the
+chain withholds, earn nothing at any rate. A missing or malformed commitment
+burns the whole vote and a zero rate pays the earned vector without those
+hotkeys, so scored votes on owner-vote networks now require a valid owner (the
+pinned SN30 owner on mainnet); an unreadable commitment abstains with
+`owner_commitment_unavailable`. The commitment read decision and its binding to
+the snapshot owner and block, the record decoding and grammar, the full-burn
+default, the chain-withheld set, the blended raw vector, the pre-submission
+recheck at every rate (chain limits, withheld UIDs, the owner's u16 share), and
+the submission-block owner-state recheck are digest-covered in
+[emission_policy.py](../endure/scoring/emission_policy.py); the query itself is
+unwatched RPC I/O, and the emission snapshot now also reads the owner coldkey
+and per-UID coldkeys. The rule behind `--endure.devnet_owner_vote`, that only an
+opted-in development chain runs the testnet owner vote for devnet rehearsals,
+is digest-covered in [consensus_policy.py](../endure/protocol/consensus_policy.py);
+the startup refusals on live chains and the mock chain are unwatched
+configuration and validator startup code. No schema migration is introduced; scoring coefficients,
+the target universe and the no-score owner vote are unchanged. Miners and
+validators must upgrade together. See the
+[owner burn rate](running_on_mainnet.md#owner-burn-rate).
+
+Its watched-tree digest is
+`b99135ebe7bde1f22ab7edf33ff581f5cabc2735cde979d22a423b70a6e11cd0`.
+The public lease authority receipt uses
+`PREVIOUS_RECEIPT=bf6e2d6b4c21e0b2568db7253ebcfd43c5a8422f2f8dbcf6dfebf4294c4b6714`,
+`CURRENT_VERSION_KEY=2043`, and
+`CURRENT_VERSION_DIGEST=b99135ebe7bde1f22ab7edf33ff581f5cabc2735cde979d22a423b70a6e11cd0`
+under the `LEASE_AUTHORITY` format above, producing
+`2bf6bae0a796f277f3412af255602a7ffe62fb52595a68f7ec308e6b199cfa56`.
+SN30's chain `weights_version` of `2040` accepts key-`2043` submissions
+unchanged.

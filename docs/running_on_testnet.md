@@ -73,6 +73,16 @@ vote — its whole vote to the UID of the on-chain subnet owner hotkey — whene
 no miner has a positive score, and earned weights as soon as one does. See the
 [owner-vote fallback](running_on_mainnet.md#weights-and-abstention).
 
+From key `2043`, those earned weights give the testnet owner UID the
+[owner burn rate](running_on_mainnet.md#owner-burn-rate) published by the
+testnet subnet owner hotkey, and a missing rate burns the whole vote. Testnet
+has no owner-hotkey pin. Hotkeys registered under the owner's coldkey never
+earn, because the chain withholds their incentive; register soak miners under
+another coldkey to exercise earned weights. Before a soak that needs miners to
+receive weight,
+publish a rate from the netuid-504 owner hotkey, for example
+`python scripts/set_burn_rate.py --network test --netuid 504 --wallet-name <owner-wallet> --wallet-hotkey <owner-hotkey> --publish 9800`.
+
 The Endure-operated testnet read API is
 `https://api.testnet.endure.network`, signed by validator hotkey
 `5E2bM6DXxyraVJCDjWBcixudbzYXToDnNcsDBB4hoJdCuwTi`. This is currently the

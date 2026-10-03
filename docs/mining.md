@@ -95,6 +95,24 @@ they may enter or leave the owner vote at different times, and chain
 confirmation is not guaranteed to be simultaneous across validators. See the
 [mainnet lifecycle and safety gates](running_on_mainnet.md#weights-and-abstention).
 
+From key `2043`, earned weights share each vote with the subnet owner. The
+owner publishes a burn rate as its subnet commitment, and validators give the
+owner UID that share of every scored vote. Miners split the rest in proportion
+to their earned weights, and the chain burns the owner's share. At a published
+`endure.burn_bps=9800`, for example, miners together receive 2% of each
+validator's vote; if the owner has published no valid rate, they receive none.
+Hotkeys registered under the owner's coldkey never earn weight, because the
+chain withholds their incentive. The rate applies to every miner alike, but the
+vote is encoded in u16 units with the owner's entry at the maximum, so at high
+rates the miners' pool is small: about `65535 × (1 − b) / b` units, roughly
+1,337 at 98%. Each miner's entry rounds to the nearest unit, so a miner whose
+share of the pool is below about one unit in 2,674 (0.037% at 98%) receives
+nothing, small shares carry large relative rounding, and the realized burn can
+sit slightly above the published rate (98.13% with 250 equal miners at 98%).
+Read the current rate with
+`python scripts/set_burn_rate.py --network finney --netuid 30`; see the
+[owner burn rate](running_on_mainnet.md#owner-burn-rate).
+
 ## Cover the full universe
 
 The round universe is every whitelisted netuid × both horizons × all four
