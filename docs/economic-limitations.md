@@ -33,7 +33,8 @@ least two independently operated validators, and one complete 30-day
 resolution cycle remain qualification requirements. For the initial `v0.1.0`
 image publication, the owner accepted the documented limitations on
 2026-09-20 while staging continues; see the [release decision](releases/v0.1.0.md).
-They remain accepted and disclosed for [`v0.1.1`](releases/v0.1.1.md).
+They remain accepted and disclosed for [`v0.1.1`](releases/v0.1.1.md) and
+[`v0.1.2`](releases/v0.1.2.md).
 This acceptance does not establish that these requirements have been met.
 No consumer should interpret testnet emissions as evidence that modeling
 costs are economically rewarded at production scale.
@@ -86,6 +87,8 @@ hotkeys, so a high rate keeps SN30's TAO emission near zero while it lasts.
 Validators read the rate independently at their next weight attempt, so during
 a change they can briefly disagree; Yuma consensus applies the rate held by the
 stake majority. See the [owner burn rate](running_on_mainnet.md#owner-burn-rate).
+Key `2043` ships as [`v0.1.2`](releases/v0.1.2.md); it does not change chain
+parameters.
 
 ## Conditional determinism
 

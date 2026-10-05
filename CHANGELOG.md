@@ -1,9 +1,12 @@
 # Changelog
 
-## Unreleased — owner burn rate
+## v0.1.2 — owner burn rate
 
-Protocol key `2043`; miners and validators must upgrade together. Published
-key-2042 images and chain parameters are not changed by this source update.
+Protocol key `2043`; miners and validators must upgrade together. Chain
+parameters, including SN30's `weights_version` (`2040`), are unchanged.
+Package/API version is `0.1.2`. See the
+[release notes, operator upgrade and soak decision](docs/releases/v0.1.2.md)
+and [#77](https://github.com/endure-network/endure-subnet/pull/77).
 
 - Add an owner-controlled burn rate. On served mainnet SN30 and testnet, a
   scored weight attempt reads the subnet owner hotkey's commitment at the

@@ -1,7 +1,7 @@
 # Running Endure on Testnet
 
-> **Experimental testnet alpha.** `v0.1.1` uses protocol key `2042`; superseded
-> `v0.1.0` images use key `2041`, and miners and validators upgrade together.
+> **Experimental testnet alpha.** `v0.1.2` uses protocol key `2043`; superseded
+> `v0.1.1` images use key `2042`, and miners and validators upgrade together.
 > This is not a mainnet guide. The authoritative source compatibility value is
 > [version_contract.py](../endure/protocol/version_contract.py).
 
