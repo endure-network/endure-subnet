@@ -53,16 +53,18 @@ localnet qualification remain required for the selected staging commit. The
 [v0.1.1 release notes](releases/v0.1.1.md) record the decision, and the GitHub
 release records the checkpoint outcomes.
 
-For protocol key `2043` (`v0.1.2`), the owner decided on 2026-10-05 to count the
-soak of the identical protocol code at staging commit `02ab118`, deployed on
-2026-10-03, which met the `v0.1.1` checkpoints over two days. The release commit
-adds only version metadata, so it gets a targeted soak of roughly 24 hours on
-the exact release commit, with a confirmed key-`2043` testnet weight submission
-and one full round cycle, its redeploy serving as the restart check. The owner
-then publishes the SN30 burn rate, and a mainnet canary on SN30 UID 195 precedes
-third-party operators. CI and localnet qualification remain required for the
-selected staging commit. The [v0.1.2 release notes](releases/v0.1.2.md) record
-the decision, and the GitHub release records the checkpoint outcomes.
+For protocol key `2043` (`v0.1.2`), the owner accepted the existing testnet
+run at staging commit `02ab118` on 2026-10-05 and waived an additional timed
+soak for the documentation and version-metadata release. The protocol code
+is unchanged. Successful CI, localnet qualification and published images on
+the exact final staging commit remain required, along with verification of
+the deployed version, source/content identity, validator loop and miners.
+The known commit-reveal startup interval is monitored separately; publication
+does not require a new confirmed vote or a fresh full round. Before the
+mainnet cutover, publish the intended SN30 burn rate and use UID 195 as the
+canary. The [v0.1.2 release notes](releases/v0.1.2.md) record this scoped
+exception and the limitations of the earlier soak evidence; the GitHub
+release records the actual release-check outcomes.
 
 The default soak gate is the promotion evidence the mainnet decision consumes.
 It passes when the deployed staging environment shows, over seven consecutive
