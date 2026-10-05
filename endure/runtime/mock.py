@@ -26,7 +26,9 @@ class MockMetagraphInfo:
     netuid: int
     block: int
     owner_hotkey: str
+    owner_coldkey: str
     hotkeys: list[str]
+    coldkeys: list[str]
     validator_permit: list[bool]
     last_update: list[int]
     weights_rate_limit: int
@@ -233,7 +235,9 @@ class MockSubtensor(bt.MockSubtensor):
             netuid=netuid,
             block=at,
             owner_hotkey=str(owner or ""),
+            owner_coldkey=str(owner or ""),
             hotkeys=[neuron.hotkey for neuron in neurons],
+            coldkeys=[neuron.coldkey for neuron in neurons],
             validator_permit=[bool(neuron.validator_permit) for neuron in neurons],
             last_update=[int(neuron.last_update) for neuron in neurons],
             weights_rate_limit=int(self.weights_rate_limit(netuid=netuid)),

@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import io
+import json
+import urllib.error
 from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -17,6 +21,7 @@ from endure.assessment.coordinates import (
 )
 from endure.assessment.schemas.subnet_alpha_risk import RISK_HORIZONS, RiskOutput
 from endure.assessment.universe import UniverseSnapshot
+from endure.protocol.consensus_policy import MAINNET_GENESIS_HASH, TESTNET_GENESIS_HASH
 from endure.scoring.assessment_orchestrator import REALIZED_TARGET_RESOLVED
 from endure.scoring.risk.orchestrator import risk_coordinate
 from scripts.run_devnet_cycle import (
@@ -311,6 +316,300 @@ def test_r5_checklist_passes_with_complete_coverage_positive_blended_score_and_w
     assert _checklist(
         storage, round_id="2026-08-20", miner_hotkey="miner-hotkey"
     ).complete()
+
+
+def _burn_storage(
+    rows: list[dict[str, object]], *, state: str = "confirmed"
+) -> MagicMock:
+    storage = MagicMock()
+    storage.weight_emission_history.return_value = [
+        {"id": 7, "confirmation_state": state, "rows": rows}
+    ]
+    return storage
+
+
+def _owner_share(storage: MagicMock) -> tuple[bool, str]:
+    return runner._owner_share(
+        storage,
+        owner_hotkey="owner-hotkey",
+        miner_hotkey="miner-hotkey",
+        burn_bps=9800,
+    )
+
+
+def test_burn_mode_runs_only_the_validator_on_the_owner_vote() -> None:
+    args = _args(burn_bps=9800)
+    validator = _neuron_command(
+        role="validator",
+        args=args,
+        database_url="sqlite:///tmp.db",
+        epoch="2026-07-07T00:00:00+00:00",
+        axon_port=8092,
+        api_port=8714,
+    )
+
+    assert "--endure.devnet_owner_vote" in validator
+    assert validator[validator.index("--endure.api_port") + 1] == "8714"
+    assert "--endure.devnet_owner_vote" not in _command("miner", args=args)
+    assert "--endure.devnet_owner_vote" not in _command("validator")
+
+
+DEVNET_GENESIS = "0x" + "ab" * 32
+
+
+@pytest.mark.parametrize(
+    ("network", "genesis"),
+    [
+        ("finney", DEVNET_GENESIS),
+        ("wss://entrypoint-finney.opentensor.ai:443", MAINNET_GENESIS_HASH),
+        # A loopback tunnel to a live node is a live chain.
+        ("ws://127.0.0.1:9944", MAINNET_GENESIS_HASH),
+        ("ws://127.0.0.1:9944", TESTNET_GENESIS_HASH),
+        ("ws://127.0.0.1:9944", None),
+    ],
+)
+def test_run_refuses_a_live_chain_before_any_wallet_or_publish(
+    monkeypatch: pytest.MonkeyPatch, network: str, genesis: str | None
+) -> None:
+    monkeypatch.setattr(runner, "read_chain_genesis", lambda _endpoint: genesis)
+    touched = MagicMock(side_effect=AssertionError("ran before the chain guard"))
+    for name in ("_create_layout", "_wallet_hotkey", "_resolve_bindings"):
+        monkeypatch.setattr(runner, name, touched)
+    monkeypatch.setattr(runner, "_publish_burn_rate", touched)
+
+    with pytest.raises(RuntimeError, match="devnet cycle|cannot identify the chain"):
+        runner._run(_args(network=network, netuid=30, burn_bps=9800, round_seconds=240))
+    touched.assert_not_called()
+
+
+def test_dev_chain_guard_accepts_a_local_devnet(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    endpoints: list[str] = []
+
+    def genesis(endpoint: str) -> str:
+        endpoints.append(endpoint)
+        return DEVNET_GENESIS
+
+    monkeypatch.setattr(runner, "read_chain_genesis", genesis)
+
+    runner._require_dev_chain("ws://127.0.0.1:9946")
+
+    assert endpoints == ["ws://127.0.0.1:9946"]
+
+
+def test_validate_args_requires_a_round_that_outlasts_an_owner_vote() -> None:
+    with pytest.raises(ValueError, match="burn runs require --round-seconds >= 240"):
+        _validate_args(_args(burn_bps=9800))
+
+    _validate_args(_args(burn_bps=9800, round_seconds=240))
+
+
+def test_burn_args_parse_with_owner_wallet_defaults() -> None:
+    base = ["--netuid", "2", "--network", "ws://127.0.0.1:9946"]
+
+    burned = runner._parse_args([*base, "--burn-bps", "9800", "--owner-wallet", "own"])
+    plain = runner._parse_args(base)
+
+    assert (burned.burn_bps, burned.owner_wallet) == (9800, "own")
+    assert (plain.burn_bps, plain.owner_wallet) == (None, "owner")
+
+
+@pytest.mark.parametrize("raw", ["-1", "10000"])
+def test_burn_bps_must_leave_the_miner_a_share(raw: str) -> None:
+    with pytest.raises(SystemExit):
+        runner._parse_args(
+            ["--netuid", "2", "--network", "ws://127.0.0.1:9946", "--burn-bps", raw]
+        )
+
+
+def test_owner_share_accepts_a_confirmed_vote_at_the_published_rate() -> None:
+    storage = _burn_storage(
+        [
+            {"miner_hotkey": "owner-hotkey", "weight_u16": 65535},
+            {"miner_hotkey": "miner-hotkey", "weight_u16": 1337},
+        ]
+    )
+
+    ok, detail = _owner_share(storage)
+
+    assert ok
+    assert detail == "owner share 9800.07 bps of batch 7 (published 9800)"
+
+
+@pytest.mark.parametrize(
+    "rows",
+    [
+        # Half the vote, not 98% of it.
+        [
+            {"miner_hotkey": "owner-hotkey", "weight_u16": 65535},
+            {"miner_hotkey": "miner-hotkey", "weight_u16": 65535},
+        ],
+        # Not max-normalized: any share fits the rounding bound of a tiny vector.
+        [{"miner_hotkey": "miner-hotkey", "weight_u16": 1}],
+    ],
+)
+def test_owner_share_refuses_a_vote_at_another_rate(
+    rows: list[dict[str, object]],
+) -> None:
+    ok, detail = _owner_share(_burn_storage(rows))
+
+    assert not ok
+    assert detail.endswith("(published 9800)")
+
+
+@pytest.mark.parametrize(
+    ("state", "miner_u16"), [("submitted", 1337), ("confirmed", 0)]
+)
+def test_owner_share_needs_a_confirmed_vote_that_pays_the_miner(
+    state: str, miner_u16: int
+) -> None:
+    # An unconfirmed vote, or the pure owner vote, says nothing about the split.
+    storage = _burn_storage(
+        [
+            {"miner_hotkey": "owner-hotkey", "weight_u16": 65535},
+            {"miner_hotkey": "miner-hotkey", "weight_u16": miner_u16},
+        ],
+        state=state,
+    )
+
+    assert _owner_share(storage) == (
+        False,
+        "no confirmed vote pays the miner (published 9800)",
+    )
+
+
+def test_checklist_requires_the_owner_share_only_in_burn_mode() -> None:
+    coordinates = _r5_coordinates((1, 3))
+    storage = _r5_storage(
+        consensus_coordinates=coordinates,
+        resolved_coordinates=coordinates,
+        ema_states=_positive_ema_states(coordinates),
+    )
+
+    burned = _checklist(
+        storage,
+        round_id="2026-08-20",
+        miner_hotkey="miner-hotkey",
+        owner_hotkey="owner-hotkey",
+        burn_bps=9800,
+    )
+
+    assert not burned.complete()
+    assert _checklist(
+        storage, round_id="2026-08-20", miner_hotkey="miner-hotkey"
+    ).complete()
+
+
+def test_publish_burn_rate_runs_the_owner_tool_and_fails_loudly(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    commands: list[list[str]] = []
+
+    def failed(command: list[str], **_kwargs: object) -> SimpleNamespace:
+        commands.append(command)
+        return SimpleNamespace(returncode=1)
+
+    monkeypatch.setattr(runner.subprocess, "run", failed)
+
+    with pytest.raises(RuntimeError, match="publishing the burn rate failed"):
+        runner._publish_burn_rate(_args(burn_bps=9800), log_path=tmp_path / "burn.log")
+    [command] = commands
+    assert command[1] == "scripts/set_burn_rate.py"
+    assert command[command.index("--wallet-name") + 1] == "owner"
+    assert command[command.index("--wallet-hotkey") + 1] == "default"
+    assert command[command.index("--publish") + 1] == "9800"
+
+
+@pytest.mark.parametrize("status", [200, 503])
+def test_health_burn_bps_reads_the_runtime_section_even_when_degraded(
+    monkeypatch: pytest.MonkeyPatch, status: int
+) -> None:
+    body = json.dumps({"status": "ok", "runtime": {"emission_burn_bps": 9800}})
+
+    def urlopen(url: str, *, timeout: float) -> io.BytesIO:
+        assert url == "http://127.0.0.1:8714/health"
+        if status != 200:
+            raise urllib.error.HTTPError(
+                url, status, "degraded", None, io.BytesIO(body.encode())
+            )
+        return io.BytesIO(body.encode())
+
+    monkeypatch.setattr(runner.urllib.request, "urlopen", urlopen)
+
+    assert runner._health_burn_bps(8714) == 9800
+
+
+def test_miner_burned_decodes_from_its_fixed_point_bits() -> None:
+    assert runner._u96f32(SimpleNamespace(value={"bits": 4080231384})) == (
+        Decimal(4080231384) / Decimal(2**32)
+    )
+    assert runner._u96f32({"bits": 0}) == 0
+    assert runner._u96f32("unavailable") is None
+
+
+def test_chain_evidence_survives_a_runtime_without_miner_burned(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    subtensor = MagicMock()
+    subtensor.get_metagraph_info.return_value = SimpleNamespace(
+        block=7,
+        hotkeys=["owner-hotkey", "miner-hotkey"],
+        incentives=[0.98, 0.02],
+        emission=["1.0", "0.02"],
+    )
+    subtensor.query_module.side_effect = ValueError(
+        'Storage function "SubtensorModule.MinerBurned" not found'
+    )
+    monkeypatch.setattr(runner.bt, "Subtensor", lambda network: subtensor)
+
+    runner._chain_evidence(
+        _args(), hotkeys={"owner": "owner-hotkey", "miner": "miner-hotkey"}
+    )
+
+    out = capsys.readouterr().out
+    assert "MinerBurned=unavailable (" in out
+    assert "chain owner uid=0: incentive=0.98" in out
+    assert "chain miner uid=1: incentive=0.02" in out
+    subtensor.close.assert_called_once()
+
+
+@pytest.mark.parametrize("fault", ["close", "short-metagraph"])
+def test_an_evidence_failure_never_fails_a_passing_burn_run(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], fault: str
+) -> None:
+    subtensor = MagicMock()
+    subtensor.get_metagraph_info.return_value = SimpleNamespace(
+        block=7,
+        hotkeys=["owner-hotkey"],
+        incentives=[] if fault == "short-metagraph" else [0.98],
+        emission=["1.0"],
+    )
+    subtensor.query_module.return_value = {"bits": 4209067950}
+    if fault == "close":
+        subtensor.close.side_effect = RuntimeError("close failed")
+    monkeypatch.setattr(runner.bt, "Subtensor", lambda network: subtensor)
+    monkeypatch.setattr(runner, "_health_burn_bps", lambda _port: 9800)
+
+    assert runner._burn_outcome(
+        _args(burn_bps=9800), api_port=8714, hotkeys={"owner": "owner-hotkey"}
+    )
+    out = capsys.readouterr().out
+    assert "[x] /health emission_burn_bps 9800" in out
+    if fault == "close":
+        assert "chain owner uid=0: incentive=0.98" in out
+    else:
+        assert "chain evidence unavailable (" in out
+
+
+def test_publish_burn_rate_does_nothing_without_a_rate(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(runner.subprocess, "run", MagicMock(side_effect=AssertionError))
+
+    runner._publish_burn_rate(_args(), log_path=tmp_path / "burn.log")
+
+    assert not (tmp_path / "burn.log").exists()
 
 
 def test_neuron_command_passes_local_endpoint_to_guarded_config() -> None:
@@ -631,6 +930,7 @@ def test_run_stops_the_started_neuron_when_a_later_launch_fails(
 ) -> None:
     args = _args(artifact_root=tmp_path, run_id="p2b")
     layout = _create_layout(args, now=datetime(2026, 8, 20, tzinfo=UTC))
+    monkeypatch.setattr(runner, "read_chain_genesis", lambda _endpoint: DEVNET_GENESIS)
     monkeypatch.setattr(runner, "_create_layout", lambda a, *, now: layout)
     monkeypatch.setattr(runner, "_run_migrations", lambda _url: None)
     monkeypatch.setattr(runner, "_wallet_hotkey", lambda _a, wallet: f"{wallet}-hotkey")

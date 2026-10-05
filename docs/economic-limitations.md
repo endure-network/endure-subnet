@@ -33,7 +33,8 @@ least two independently operated validators, and one complete 30-day
 resolution cycle remain qualification requirements. For the initial `v0.1.0`
 image publication, the owner accepted the documented limitations on
 2026-09-20 while staging continues; see the [release decision](releases/v0.1.0.md).
-They remain accepted and disclosed for [`v0.1.1`](releases/v0.1.1.md).
+They remain accepted and disclosed for [`v0.1.1`](releases/v0.1.1.md) and
+[`v0.1.2`](releases/v0.1.2.md).
 This acceptance does not establish that these requirements have been met.
 No consumer should interpret testnet emissions as evidence that modeling
 costs are economically rewarded at production scale.
@@ -68,6 +69,26 @@ disables both modes indefinitely and is never auto-enabled by scores. Follow the
 [single-writer cutover](running_on_mainnet.md#coordinated-cutover), without an
 external weight setter or later flag-changing restart. Key `2042` ships as
 [`v0.1.1`](releases/v0.1.1.md); it does not change chain parameters.
+
+## Owner burn rate
+
+Key `2043` gives the subnet owner a standing share of every scored vote: the
+burn rate its hotkey publishes as its subnet commitment,
+`endure.burn_bps=<0..10000>`. Miners share the rest by earned weight; the chain
+burns the owner's share. A missing or malformed commitment burns the whole vote.
+The rate lets the owner open miner emission gradually: for example 98% at
+launch, stepped down as miner quality and independence are established. It is
+an allocation decision by the owner, not a measure of miner accuracy, and it
+does not address the qualification requirements above.
+
+The rate has an emission cost. Subtensor scales a subnet's share of network TAO
+emission by `1 − MinerBurned`, the share of miner emission withheld by owner
+hotkeys, so a high rate keeps SN30's TAO emission near zero while it lasts.
+Validators read the rate independently at their next weight attempt, so during
+a change they can briefly disagree; Yuma consensus applies the rate held by the
+stake majority. See the [owner burn rate](running_on_mainnet.md#owner-burn-rate).
+Key `2043` ships as [`v0.1.2`](releases/v0.1.2.md); it does not change chain
+parameters.
 
 ## Conditional determinism
 

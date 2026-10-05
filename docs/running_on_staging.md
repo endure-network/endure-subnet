@@ -53,6 +53,19 @@ localnet qualification remain required for the selected staging commit. The
 [v0.1.1 release notes](releases/v0.1.1.md) record the decision, and the GitHub
 release records the checkpoint outcomes.
 
+For protocol key `2043` (`v0.1.2`), the owner accepted the existing testnet
+run at staging commit `02ab118` on 2026-10-05 and waived an additional timed
+soak for the documentation and version-metadata release. The protocol code
+is unchanged. Successful CI, localnet qualification and published images on
+the exact final staging commit remain required, along with verification of
+the deployed version, source/content identity, validator loop and miners.
+The known commit-reveal startup interval is monitored separately; publication
+does not require a new confirmed vote or a fresh full round. Before the
+mainnet cutover, publish the intended SN30 burn rate and use UID 195 as the
+canary. The [v0.1.2 release notes](releases/v0.1.2.md) record this scoped
+exception and the limitations of the earlier soak evidence; the GitHub
+release records the actual release-check outcomes.
+
 The default soak gate is the promotion evidence the mainnet decision consumes.
 It passes when the deployed staging environment shows, over seven consecutive
 days with an unchanged deployed revision:

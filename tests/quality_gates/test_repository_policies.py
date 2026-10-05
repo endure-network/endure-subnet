@@ -57,7 +57,7 @@ def test_devnet_wallet_path_is_quoted_in_every_make_target() -> None:
     repo_root = Path(__file__).resolve().parents[2]
     makefile = (repo_root / "Makefile").read_text(encoding="utf-8")
 
-    assert makefile.count('--wallet-path "$(WALLET_PATH)"') == 4
+    assert makefile.count('--wallet-path "$(WALLET_PATH)"') == 5
 
 
 def test_operator_runbooks_do_not_instruct_users_to_use_template_repo() -> None:

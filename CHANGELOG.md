@@ -1,5 +1,64 @@
 # Changelog
 
+## v0.1.2 — owner burn rate
+
+Protocol key `2043`; miners and validators must upgrade together. Chain
+parameters, including SN30's `weights_version` (`2040`), are unchanged.
+Package/API version is `0.1.2`. See the
+[release notes, operator upgrade and soak decision](docs/releases/v0.1.2.md)
+and [#77](https://github.com/endure-network/endure-subnet/pull/77).
+
+- Add an owner-controlled burn rate. On served mainnet SN30 and testnet, a
+  scored weight attempt reads the subnet owner hotkey's commitment at the
+  emission snapshot block. `endure.burn_bps=<0..10000>` gives that share of the
+  vote to the owner UID, whose miner emission the chain burns; miners share the
+  rest by earned weight. The owner hotkey and every hotkey of the owner's
+  coldkey earn nothing at any rate, since the chain withholds their incentive.
+  A missing or malformed commitment burns the whole vote, so miners are paid
+  only on the owner's explicit instruction; `endure.burn_bps=0` pays the earned
+  vector without those hotkeys. A new rate applies at each validator's next
+  weight attempt, with no flag change or restart. With no positive score the
+  owner vote is unchanged.
+- Scored votes on owner-vote networks now require a valid subnet owner (the
+  pinned SN30 owner on mainnet) and abstain with the owner-vote block reasons
+  otherwise, because the burn rate is only as trustworthy as the key that
+  publishes it. The commitment is read from the snapshot's owner at the
+  snapshot block, and a record newer than that block is refused. A read error
+  is retried in place, up to three attempts (the RPC gate's own throttle and
+  stall signals go straight to the gate); a read that still fails abstains with
+  `owner_commitment_unavailable` and is retried next epoch.
+- Recheck every scored vote on owner-vote networks before sending, at any rate
+  including zero: chain `min_allowed_weights` and `max_weight_limit` of `1`, no
+  earned weight on a withheld UID, a max-scaled u16 vector with unique UIDs,
+  and an owner share within the encoding's rounding bound of the burn rate.
+  The owner and the vector's UIDs are then re-read at the submission block, and
+  an owner, coldkey or registration change refuses the attempt. A read error
+  on that re-read is retried in place at the same block, up to three attempts
+  (gate throttle and stall signals excepted), before the attempt is refused and
+  retried next epoch.
+- Read the owner commitment only once owner resolution, permit and the strict
+  rate limit allow the attempt.
+- Record no score provenance on the owner's audit row while miners sharing a
+  burned vote keep theirs, and report the planned rate as `emission_burn_bps`
+  in `/health` (`null` while abstaining or disabled).
+- Add `--endure.devnet_owner_vote`, which runs the testnet owner vote and burn
+  rate on a local chain and is refused on the mock chain, testnet and mainnet,
+  and `make devnet-burn-cycle`: the compressed cycle publishes the rate with
+  `scripts/set_burn_rate.py`, then requires a confirmed vote with the owner's
+  share and `/health` reporting the rate. Devnet qualification runs it after
+  the plain cycle. The cycle runner now refuses any endpoint that is not a
+  loopback URL with a development-chain genesis before it reads a wallet or
+  publishes anything.
+- Add `scripts/set_burn_rate.py` to read the rate at one block, or publish one
+  from the owner hotkey and read it back after finalization. On mainnet it
+  refuses to publish unless the subnet is SN30 and its owner is the pinned
+  hotkey.
+- Digest-cover the commitment read decision and its snapshot binding, the
+  record decoding and grammar, the full-burn default, the chain-withheld set,
+  the blended raw vector and the burn-share recheck (`emission_policy.py`). The
+  emission snapshot now also reads the owner coldkey and per-UID coldkeys. No
+  schema migration or new dependency.
+
 ## v0.1.1 — SN30 correctness cutover
 
 Protocol key `2042`; miners and validators must upgrade together. Chain

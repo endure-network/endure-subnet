@@ -383,6 +383,51 @@ into an immediate, explicit signal. In production this is why the miner's
 `miner-N-state:/root/.bittensor/miners` (`deploy/soak-miners/docker-compose.yaml`)
 so a container restart keeps the committed preimage.
 
+### Owner vote and burn rate
+
+Served testnet and mainnet validators vote for the subnet owner while no miner
+scores, and once miners score they give the owner UID the burn rate its hotkey
+publishes as `endure.burn_bps=<0..10000>`. A plain devnet run abstains instead.
+To rehearse that emission path on the local chain, run:
+
+```bash
+make devnet-burn-cycle NETUID=2 NETWORK=ws://127.0.0.1:9946 BURN_BPS=9800
+```
+
+The runner first publishes the rate from the seeded `owner` hotkey with
+`scripts/set_burn_rate.py --publish`, the tool an owner uses on a live chain,
+then starts the validator with `--endure.devnet_owner_vote`. That flag runs the
+testnet owner-vote rules on a local chain and is refused on the mock chain,
+testnet and mainnet, including a loopback endpoint whose genesis names a live
+chain. Before it reads a wallet or publishes anything, the runner itself
+refuses any endpoint that is not a loopback URL with a development-chain
+genesis, so a mistyped `NETWORK` cannot publish a live burn rate. On top
+of the full-cycle checklist, a passing run requires a confirmed vote that pays
+the miner and gives the owner the published share (checked against the
+validator's u16 rounding bound, counted over the vote's entries) and `/health`
+reporting the rate, then prints the chain's view of the vote:
+
+```text
+[x] owner published burn rate 9800 bps
+...
+[x] owner share 9800.07 bps of batch <id> (published 9800)
+[x] /health emission_burn_bps 9800
+chain block <n>: MinerBurned=<withheld proportion>
+chain owner uid=0: incentive=<...> emission=<...>
+chain miner uid=1: incentive=<...> emission=<...>
+```
+
+The chain lines are evidence, not part of the verdict. On subtensor `v470` a
+9500 bps run showed owner incentive `0.95`, miner `0.05` and `MinerBurned`
+`0.9500`; runtimes older than `MinerBurned`, such as the pinned CI localnet,
+print it as unavailable and still show the incentive and emission lines.
+
+Burn runs use 240-second rounds. The owner vote submits from the first epoch,
+and each SDK `set_weights` call holds the validator loop for tens of seconds on
+a local node, so a 60-second round would open after its commit window. The
+localnet runs SN30's direct weight path; commit-reveal weights are first
+exercised on testnet.
+
 The compression guard is hard-coded in startup config: compressed schedules and
 any unserved-schema dev override are refused unless the runtime is mock or the
 subtensor endpoint resolves to localhost/127.0.0.1. Testnet/mainnet endpoints
@@ -398,7 +443,8 @@ void cleanly.
 job: it starts the pinned localnet, requires the chain to author two distinct
 block heights, installs the seeder's hash-locked toolchain into a throwaway
 virtualenv, seeds fresh wallets, and runs `scripts/run_devnet_cycle.py` against
-the netuid the seeder reports. The cycle's exit code is the job's verdict.
+the netuid the seeder reports, then the owner-vote burn cycle at 9800 bps. The
+cycles' exit codes are the job's verdict.
 
 Triggers match the agreed policy:
 

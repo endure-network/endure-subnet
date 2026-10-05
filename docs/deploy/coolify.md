@@ -84,6 +84,35 @@ cd ~/.bittensor/wallets
 tar -cf - <wallet>/coldkeypub.txt <wallet>/hotkeys | base64
 ```
 
+### Soak miners under their own coldkey
+
+Register the five reference miners under a testnet coldkey that does not own
+the subnet. Subtensor withholds the incentive of every hotkey of the owner's
+coldkey, and from key `2043` validators give those hotkeys no weight at any
+burn rate, so soak miners under the owner coldkey never exercise the earned
+share. On the operator machine:
+
+```bash
+btcli wallet new-coldkey --wallet-name endure-soak
+for n in 1 2 3 4 5; do
+  btcli wallet new-hotkey --wallet-name endure-soak --hotkey "miner-$n"
+done
+btcli wallet transfer --wallet-name <owner-wallet> --network test \
+  --destination <endure-soak coldkey address> --amount 0.05
+for n in 1 2 3 4 5; do
+  btcli subnets register --netuid 504 --network test \
+    --wallet-name endure-soak --hotkey "miner-$n"
+done
+```
+
+Netuid 504 accepts one registration per block, and its burn (currently
+τ0.0005) can rise between registrations, which the transfer leaves room for.
+Rebuild `WALLETS_TAR_B64` from `endure-soak/coldkeypub.txt` and
+`endure-soak/hotkeys`, set `MINER1_WALLET` through `MINER5_WALLET` to
+`endure-soak` on the miner application (the hotkey names stay `miner-1`
+through `miner-5`), and redeploy it. The old hotkeys keep their UIDs and earn
+nothing either way.
+
 ## Durable state
 
 | Mount | Purpose |

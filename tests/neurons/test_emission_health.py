@@ -113,6 +113,19 @@ def test_first_due_submission_expires_without_any_audit_or_health_poll(
     assert validator.subtensor.mock_calls == []
 
 
+def test_health_reports_the_burn_rate_of_the_last_planned_attempt(
+    validator: Validator,
+) -> None:
+    validator._mark_tick_progress()
+    # Unknown until an attempt is planned on an owner-vote network.
+    assert (
+        _client(validator).get("/health").json()["runtime"]["emission_burn_bps"] is None
+    )
+    validator._emission_burn_bps = 9800
+    runtime = _client(validator).get("/health").json()["runtime"]
+    assert runtime["emission_burn_bps"] == 9800
+
+
 @pytest.mark.parametrize(
     "wait",
     [

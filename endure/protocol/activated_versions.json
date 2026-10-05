@@ -264,14 +264,20 @@
       "evidence_sha256": "0df17c6368167b0f8b3f376b2d84e5f9810d89860c67532dfaef348a2559918d",
       "key": 2041,
       "record_id": "activation-0044"
+    },
+    {
+      "digest": "224eebd7dfcaa588c0a6aa94116d95a7851e44cb7c3a2e3260046de354f2b4a2",
+      "evidence_sha256": "879daa5ac891ed1b038b99cf77e530fcf52e908dc2ea3ed360208fb8b1270bd2",
+      "key": 2042,
+      "record_id": "activation-0045"
     }
   ],
   "current_lease": {
-    "authority_sha256": "bf6e2d6b4c21e0b2568db7253ebcfd43c5a8422f2f8dbcf6dfebf4294c4b6714",
-    "digest": "224eebd7dfcaa588c0a6aa94116d95a7851e44cb7c3a2e3260046de354f2b4a2",
-    "holder": "fix/sn30-consensus-config-divergence",
-    "key": 2042
+    "authority_sha256": "2bf6bae0a796f277f3412af255602a7ffe62fb52595a68f7ec308e6b199cfa56",
+    "digest": "b99135ebe7bde1f22ab7edf33ff581f5cabc2735cde979d22a423b70a6e11cd0",
+    "holder": "feat/owner-burn-rate-2043",
+    "key": 2043
   },
-  "previous_activation_id": "activation-0044",
+  "previous_activation_id": "activation-0045",
   "schema_version": 1
 }

@@ -311,6 +311,8 @@ def _durable_scored_state(validator: Validator, *, block: Callable[[], int]) -> 
             block=block,
             hotkeys=[VALIDATOR_HOTKEY],
             owner_hotkey="owner",
+            owner_coldkey="owner-coldkey",
+            coldkeys=["validator-coldkey"],
             validator_permit=[True],
             last_update=[0],
             weights_rate_limit=0,
@@ -2784,6 +2786,8 @@ class _ChainTransport:
             block=block,
             hotkeys=[VALIDATOR_HOTKEY],
             owner_hotkey="owner",
+            owner_coldkey="owner-coldkey",
+            coldkeys=["validator-coldkey"],
             validator_permit=[True],
             last_update=[0],
             weights_rate_limit=0,
@@ -3036,7 +3040,7 @@ class TestSetWeightsAttemptWrapping:
         )
         assert prepared.cr4_reveal_deadline_block == 732
         assert attempt.status == "submitted"
-        assert neuron.spec_version == 1001
+        assert neuron.spec_version == 1002
         assert attempt.protocol_version_key == CURRENT_VERSION_KEY
         assert attempt.intent_hash is not None
         assert attempt.intent_hash.startswith(f"{CURRENT_VERSION_KEY}:")
