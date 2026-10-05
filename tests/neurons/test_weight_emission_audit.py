@@ -3040,7 +3040,7 @@ class TestSetWeightsAttemptWrapping:
         )
         assert prepared.cr4_reveal_deadline_block == 732
         assert attempt.status == "submitted"
-        assert neuron.spec_version == 1001
+        assert neuron.spec_version == 1002
         assert attempt.protocol_version_key == CURRENT_VERSION_KEY
         assert attempt.intent_hash is not None
         assert attempt.intent_hash.startswith(f"{CURRENT_VERSION_KEY}:")
