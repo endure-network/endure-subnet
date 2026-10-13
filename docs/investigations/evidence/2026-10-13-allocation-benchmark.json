@@ -1,0 +1,148 @@
+{
+  "allocation_only_benchmarks": [
+    {
+      "cells": 60,
+      "cpu_nanosecond_samples": [
+        110477,
+        80866,
+        67454
+      ],
+      "mean_cpu_ms": "0.08626566666666666666666666667",
+      "minimum_cpu_ms": "0.067454",
+      "policy": "current",
+      "subject_identities": 20
+    },
+    {
+      "cells": 60,
+      "cpu_nanosecond_samples": [
+        182867,
+        168665,
+        155797
+      ],
+      "mean_cpu_ms": "0.1691096666666666666666666667",
+      "minimum_cpu_ms": "0.155797",
+      "policy": "exact_pool",
+      "subject_identities": 20
+    },
+    {
+      "cells": 60,
+      "cpu_nanosecond_samples": [
+        16207236,
+        15827032,
+        16440375
+      ],
+      "mean_cpu_ms": "16.15821433333333333333333333",
+      "minimum_cpu_ms": "15.827032",
+      "policy": "near_pool_0.01_grace",
+      "subject_identities": 20
+    },
+    {
+      "cells": 60,
+      "cpu_nanosecond_samples": [
+        15968982,
+        16512950,
+        17032085
+      ],
+      "mean_cpu_ms": "16.50467233333333333333333333",
+      "minimum_cpu_ms": "15.968982",
+      "policy": "near_pool_0.50_grace",
+      "subject_identities": 20
+    },
+    {
+      "cells": 60,
+      "cpu_nanosecond_samples": [
+        85715,
+        67345,
+        67888
+      ],
+      "mean_cpu_ms": "0.07364933333333333333333333333",
+      "minimum_cpu_ms": "0.067345",
+      "policy": "public_baseline_excess",
+      "subject_identities": 20
+    },
+    {
+      "cells": 60,
+      "cpu_nanosecond_samples": [
+        73047,
+        70954,
+        65401
+      ],
+      "mean_cpu_ms": "0.06980066666666666666666666667",
+      "minimum_cpu_ms": "0.065401",
+      "policy": "gamma_12_diagnostic",
+      "subject_identities": 20
+    },
+    {
+      "cells": 60,
+      "cpu_nanosecond_samples": [
+        797650,
+        697450,
+        710087
+      ],
+      "mean_cpu_ms": "0.7350623333333333333333333333",
+      "minimum_cpu_ms": "0.69745",
+      "policy": "current",
+      "subject_identities": 254
+    },
+    {
+      "cells": 60,
+      "cpu_nanosecond_samples": [
+        1461168,
+        1444003,
+        1495580
+      ],
+      "mean_cpu_ms": "1.466917",
+      "minimum_cpu_ms": "1.444003",
+      "policy": "exact_pool",
+      "subject_identities": 254
+    },
+    {
+      "cells": 60,
+      "cpu_nanosecond_samples": [
+        2528521487,
+        1609555608,
+        1677917336
+      ],
+      "mean_cpu_ms": "1938.664810333333333333333333",
+      "minimum_cpu_ms": "1609.555608",
+      "policy": "near_pool_0.01_grace",
+      "subject_identities": 254
+    },
+    {
+      "cells": 60,
+      "cpu_nanosecond_samples": [
+        1718517061,
+        1647460882,
+        1545008325
+      ],
+      "mean_cpu_ms": "1636.995422666666666666666667",
+      "minimum_cpu_ms": "1545.008325",
+      "policy": "near_pool_0.50_grace",
+      "subject_identities": 254
+    },
+    {
+      "cells": 60,
+      "cpu_nanosecond_samples": [
+        416890,
+        412473,
+        406080
+      ],
+      "mean_cpu_ms": "0.4118143333333333333333333333",
+      "minimum_cpu_ms": "0.40608",
+      "policy": "public_baseline_excess",
+      "subject_identities": 254
+    },
+    {
+      "cells": 60,
+      "cpu_nanosecond_samples": [
+        403538,
+        404207,
+        398417
+      ],
+      "mean_cpu_ms": "0.402054",
+      "minimum_cpu_ms": "0.398417",
+      "policy": "gamma_12_diagnostic",
+      "subject_identities": 254
+    }
+  ]
+}
