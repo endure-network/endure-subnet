@@ -66,14 +66,16 @@ jobs:
           echo "VALIDATOR_TAG=ghcr.io/$owner/endure-subnet-validator:sha-$SOURCE_SHA" >> "$GITHUB_ENV"
           echo "MINER_TAG=ghcr.io/$owner/endure-subnet-miner:sha-$SOURCE_SHA" >> "$GITHUB_ENV"
 
-      # Release images are write-once. :testnet moves from the digests a run
-      # records and publish-prod-images retags sha-<commit>, so a re-run must
-      # never replace them. Under this workflow's concurrency group, the
-      # registry is asked about both tags before anything is built: neither
-      # published, build and push them; both, reuse them without rebuilding;
-      # only one, or any answer but found or not found, stop. The packages are
-      # public, as third-party validators pull them, so the check uses an
-      # anonymous pull token.
+      # This workflow never replaces a release image. :testnet moves from the
+      # digests a run records and publish-prod-images retags sha-<commit>, so a
+      # re-run must not replace them. Under this workflow's concurrency group,
+      # the registry is asked about both tags before anything is built: neither
+      # published, build and push them; both, reuse them without rebuilding and
+      # say so in the artifact; only one, or any answer but found or not found,
+      # stop. It binds this workflow only: another writer to the packages can
+      # still replace a tag, so the digests a run records stay the reference.
+      # The packages are public, as third-party validators pull them, so the
+      # check uses an anonymous pull token.
       - name: Keep release images write-once
         shell: bash
         run: |
@@ -106,7 +108,10 @@ jobs:
               ;;
             *)
               echo "Only one of $VALIDATOR_TAG and $MINER_TAG is published." >&2
-              echo "Release images are write-once, so a person has to resolve this." >&2
+              echo "This workflow never replaces a release image, so a person has to resolve this." >&2
+              echo "A run that failed between its two pushes recorded no digests and moved no channel:" >&2
+              echo "if the published one came from such a run, delete that version in GitHub Packages" >&2
+              echo "and re-run this job; otherwise find out who published it before anything else." >&2
               exit 1
               ;;
           esac
@@ -157,14 +162,19 @@ jobs:
           [[ "$miner_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
           validator_ref="${VALIDATOR_TAG%:*}@$validator_digest"
           miner_ref="${MINER_TAG%:*}@$miner_digest"
-          printf 'SOURCE_SHA=%s\nVALIDATOR_IMAGE=%s\nMINER_IMAGE=%s\n' \
-            "$SOURCE_SHA" "$validator_ref" "$miner_ref" > release-images.env
+          reused="${RELEASE_IMAGES_PUBLISHED:-false}"
+          printf 'SOURCE_SHA=%s\nVALIDATOR_IMAGE=%s\nMINER_IMAGE=%s\nRELEASE_IMAGES_REUSED=%s\n' \
+            "$SOURCE_SHA" "$validator_ref" "$miner_ref" "$reused" > release-images.env
           grep -Eq '@sha256:[0-9a-f]{64}$' release-images.env
           {
             echo '### Immutable release images'
             echo
             echo "Source commit: \`$SOURCE_SHA\`"
             echo
+            if [ "$reused" = true ]; then
+              echo 'An earlier run published these images; this run reused them without rebuilding.'
+              echo
+            fi
             echo 'Download the release-images artifact and deploy the recorded digests.'
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -195,8 +205,9 @@ jobs:
         run: |
           gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" \
             --name "release-images-$SOURCE_SHA"
-          test "$(wc -l < release-images.env)" -eq 3
+          test "$(wc -l < release-images.env)" -eq 4
           grep -Fx "SOURCE_SHA=$SOURCE_SHA" release-images.env
+          grep -Ex 'RELEASE_IMAGES_REUSED=(true|false)' release-images.env
           staging_sha="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/staging" --jq .object.sha)"
           test "$staging_sha" = "$SOURCE_SHA"
           scripts/quality_gates/require_release_workflows.sh "$SOURCE_SHA"

@@ -38,11 +38,13 @@ needs no chain-parameter change: SN30's `weights_version` (`2040`) accepts key
   order and its seed, the pooled normalization and the pool rounding. Scores,
   EMAs, consensus weighting and the owner burn rate are unchanged. No schema
   migration or new dependency.
-- Make release images write-once. Before building, the staging image workflow
-  asks the registry for the commit's `sha-<commit>` images: it builds and pushes
-  them only if neither exists, reuses both without rebuilding on a re-run, and
-  stops if only one exists. A re-run cannot replace the images `:testnet` and
-  `:prod` take.
+- Make release images write-once for their workflow. Before building, the
+  staging image workflow asks the registry for the commit's `sha-<commit>`
+  images: it builds and pushes them only if neither exists, reuses both without
+  rebuilding on a re-run and says so in its artifact (`RELEASE_IMAGES_REUSED`),
+  and stops if only one exists. A re-run cannot replace the images `:testnet`
+  and `:prod` take. Other writers to the packages are not bound, so the digests
+  a run records stay the reference.
 
 ## v0.1.2 — owner burn rate
 
