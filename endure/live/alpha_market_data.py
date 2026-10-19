@@ -34,7 +34,10 @@ from endure.protocol.consensus_policy import (
     normalize_genesis_hash,
 )
 from endure.protocol.risk_miner import LatestPoolObservation
-from endure.scoring.assessment_orchestrator import ResolutionDeadlineExceeded
+from endure.scoring.assessment_orchestrator import (
+    FinalizedChainReads,
+    ResolutionDeadlineExceeded,
+)
 from endure.scoring.market_data import (
     SUBTENSOR_RESERVE_PRICE_SOURCE,
     AlphaMarketDataError,
@@ -55,6 +58,7 @@ from endure.scoring.market_sampling import (
     require_archive_value,
     retry_exhausted_failure,
     snapshot_failure_is_outage,
+    utc_timestamp_milliseconds,
 )
 from endure.scoring.risk.observables import BLOCK_SECONDS
 from endure.utils.logging import safe_endpoint_label, safe_error
@@ -75,6 +79,11 @@ LIVE_MARKET_DATA_ARCHIVE_PROBE_TIMEOUT_SECONDS: Final = 120.0
 # first attempt after the cooldown lands soon after it ends.
 LIVE_MARKET_DATA_ARCHIVE_PROBE_MAX_BACKOFF_SECONDS: Final = Decimal("5")
 LIVE_MARKET_DATA_ARCHIVE_LOOKBACK: Final = timedelta(days=30)
+# A pool tie seed bisects the finalized chain once per round, about 25 reads;
+# the public archive has taken nearly two minutes for them. The reads of one
+# seed keep this deadline of their own, never the tick's resolution budget, so
+# a vote after a long tick can still read it.
+LIVE_TIE_SEED_TIMEOUT_SECONDS: Final = 300.0
 # Startup chain identity: a 429, a DNS blip or a devnet node still booting is
 # retried with exponential backoff until the deadline; each attempt is bounded.
 CHAIN_GENESIS_READ_DEADLINE_SECONDS: Final = 30.0
@@ -153,6 +162,8 @@ class AlphaSubnetInfoFetcher(Protocol):
     def finalized_block(self) -> int: ...
 
     def timestamp_at_block(self, block: int) -> int: ...
+
+    def block_hash(self, block: int) -> str | None: ...
 
     def genesis_hash(self) -> str | None: ...
 
@@ -321,6 +332,10 @@ class BittensorSubnetInfoFetcher:
             )
 
         return int(self._call_archive_operation(operation))
+
+    def block_hash(self, block: int) -> str | None:
+        substrate = self._active_substrate()
+        return self._call_archive_operation(lambda: substrate.get_block_hash(block))
 
     def _apply_rate_limit_cooldown(self, error: BaseException) -> None:
         if _is_archive_rate_limited(error):
@@ -544,7 +559,7 @@ class LiveAlphaPriceProvider:
         if (
             block >= finalized
             or historical_ms <= 0
-            or historical_ms > _utc_timestamp_milliseconds(cutoff)
+            or historical_ms > utc_timestamp_milliseconds(cutoff)
         ):
             raise AlphaMarketDataUnavailable("archive lacks 30-day timestamp history")
         info = self._with_retry(
@@ -567,7 +582,7 @@ class LiveAlphaPriceProvider:
     ) -> int:
         """Resolve the first finalized mainnet block at or after ``timestamp``."""
         _ = now  # Kept for validator call compatibility; chain state determines the block.
-        timestamp_ms = _utc_timestamp_milliseconds(timestamp)
+        timestamp_ms = utc_timestamp_milliseconds(timestamp)
         cached = self._first_timestamp_blocks.get(timestamp_ms)
         if cached is not None:
             return cached
@@ -585,7 +600,7 @@ class LiveAlphaPriceProvider:
     ) -> int:
         """Resolve the last finalized mainnet block at or before ``timestamp``."""
         _ = now  # Kept for validator call compatibility; chain state determines the block.
-        timestamp_ms = _utc_timestamp_milliseconds(timestamp)
+        timestamp_ms = utc_timestamp_milliseconds(timestamp)
         cached = self._last_timestamp_blocks.get(timestamp_ms)
         if cached is not None:
             return cached
@@ -597,6 +612,43 @@ class LiveAlphaPriceProvider:
         )
         self._last_timestamp_blocks[timestamp_ms] = block
         return block
+
+    def tie_seed_reads(self) -> FinalizedChainReads:
+        """Finalized-chain reads for one pool tie seed, under their own deadline.
+
+        The watched ``chain_tie_seed`` decides the block, its hash and what a
+        failure means; these are only the reads, retried like scoring's. They
+        never spend the tick's resolution budget, so a vote after a long tick
+        can still read its seed, and a read that fails is logged.
+        """
+        deadline = self._now_fn() + LIVE_TIE_SEED_TIMEOUT_SECONDS
+
+        def read[T](operation: Callable[[], T]) -> T:
+            previous_deadline = self._deadline_exceeded_fn
+            self._deadline_exceeded_fn = lambda: self._now_fn() >= deadline
+            try:
+                return self._with_retry(operation)
+            except (*ARCHIVE_FETCH_FAILURES, ResolutionDeadlineExceeded) as error:
+                bt.logging.warning(f"tie seed read failed: {safe_error(error)}")
+                raise
+            finally:
+                self._deadline_exceeded_fn = previous_deadline
+
+        def block_hash(block: int) -> str:
+            return read(
+                lambda: require_archive_value(
+                    self._fetcher.block_hash(block),
+                    f"missing block hash for block={block}",
+                )
+            )
+
+        return FinalizedChainReads(
+            finalized_block=lambda: read(self._fetcher.finalized_block),
+            timestamp_at_block=lambda block: read(
+                lambda: self._fetcher.timestamp_at_block(block)
+            ),
+            block_hash=block_hash,
+        )
 
     def price_series(
         self, netuid: int, *, window: ResolutionWindow
@@ -897,14 +949,3 @@ def _bounded_genesis_attempt(
     if failure:
         raise GenesisAttemptFailed(failure[0])
     return outcome[0]
-
-
-def _utc_timestamp_milliseconds(value: datetime) -> int:
-    if value.tzinfo is None or value.utcoffset() is None:
-        raise AlphaMarketDataError("reveal_close must be timezone-aware")
-    utc_value = value.astimezone(UTC)
-    epoch = datetime(1970, 1, 1, tzinfo=UTC)
-    elapsed = utc_value - epoch
-    return (
-        elapsed.days * 86_400 + elapsed.seconds
-    ) * 1_000 + elapsed.microseconds // 1_000

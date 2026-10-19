@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal
@@ -28,6 +28,7 @@ from endure.storage.repository import Storage
 
 if TYPE_CHECKING:
     from endure.scoring.assessment_orchestrator import AssessmentScoringOrchestrator
+    from endure.scoring.duplicates import OrderedPools
 
 
 class RoundProgram(Protocol):
@@ -59,6 +60,8 @@ class VerticalRuntime:
     publisher: PublisherProjection  # D8-D9
     scheduler: RoundScheduler  # D11
     active_coordinates: frozenset[AssessmentCoordinate] | None = None
+    # Identical-forecast pools behind the newest weights, each in tie order.
+    pools: Callable[[], OrderedPools] | None = None
 
 
 @dataclass(frozen=True, slots=True)

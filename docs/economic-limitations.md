@@ -90,6 +90,80 @@ stake majority. See the [owner burn rate](running_on_mainnet.md#owner-burn-rate)
 Key `2043` ships as [`v0.1.2`](releases/v0.1.2.md); it does not change chain
 parameters.
 
+## Identical forecasts
+
+Key `2044` pays each pool of exact copies as at most one miner: each hotkey is
+assigned to the oldest group that revealed identical values with it in one of
+the newest five revealed rounds, and the hotkeys assigned to one group weigh
+together what their best member would alone, each giving up the same amount of
+sharpened score, or all of its own if that is less. The vote rounds each
+pool's total to whole u16 units once, as it would one hotkey's, and each
+member's units stay within one of its exact share. This prices exact
+replication only. Forecasts that differ in any value are scored and paid as
+independent miners, so pooling does not bound the number of identities one
+operator runs, and the owner burn rate stays the holding control for that.
+Validators cannot tell an original from its copy, so a miner whose forecast
+another hotkey can reproduce exactly before the reveal, such as the reference
+miner run unchanged, shares its pool with that copy. Copies never cost the rest
+of their pool more than they give up themselves, but the weight both give up is
+renormalized across every miner, the copier's other hotkeys included, so an
+operator that already earns more than half of the miners' pool can gain from
+each predictable miner it copies. Burning that weight instead would remove the
+gain, but every pool's forfeited weight would then be burned rather than paid to
+other miners, and burned miner weight cuts the subnet's TAO emission (see [owner
+burn rate](#owner-burn-rate)). See [identical
+forecasts](mining.md#identical-forecasts-share-one-payout).
+
+These guarantees are exact before the vote is rounded to whole u16 units.
+Rounding then moves an operator's units from its exact share by at most half a
+unit for each lone hotkey or whole pool it holds, and by less than one unit for
+each hotkey in a pool it shares with others. Because the weight a pool gives up
+is spread across every other miner, matching can still carry an operator's other
+hotkeys over a rounding threshold. From a 50% burn up, where the owner's entry
+fixes the u16 scale, the operator's vote can then rise by at most the two
+votes' rounding bounds together, even though its exact share fell. Below that a
+miner's entry can set the scale and matching can change it, so raw units need
+not compare between the two votes; the operator's share of each vote still lies
+within what those bounds allow around its exact share. At a 98% burn the miners'
+pool is about 1,337 units, so one unit is about 0.075% of it. Near a 100% burn
+the pool is only a few units, and rounding decides most of each miner's share.
+The chain stores whole units and scales every vote so its largest entry is
+65535, so no rounding rule removes this entirely.
+
+Equal remainders within a pool are broken in an order drawn from the hash of the
+first finalized Bittensor mainnet block stamped at least a minute after the
+newest round's reveal close, which validators read from their market-data
+archive. Hotkeys are registered and that round's forecasts revealed before the
+block exists, so no operator can grind a hotkey that will lead the order. Any
+transaction in that block changes its hash, but blindly; only the block's author
+could compare candidate hashes, by choosing what the block includes. A hotkey
+registered again
+before its scores are archived, by a new registration or a hotkey swap, rejoins
+its pool at once, so an operator holding several could choose which to bring
+back once the order is known, but each costs a registration or a swap fee, far
+more than the tied units it could win. A round
+joins the pooling window once that block is final, so for a minute or two after
+its reveals close the window still ends one round earlier. A validator whose
+archive cannot show the block yet keeps the earlier window. If it cannot read
+that window's block either, it keeps the newest window whose block it has read
+since it started, and abstains only if it has read none. Every validator with
+the same window
+draws the same order, whatever block it votes at. That matters because Yuma
+consensus pays each UID only the weight a stake majority agrees on: validators
+that gave a tied unit to different members would each be clipped, and a pool of
+copies each worth under one unit could lose its whole payout. Votes cast with
+different windows can still disagree: they can split tied units differently and,
+when the windows hold different rounds, pool different hotkeys. They do after a
+new round joins until every validator has voted again, for as long as an archive
+outage holds a validator on an older window, which can last days, or for as long
+as one stops voting. Until then, consensus pays each hotkey only the weight a
+stake majority agrees on, so such a pool gets less than its best member would
+earn alone, by up to the units its members tie for, and a hotkey pooled by only
+some validators gets at most what the majority gives it; validator trust dips by
+the weight it clips, and the clipped weight is spread over every UID the votes
+pay, the owner's burn entry included, in proportion to their incentive, so no
+one can steer it. At a 98% burn nearly all of it goes to the burn.
+
 ## Conditional determinism
 
 Equal protocol keys do not imply equal live weights. Independent push delivery,
@@ -102,10 +176,12 @@ state, and complete historical/active eligibility inputs, score transitions and
 hotkey-keyed candidate weights must agree. Emission-mode agreement additionally
 requires the same current scores, network, and on-chain subnet owner state.
 Identical processed/u16 vectors also require the same ordered UID/hotkey
-mapping, metagraph size, and chain weight constraints. Submission timing, chain
-inclusion, and finalized confirmation remain separate; independent validators
-may enter or leave the owner vote at different times because their accepted
-submissions, resolution timing, and durable histories differ.
+mapping, metagraph size, chain weight constraints, and identical-forecast pools
+from the same window, whose newest round's seed block orders their ties.
+Submission timing, chain inclusion, and finalized confirmation remain separate;
+independent validators may enter or leave the owner vote at different times
+because their accepted submissions, resolution timing, and durable histories
+differ.
 
 Key `2042` pins admission settings on served testnet and mainnet and digest-covers storage
 admission/selection, miner axon admission (registered hotkey and stake floor),

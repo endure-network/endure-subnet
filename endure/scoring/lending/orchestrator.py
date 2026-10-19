@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable, Sequence
 from decimal import Decimal
 
 import bittensor as bt
@@ -77,6 +78,7 @@ class LendingScoringOrchestrator(AssessmentScoringOrchestrator):
         price_provider: AlphaPriceProvider,
         half_life_rounds: int,
         liquidation_buffer_bps: int = COLLATERAL_FACTOR_LIQUIDATION_BUFFER_BPS,
+        registered_hotkeys: Callable[[], Sequence[str]] | None = None,
     ) -> None:
         full_history_window = ResolutionWindow(start_block=0, horizon_blocks=2**63 - 1)
 
@@ -118,4 +120,5 @@ class LendingScoringOrchestrator(AssessmentScoringOrchestrator):
                 ),
             ),
             half_life_rounds=half_life_rounds,
+            registered_hotkeys=registered_hotkeys,
         )

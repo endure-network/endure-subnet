@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
-from decimal import ROUND_HALF_UP, Decimal, localcontext
+from decimal import ROUND_FLOOR, ROUND_HALF_UP, Decimal, localcontext
 
 from endure.scoring.context import TR_CONTEXT
 
@@ -150,8 +150,17 @@ def normalize_max_weight(
 def convert_weights_and_uids_for_emit(
     uids: Sequence[object],
     weights: Sequence[object],
+    *,
+    groups: Iterable[Sequence[int]] = (),
 ) -> tuple[list[int], list[int]]:
-    """Scale Decimal weights to u16, round half up, and omit rounded zeros."""
+    """Scale Decimal weights to u16, round half up, and omit rounded zeros.
+
+    Each of ``groups`` gets the units one entry with its total would, to
+    28-digit arithmetic: its UIDs keep their scaled weights rounded down, and
+    the units their remainders round half up to, summed smallest first, go
+    one each to the largest remainders, equal remainders in the group's order.
+    Any other UID rounds half up on its own.
+    """
     with localcontext(TR_CONTEXT):
         uid_list = _as_uid_list(uids)
         weight_list = _as_decimal_list(weights)
@@ -177,20 +186,57 @@ def convert_weights_and_uids_for_emit(
             return [], []
 
         max_weight = max(weight_list)
-        scaled_weights = [weight / max_weight for weight in weight_list]
+        scaled_weights = [
+            weight / max_weight * U16_MAX_DECIMAL for weight in weight_list
+        ]
+        units = [_round_half_up(weight) for weight in scaled_weights]
+        for members in _group_positions(uid_list, groups):
+            floors = {
+                index: int(
+                    scaled_weights[index].to_integral_value(rounding=ROUND_FLOOR)
+                )
+                for index in members
+            }
+            remainders = {
+                index: scaled_weights[index] - floors[index] for index in members
+            }
+            # Sorted, so the total never depends on the group's order.
+            spare = _round_half_up(sum(sorted(remainders.values()), ZERO))
+            # sorted() is stable: equal remainders keep the group's order.
+            ranked = sorted(members, key=lambda index: -remainders[index])
+            for rank, index in enumerate(ranked):
+                units[index] = floors[index] + (1 if rank < spare else 0)
 
         weight_vals: list[int] = []
         weight_uids: list[int] = []
-        for weight_i, uid_i in zip(scaled_weights, uid_list, strict=True):
-            uint16_val = int(
-                (weight_i * U16_MAX_DECIMAL).quantize(
-                    Decimal("1"), rounding=ROUND_HALF_UP
-                )
-            )
+        for uint16_val, uid_i in zip(units, uid_list, strict=True):
             if uint16_val != 0:
                 weight_vals.append(uint16_val)
                 weight_uids.append(uid_i)
         return weight_uids, weight_vals
+
+
+def _round_half_up(value: Decimal) -> int:
+    return int(value.quantize(ONE, rounding=ROUND_HALF_UP))
+
+
+def _group_positions(
+    uids: Sequence[int], groups: Iterable[Sequence[int]]
+) -> list[list[int]]:
+    """Each group's positions in ``uids``, in the group's order.
+
+    UIDs absent from ``uids`` are skipped.
+    """
+    ordered = [list(group) for group in groups]
+    if not ordered:
+        return []
+    position = {uid: index for index, uid in enumerate(uids)}
+    if len(position) != len(uids):
+        raise ValueError(f"Grouped weights need distinct uids, got {list(uids)}")
+    grouped = [uid for group in ordered for uid in group]
+    if len(grouped) != len(set(grouped)):
+        raise ValueError("A uid can be rounded in only one group")
+    return [[position[uid] for uid in group if uid in position] for group in ordered]
 
 
 def process_weights(
@@ -306,8 +352,13 @@ def chain_weight_vector(
     metagraph_size: int,
     min_allowed_weights: int,
     max_weight_limit: Decimal,
+    groups: Iterable[Sequence[int]] = (),
 ) -> ChainWeightVector:
-    """Apply chain limits to an emission candidate, then encode it as u16."""
+    """Apply chain limits to an emission candidate, then encode it as u16.
+
+    ``groups`` are UIDs rounded as one entry, such as one identical-forecast
+    pool's hotkeys, each in the order that breaks equal remainders.
+    """
     processed_uids, processed_weights = process_weights(
         uids=uids,
         weights=raw_weights,
@@ -317,7 +368,7 @@ def chain_weight_vector(
         exclude_quantile=EMISSION_EXCLUDE_QUANTILE,
     )
     uint_uids, uint_weights = convert_weights_and_uids_for_emit(
-        uids=processed_uids, weights=processed_weights
+        uids=processed_uids, weights=processed_weights, groups=groups
     )
     return ChainWeightVector(
         processed_uids=tuple(processed_uids),

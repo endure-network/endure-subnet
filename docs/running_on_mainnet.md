@@ -12,6 +12,8 @@ It replaces the key-`2042` `v0.1.1` images: miners and validators upgrade
 together, the subnet owner publishes the [owner burn rate](#owner-burn-rate)
 before the cutover, and chain parameters, including `weights_version`, are
 unchanged. The [release notes](releases/v0.1.2.md) summarise the operator upgrade.
+This source candidate uses key `2044`, which adds
+[identical-forecast pooling](#identical-forecasts) and needs a coordinated release.
 Supported development uses Python `>=3.12,<3.13` and Bittensor `>=10.5,<11`.
 Endure's mainnet netuid is `30`; the subnet rates itself under the same rules
 as every other member of the Alpha Risk universe.
@@ -177,6 +179,54 @@ pipeline; a submission is not an immediate finalized confirmation. The
 is context for the owner, permit, and rate checks, not a second writer to run
 alongside Endure.
 
+### Identical forecasts
+
+Key `2044` pools identical forecasts before the vote is planned. The validator
+assigns each hotkey to the oldest group of hotkeys that revealed exactly its
+values in one of the newest five revealed rounds. Hotkeys assigned to the same
+group form a pool, which weighs what its best member would alone: every member
+gives up the same amount of sharpened score, or all of its own if that is less.
+A hotkey sits in one pool, `k` equal copies split one hotkey's weight, and
+copies that join a pool never cost its other members more, in total, than they
+give up themselves. The vote rounds each pool's total to whole u16 units once,
+so many small copies cannot each round up to a unit. From a 50% burn up, where
+the owner's entry sets the u16 scale, a pool is voted exactly the units its best
+member would get alone; below that a member can set the scale, and the pool
+keeps its best member's share only to within rounding. While the scored hotkeys
+stay the same, a hotkey stays in that pool until the group's round leaves the
+window, so leaving or re-forming a group does not pay before then. Membership is
+live, though: a hotkey that is first scored, registers again or deregisters can
+move others between pools, and a hotkey that starts matching a pool later joins
+it at the latest once its first matching round is the window's oldest. Only
+registered hotkeys with a positive blended score count toward a group. Hotkeys
+under the owner's coldkey count too, because the vote withholds them only
+afterwards, so a miner under the owner coldkey that matches another miner's
+values also cuts that miner's payout; do not run one. Values alone are compared.
+Revealed rounds are read from their consensus snapshots, which never change, so
+an open round's reveals never count, and a restarted validator rebuilds the same
+pools once it can read the tie seeds described next. Ties between pool members
+are ordered by a finalized mainnet block hash read from
+`--endure.market_data_endpoint` a minute after each round's reveal close, so a
+new round joins the pool window a minute or two after its reveals close, or once
+the archive can show that block. If it cannot show the previous round's block
+either, votes keep the newest window whose block the validator has read since it
+started; one that has read none yet, such as a validator that has just
+restarted, abstains as `score_state_unavailable` until a later vote reads a
+block. A starting validator answers `/live` before it reads any seed block, so a
+slow seed read does not hold off its container health check; the [archive
+preflight](#release-pinned-consensus-policy-key-2042) still runs first, under
+its own 120-second deadline. Scores, EMAs, consensus weighting and the [owner
+burn rate](#owner-burn-rate) are unchanged; the burn applies to the pooled
+vector. `/miners` reports the validator's newest pooled `weight_share` and
+`pool_size`. The window kept through an outage lives only in the running
+process, so a running validator keeps voting and serving `/miners` through one,
+while a restarted one does not vote, and its `/miners` answers 503, until it has
+read a block and computed them. The share is of the validator's earned weights
+before the vote withholds owner-coldkey hotkeys and before the burn, so with no
+miner under the owner coldkey it is each hotkey's share of the miners' pool.
+Pooling prices exact replication only: forecasts that differ in any value are
+paid as independent miners.
+
 ### Owner burn rate
 
 Key `2043` lets the owner keep part of every earned vote. At each scored
@@ -291,7 +341,7 @@ validator abstains without submitting: `emission_mode=abstain`,
 | `owner_snapshot_inconsistent` | snapshot has no owner hotkey, owner at more than one UID, or local metagraph disagreeing with the chain UID | 503 after 2 epochs (200 blocks) |
 | `chain_snapshot_inconsistent` | no or stale chain snapshot, incoherent rate data, or a scored UID whose hotkey differs between the local metagraph and the chain snapshot (the earned weight is never sent to the new registrant) | 503 after 2 epochs (200 blocks) |
 | `validator_identity_invalid` | the validator's own UID/hotkey is not valid in the snapshot | 503 after 2 epochs (200 blocks) |
-| `score_state_unavailable` | durable score state (EMAs) cannot be read, at an attempt or after a resync; no owner vote and no stale weights | 503 after 2 epochs (200 blocks) |
+| `score_state_unavailable` | durable score state (EMAs) cannot be read, at an attempt or after a resync, or a validator started during an archive outage cannot read a pool tie seed yet; no owner vote and no stale weights | 503 after 2 epochs (200 blocks) |
 | `owner_commitment_unavailable` | the owner burn-rate commitment cannot be read at a scored attempt | 503 after 2 epochs (200 blocks) |
 
 Blocks are retried each epoch and clear automatically once chain state is safe
@@ -334,9 +384,12 @@ no retained history decision. Scores are rebuilt from durable EMAs at startup,
 after every metagraph resync, and at the start of every weight attempt, and a
 failed scoring tick keeps the previous vector, so neither a restart nor a tick
 failure reads as zero scores: a validator restarted while scored resumes
-earned weights with no owner-vote flicker, a running validator agrees with a
-restarted one, and a miner that re-registered at a new UID keeps its earned
-weight. If the durable score state cannot be read, emission abstains with the
+earned weights with no owner-vote flicker, and a miner that re-registered at a
+new UID keeps its earned weight. A running validator agrees with a restarted one
+once both have read the same pool tie seed; a validator restarted during an
+archive outage does not vote until it can read one (see
+[identical forecasts](#identical-forecasts)).
+If the durable score state cannot be read, emission abstains with the
 `score_state_unavailable` block above: no owner vote, no stale weights, and
 `/health` never claims `owner_vote` from a stale zeroed vector.
 Open weight batches recorded under a previous validator identity, for example
@@ -358,12 +411,12 @@ RPC/inclusion/finality delays, and the health detection window below. Postpone a
 cutover with insufficient headroom; this release cannot instantly rescue a
 validator already approaching inactivity.
 
-1. Agree the key-2043 release and canonical policy with independently operated
+1. Agree the key-2044 release and canonical policy with independently operated
    validators before asking miners to register. Promote qualified images through
    the existing release process and pin their digests. Miners upgrade in the
    same window: validators reject submissions carrying another protocol key.
-   Publish the intended [owner burn rate](#owner-burn-rate) before the cutover;
-   until it is published, key-2043 validators burn the whole vote.
+   Keep the intended [owner burn rate](#owner-burn-rate) published through the
+   cutover; without it, key-2043 and later validators burn the whole vote.
 2. Back up and preserve the distinct mainnet database and use a read-only
    host-mounted mainnet hotkey. Never copy testnet score state or use the
    testnet wallet-archive bootstrap. Use a consistent SQLite backup
@@ -390,7 +443,7 @@ validator already approaching inactivity.
 5. An explicitly true `disable_set_weights` is an indefinite off switch for both
    modes, not an unattended cutover configuration. Scores never auto-enable it.
    Do not raise chain `weights_version` for this cutover: SN30's value is
-   `2040` and Subtensor accepts a `version_key` at or above it, so key-`2043`
+   `2040` and Subtensor accepts a `version_key` at or above it, so key-`2044`
    submissions are accepted unchanged. Raising it is a later, deliberate owner
    decision only after every permit validator runs the new key; raising it
    earlier would reject validators still on an older key.

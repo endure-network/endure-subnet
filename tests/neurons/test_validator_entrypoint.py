@@ -1,6 +1,7 @@
 import argparse
 import asyncio
 import logging
+import sqlite3
 import threading
 from collections.abc import Iterator
 from contextlib import ExitStack, contextmanager
@@ -17,6 +18,7 @@ from bittensor.utils.mock.subtensor_mock import __GLOBAL_MOCK_STATE__
 from endure.assessment.schemas.forge_lending import FORGE_LENDING_SCHEMA_ID
 from endure.assessment.schemas.subnet_alpha_risk import RISK_SCHEMA_ID
 from endure.assessment.subnet_alpha_universe import StaticAlphaRiskUniverseProvider
+from endure.scoring.assessment_orchestrator import TieSeedUnavailable
 
 
 @contextmanager
@@ -150,6 +152,38 @@ def test_validator_wires_served_risk_schema_with_devnet_compression(
     assert build.call_args.kwargs["active_coordinates"] == active_risk_coordinates(
         (8, 44)
     )
+    assert build.call_args.kwargs["payout"]() is validator._payout
+
+
+@pytest.mark.parametrize(
+    ("schema_id", "dev_admitted"),
+    [(RISK_SCHEMA_ID, False), (FORGE_LENDING_SCHEMA_ID, True)],
+)
+def test_validator_payout_reports_the_pool_sizes_behind_its_weights(
+    mock_validator_config: bt.Config, schema_id: str, dev_admitted: bool
+) -> None:
+    from endure.protocol.vertical import AssessmentRoundProgram
+    from endure.scoring.weights import Payout
+    from neurons.validator import Validator
+
+    mock_validator_config.endure.active_schema = schema_id
+    mock_validator_config.endure.allow_unserved_schema_for_dev = dev_admitted
+    mock_validator_config.neuron.axon_off = True
+    mock_validator_config.neuron.disable_set_weights = True
+    validator = Validator(config=mock_validator_config)
+    program = validator._vertical_runtime.round_program
+    assert isinstance(program, AssessmentRoundProgram)
+
+    # As if the newest weights() pooled two copies.
+    pool = frozenset({"5Copy", "5Twin"})
+    program.orchestrator._pools = (pool,)
+    validator._apply_weights({"5Copy": Decimal("1")})
+
+    assert validator._payout == Payout(
+        weights={"5Copy": Decimal("1")}, pool_sizes={"5Copy": 2, "5Twin": 2}
+    )
+    # The vote rounds the same pools as one entry each.
+    assert validator._pools == (pool,)
 
 
 def test_validator_rejects_concurrent_risk_forwards(
@@ -1299,6 +1333,156 @@ def test_mainnet_compression_is_refused_before_the_archive_probe(
         Validator(config=cfg)
 
     probe.assert_not_called()
+
+
+def test_a_testnet_validator_must_read_a_mainnet_archive(
+    production_validator_config: bt.Config,
+) -> None:
+    from neurons.validator import Validator
+
+    cfg = production_validator_config
+    cfg.netuid = 504
+    cfg.subtensor.network = "test"
+    cfg.subtensor.chain_endpoint = ""
+    cfg.endure.serving_stage = "testnet"
+    probe = MagicMock(side_effect=RuntimeError("archive is not Bittensor mainnet"))
+    transport = MagicMock(side_effect=AssertionError("transport opened"))
+
+    # Scoring and pool tie seeds read the archive, so testnet checks it too.
+    with (
+        patch("neurons.validator.validate_mainnet_archive", probe),
+        patch("neurons.validator.resolve_runtime_provider", transport),
+        pytest.raises(RuntimeError, match="not Bittensor mainnet"),
+    ):
+        Validator(config=cfg)
+
+    probe.assert_called_once_with(str(cfg.endure.market_data_endpoint), netuid=30)
+    transport.assert_not_called()
+
+
+def test_a_compressed_testnet_run_reads_no_archive(
+    production_validator_config: bt.Config,
+) -> None:
+    from neurons.validator import Validator
+
+    cfg = production_validator_config
+    cfg.netuid = 504
+    cfg.subtensor.network = "test"
+    cfg.subtensor.chain_endpoint = ""
+    cfg.endure.serving_stage = "testnet"
+    cfg.endure.devnet_time_compression = True
+    probe = MagicMock()
+
+    with (
+        patch("neurons.validator.validate_mainnet_archive", probe),
+        patch(
+            "neurons.validator.resolve_runtime_provider",
+            MagicMock(side_effect=RuntimeError("transport reached")),
+        ),
+        pytest.raises(RuntimeError, match="transport reached"),
+    ):
+        Validator(config=cfg)
+
+    probe.assert_not_called()
+
+
+@pytest.mark.parametrize(("watchdog", "starts"), ((1200, False), (1201, True)))
+def test_a_live_watchdog_leaves_room_for_two_tie_seed_reads(
+    production_validator_config: bt.Config, watchdog: int, starts: bool
+) -> None:
+    from neurons.validator import Validator
+
+    cfg = production_validator_config
+    cfg.netuid = 504
+    cfg.subtensor.network = "test"
+    cfg.subtensor.chain_endpoint = ""
+    cfg.endure.serving_stage = "testnet"
+    cfg.endure.resolution_budget_seconds = 600
+    cfg.endure.health_tick_max_duration_seconds = watchdog
+    probe = MagicMock(side_effect=RuntimeError("archive probe reached"))
+
+    with (
+        patch("neurons.validator.validate_mainnet_archive", probe),
+        pytest.raises(
+            RuntimeError,
+            match="archive probe reached" if starts else "two 300-second tie seed",
+        ),
+    ):
+        Validator(config=cfg)
+
+    assert probe.called is starts
+
+
+def test_startup_loads_scores_after_the_read_api_as_a_long_operation(
+    mock_validator_config: bt.Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from neurons.validator import Validator
+
+    mock_validator_config.neuron.axon_off = True
+    now = [1_000.0]
+    monkeypatch.setattr("neurons.validator.time.monotonic", lambda: now[0])
+    events: list[str] = []
+    load = Validator._reconstruct_scores
+
+    def slow_load(validator: Validator) -> None:
+        events.append("scores")
+        health = validator.runtime_health()
+        # /health shows a startup in progress, not the zero vector's mode.
+        assert health["long_op_in_flight"] is True
+        assert health["emission_reason"] == "initializing"
+        # A slow archive keeps the load running past the startup grace.
+        now[0] += 2 * int(validator.config.endure.health_startup_grace_seconds)
+        load(validator)
+
+    monkeypatch.setattr(Validator, "_start_api", lambda _: events.append("api"))
+    monkeypatch.setattr(Validator, "_reconstruct_scores", slow_load)
+    validator = Validator(config=mock_validator_config)
+    validator.thread = MagicMock()
+    validator.thread.is_alive.return_value = True
+
+    assert events == ["api", "scores"]
+    assert validator._long_op_started_monotonic is None
+    assert validator.watchdog_exit_reason() is None
+
+
+def test_a_validator_that_cannot_read_a_tie_seed_starts_abstaining(
+    mock_validator_config: bt.Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from neurons.validator import Validator
+
+    mock_validator_config.neuron.axon_off = True
+    load = Validator._reconstruct_scores
+    archive_answers = [False]
+
+    def load_with_seeds(validator: Validator) -> None:
+        if not archive_answers[0]:
+            raise TieSeedUnavailable("neither newest round has a known tie seed")
+        load(validator)
+
+    monkeypatch.setattr(Validator, "_reconstruct_scores", load_with_seeds)
+    validator = Validator(config=mock_validator_config)
+
+    assert validator._durable_scores_loaded
+    assert validator._emission_block == "score_state_unavailable"
+    # The next vote reads the seed and ends the block.
+    archive_answers[0] = True
+    assert validator._refresh_scores_from_durable_state()
+    assert validator._emission_block is None
+
+
+def test_other_startup_score_failures_still_stop_the_validator(
+    mock_validator_config: bt.Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from neurons.validator import Validator
+
+    mock_validator_config.neuron.axon_off = True
+
+    def unreadable(_: Validator) -> None:
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(Validator, "_reconstruct_scores", unreadable)
+    with pytest.raises(sqlite3.OperationalError):
+        Validator(config=mock_validator_config)
 
 
 def test_missing_mainnet_hotkey_fails_offline_before_the_archive_probe(

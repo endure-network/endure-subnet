@@ -940,6 +940,23 @@ class Storage:
                 for row in connection.execute(query)
             ]
 
+    def revealed_round_ids(self, schema_id: str, *, limit: int) -> list[str]:
+        """The newest ``limit`` rounds past their reveal, newest first.
+
+        Each one scores from its immutable consensus snapshot.
+        """
+        with self._engine.connect() as connection:
+            result = connection.execute(
+                select(rounds.c.round_id)
+                .where(
+                    rounds.c.schema_id == schema_id,
+                    rounds.c.state.in_(POST_EMBARGO_ROUND_STATES),
+                )
+                .order_by(rounds.c.round_id.desc())
+                .limit(limit)
+            )
+            return [str(row.round_id) for row in result]
+
     def _post_embargo_rounds(self, schema_id: str, *, now_iso: str):
         """Embargo enforced at the read path, not by write-ordering trust."""
         return select(rounds.c.round_id).where(

@@ -2,6 +2,7 @@
 
 > **Experimental testnet alpha.** `v0.1.2` uses protocol key `2043`; superseded
 > `v0.1.1` images use key `2042`, and miners and validators upgrade together.
+> This source candidate uses key `2044`, which needs a coordinated release.
 > This is not a mainnet guide. The authoritative source compatibility value is
 > [version_contract.py](../endure/protocol/version_contract.py).
 
@@ -52,13 +53,18 @@ protocol value `0` and validators ignore any configured floor (see the
 
 Start one validator with a registered hotkey, persistent database URL, a
 reachable axon address, and `--endure.serving_stage testnet`. Set
-`--endure.market_data_endpoint` to your archive source. The command is:
+`--endure.market_data_endpoint` to a Bittensor **mainnet** archive, or leave it
+at its default, the public mainnet archive. Testnet validators score mainnet
+Alpha data and draw the pool tie order from mainnet blocks, so the validator
+refuses to start unless the endpoint is a mainnet archive with 30 days of
+history. A compressed testnet run replays recorded fixtures and reads no
+archive. The command is:
 
 ```bash
 .venv/bin/python neurons/validator.py --netuid 504 --subtensor.network test \
   --wallet.name <wallet-name> --wallet.hotkey <validator-hotkey> \
   --endure.serving_stage testnet --endure.database_url <persistent-db-url> \
-  --endure.market_data_endpoint <archive-endpoint> --endure.api_port 8714 \
+  --endure.market_data_endpoint <mainnet-archive-endpoint> --endure.api_port 8714 \
   --axon.port <axon-port> --axon.external_ip <reachable-ip>
 ```
 
@@ -82,6 +88,13 @@ another coldkey to exercise earned weights. Before a soak that needs miners to
 receive weight,
 publish a rate from the netuid-504 owner hotkey, for example
 `python scripts/set_burn_rate.py --network test --netuid 504 --wallet-name <owner-wallet> --wallet-hotkey <owner-hotkey> --publish 9800`.
+
+From key `2044`, soak miners that reveal identical values are pooled. The
+miners in `deploy/soak-miners` all run the reference forecast on the same pool
+data, so expect them to pool and `/miners` to report their `pool_size`. The
+soak gate checks restarts, overdue rounds, probes and weight emissions, which
+pooling does not change. See [identical
+forecasts](mining.md#identical-forecasts-share-one-payout).
 
 The Endure-operated testnet read API is
 `https://api.testnet.endure.network`, signed by validator hotkey

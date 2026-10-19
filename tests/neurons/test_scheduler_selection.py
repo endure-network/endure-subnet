@@ -42,8 +42,12 @@ def test_live_risk_window_callbacks_use_distinct_boundary_lookups(
     mock_validator_config.neuron.axon_off = True
     mock_validator_config.neuron.disable_set_weights = True
 
+    # Wire the live provider on the mock chain, whose archive needs no probe.
     monkeypatch.setattr(
-        validator_module, "permits_dev_only_runtime", lambda _config: False
+        validator_module, "_uses_live_mainnet_data", lambda _config: True
+    )
+    monkeypatch.setattr(
+        validator_module, "validate_mainnet_archive", lambda *_args, **_kwargs: None
     )
     monkeypatch.setattr(
         LiveAlphaPriceProvider,
