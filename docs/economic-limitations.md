@@ -33,8 +33,8 @@ least two independently operated validators, and one complete 30-day
 resolution cycle remain qualification requirements. For the initial `v0.1.0`
 image publication, the owner accepted the documented limitations on
 2026-09-20 while staging continues; see the [release decision](releases/v0.1.0.md).
-They remain accepted and disclosed for [`v0.1.1`](releases/v0.1.1.md) and
-[`v0.1.2`](releases/v0.1.2.md).
+They remain accepted and disclosed for [`v0.1.1`](releases/v0.1.1.md),
+[`v0.1.2`](releases/v0.1.2.md) and [`v0.1.3`](releases/v0.1.3.md).
 This acceptance does not establish that these requirements have been met.
 No consumer should interpret testnet emissions as evidence that modeling
 costs are economically rewarded at production scale.
@@ -163,6 +163,8 @@ some validators gets at most what the majority gives it; validator trust dips by
 the weight it clips, and the clipped weight is spread over every UID the votes
 pay, the owner's burn entry included, in proportion to their incentive, so no
 one can steer it. At a 98% burn nearly all of it goes to the burn.
+Key `2044` ships as [`v0.1.3`](releases/v0.1.3.md); it does not change chain
+parameters.
 
 ## Conditional determinism
 

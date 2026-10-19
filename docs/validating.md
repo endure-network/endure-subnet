@@ -247,9 +247,11 @@ clear previously submitted on-chain weights.
 Mode has no latch: scores are rebuilt from durable EMAs at startup, after every
 metagraph resync, and at the start of every weight attempt, and a failed scoring
 tick keeps the previous vector, so a restart while scored resumes earned
-weights, a miner that re-registered at a new UID keeps its earned weight, and a
-running validator agrees with a restarted one once both have read the same pool
-tie seed. If durable score state cannot be read, emission abstains with the
+weights, and a running validator agrees with a restarted one once both have
+read the same pool tie seed. A miner that re-registers at a new UID keeps its
+earned weight only if it returns before validators archive its score state,
+which they do at the first scoring pass after 2 consecutive metagraph resyncs
+miss its hotkey; after that it starts from zero. If durable score state cannot be read, emission abstains with the
 `score_state_unavailable` block (no owner vote, no stale weights, and `/health`
 never reports `owner_vote` from a stale zeroed vector). Startup rebuilds scores
 once the read API is up, so `/live` answers while a live validator reads its

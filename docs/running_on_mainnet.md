@@ -1,19 +1,18 @@
 # Running Endure on Mainnet
 
-> **Mainnet serving is opt-in and owner-gated.** `v0.1.2` retains
+> **Mainnet serving is opt-in and owner-gated.** `v0.1.3` retains
 > experimental economic limitations. Alpha Risk serves on mainnet only when
 > the operator passes the explicit `--endure.serving_stage mainnet` acknowledgement on a
 > recognized mainnet endpoint, and only releases promoted to the `:prod`
-> image channel under the [owner release decision](releases/v0.1.2.md)
+> image channel under the [owner release decision](releases/v0.1.3.md)
 > are supported there. Do not run a staging release candidate or a locally built image on mainnet.
 
-`v0.1.2` uses protocol key `2043` ([version contract](../endure/protocol/version_contract.py)).
-It replaces the key-`2042` `v0.1.1` images: miners and validators upgrade
-together, the subnet owner publishes the [owner burn rate](#owner-burn-rate)
-before the cutover, and chain parameters, including `weights_version`, are
-unchanged. The [release notes](releases/v0.1.2.md) summarise the operator upgrade.
-This source candidate uses key `2044`, which adds
-[identical-forecast pooling](#identical-forecasts) and needs a coordinated release.
+`v0.1.3` uses protocol key `2044` ([version contract](../endure/protocol/version_contract.py)).
+It replaces the key-`2043` `v0.1.2` images and adds
+[identical-forecast pooling](#identical-forecasts): miners and validators
+upgrade together, the published [owner burn rate](#owner-burn-rate) stays in
+place through the cutover, and the release needs no chain-parameter change:
+`weights_version` (`2040`) accepts key `2044`. The [release notes](releases/v0.1.3.md) summarise the operator upgrade.
 Supported development uses Python `>=3.12,<3.13` and Bittensor `>=10.5,<11`.
 Endure's mainnet netuid is `30`; the subnet rates itself under the same rules
 as every other member of the Alpha Risk universe.
@@ -384,8 +383,10 @@ no retained history decision. Scores are rebuilt from durable EMAs at startup,
 after every metagraph resync, and at the start of every weight attempt, and a
 failed scoring tick keeps the previous vector, so neither a restart nor a tick
 failure reads as zero scores: a validator restarted while scored resumes
-earned weights with no owner-vote flicker, and a miner that re-registered at a
-new UID keeps its earned weight. A running validator agrees with a restarted one
+earned weights with no owner-vote flicker. A miner that re-registers at a new
+UID keeps its earned weight only if it returns before validators archive its
+score state, which they do at the first scoring pass after 2 consecutive
+metagraph resyncs miss its hotkey; after that it starts from zero. A running validator agrees with a restarted one
 once both have read the same pool tie seed; a validator restarted during an
 archive outage does not vote until it can read one (see
 [identical forecasts](#identical-forecasts)).
