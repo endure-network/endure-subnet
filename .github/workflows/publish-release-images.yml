@@ -66,10 +66,56 @@ jobs:
           echo "VALIDATOR_TAG=ghcr.io/$owner/endure-subnet-validator:sha-$SOURCE_SHA" >> "$GITHUB_ENV"
           echo "MINER_TAG=ghcr.io/$owner/endure-subnet-miner:sha-$SOURCE_SHA" >> "$GITHUB_ENV"
 
+      # Release images are write-once. :testnet moves from the digests a run
+      # records and publish-prod-images retags sha-<commit>, so a re-run must
+      # never replace them. Under this workflow's concurrency group, the
+      # registry is asked about both tags before anything is built: neither
+      # published, build and push them; both, reuse them without rebuilding;
+      # only one, or any answer but found or not found, stop. The packages are
+      # public, as third-party validators pull them, so the check uses an
+      # anonymous pull token.
+      - name: Keep release images write-once
+        shell: bash
+        run: |
+          published=0
+          for tag in "$VALIDATOR_TAG" "$MINER_TAG"; do
+            name="${tag#ghcr.io/}"
+            repository="${name%:*}"
+            token="$(curl -fsS \
+              "https://ghcr.io/token?scope=repository:$repository:pull&service=ghcr.io" |
+              jq -er .token)"
+            status="$(curl -sS --head --output /dev/null --write-out '%{http_code}' \
+              --header "Authorization: Bearer $token" \
+              --header 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json, application/vnd.docker.distribution.manifest.list.v2+json' \
+              "https://ghcr.io/v2/$repository/manifests/${name##*:}")"
+            case "$status" in
+              404) ;;
+              200) published=$((published + 1)) ;;
+              *)
+                echo "The registry answered HTTP $status for $tag." >&2
+                echo "Nothing was built or pushed; re-run this job." >&2
+                exit 1
+                ;;
+            esac
+          done
+          case "$published" in
+            0) ;;
+            2)
+              echo "Both release images are already published; reusing them without rebuilding."
+              echo "RELEASE_IMAGES_PUBLISHED=true" >> "$GITHUB_ENV"
+              ;;
+            *)
+              echo "Only one of $VALIDATOR_TAG and $MINER_TAG is published." >&2
+              echo "Release images are write-once, so a person has to resolve this." >&2
+              exit 1
+              ;;
+          esac
+
       - name: Authenticate to the container registry
         run: echo "$GH_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
 
       - name: Build validator
+        if: env.RELEASE_IMAGES_PUBLISHED != 'true'
         run: |
           docker build --platform linux/amd64 \
             --build-arg ENDURE_SOURCE_REVISION="$SOURCE_SHA" \
@@ -79,6 +125,7 @@ jobs:
             --tag "$VALIDATOR_TAG" .
 
       - name: Build miner
+        if: env.RELEASE_IMAGES_PUBLISHED != 'true'
         run: |
           docker build --platform linux/amd64 \
             --build-arg ENDURE_SOURCE_REVISION="$SOURCE_SHA" \
@@ -95,6 +142,7 @@ jobs:
           scripts/quality_gates/require_release_workflows.sh "$SOURCE_SHA"
 
       - name: Publish images
+        if: env.RELEASE_IMAGES_PUBLISHED != 'true'
         run: |
           docker push "$VALIDATOR_TAG"
           docker push "$MINER_TAG"
