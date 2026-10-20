@@ -135,35 +135,22 @@ or read the round universe before assembling.
 
 ## Identical forecasts share one payout
 
-From key `2044`, hotkeys that reveal exactly the same values are pooled.
-Validators assign each hotkey to the oldest group of hotkeys that revealed
-values identical to its own in one of the newest five revealed rounds. Hotkeys
-assigned to the same group form a pool, which weighs what its best member would
-alone: every member gives up the same amount of sharpened score, or all of its
-own if that is less. `k` equal copies therefore split one hotkey's weight, and a
-weak copy cannot cost a strong miner more than the copy gives up itself. The
-vote rounds each pool's total to whole u16 units once, as it would one hotkey's:
-members keep their own share rounded down, and the units left go to the largest
-remainders, equal remainders in an order drawn from a mainnet block hash that no
-one knows until a minute after the window's newest round closes its reveals. No
-hotkey can be chosen in advance to lead it: once the hash is known, picking one
-means paying to register a scored hotkey again, or to swap one in. Every
-validator with that window agrees on the order. While the scored hotkeys stay
-the same, a hotkey stays in that pool until the group's round leaves the window.
-A hotkey that starts matching a pool later joins it at the latest once its first
-matching round is the window's oldest, so `pool_size` can grow without a new
-match. Membership is live: a
-hotkey that is first scored, registers again or deregisters can move others
-between pools. Only the submitted values are compared, not nonces, confidence or
-reason codes. Only registered hotkeys with a positive blended score count toward
-a group. Scores, EMAs and consensus weighting are unchanged; only the emission
-weights pool. Validators cannot tell an original from its copy, so a
-deterministic forecast, such as the reference miner run unchanged, pools with a
-hotkey that reproduces it, and the weight they give up goes to every other
-miner, the copier's other hotkeys included. Build your own estimates. `/miners`
-reports each hotkey's `pool_size` and its pooled `weight_share`, taken before
-the vote withholds owner-coldkey hotkeys and before the owner burn, and answers
-503 until the validator has computed them after a restart. Pooling is
+From key `2044`, validators pool hotkeys that reveal exactly the same values.
+Each hotkey joins the oldest group of hotkeys that revealed its values in one of
+the five newest revealed rounds, and a pool weighs what its best member would
+alone, so `k` copies in one pool split one hotkey's weight. A hotkey that starts
+matching an existing pool joins it at the latest once the round it first
+matched in is the window's oldest, so `pool_size` can grow without a new match.
+A hotkey that stops matching leaves once its matching rounds leave the window.
+Only submitted values are compared, not nonces, confidence or reason codes, and
+only registered hotkeys with a positive score count. Scores and EMAs are
+unchanged; only emission weights are pooled.
+
+Validators cannot tell an original from a copy, so a forecast another hotkey can
+reproduce, such as the reference miner run unchanged, pools with that copy.
+Build your own estimates.
+
+`/miners` reports each hotkey's `pool_size` and pooled `weight_share`. Pooling is
 defined in [duplicates.py](../endure/scoring/duplicates.py) and
 [weights.py](../endure/scoring/weights.py), and its rounding in
 [weight_processing.py](../endure/scoring/weight_processing.py).

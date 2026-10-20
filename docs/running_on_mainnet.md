@@ -180,51 +180,27 @@ alongside Endure.
 
 ### Identical forecasts
 
-Key `2044` pools identical forecasts before the vote is planned. The validator
-assigns each hotkey to the oldest group of hotkeys that revealed exactly its
-values in one of the newest five revealed rounds. Hotkeys assigned to the same
-group form a pool, which weighs what its best member would alone: every member
-gives up the same amount of sharpened score, or all of its own if that is less.
-A hotkey sits in one pool, `k` equal copies split one hotkey's weight, and
-copies that join a pool never cost its other members more, in total, than they
-give up themselves. The vote rounds each pool's total to whole u16 units once,
-so many small copies cannot each round up to a unit. From a 50% burn up, where
-the owner's entry sets the u16 scale, a pool is voted exactly the units its best
-member would get alone; below that a member can set the scale, and the pool
-keeps its best member's share only to within rounding. While the scored hotkeys
-stay the same, a hotkey stays in that pool until the group's round leaves the
-window, so leaving or re-forming a group does not pay before then. Membership is
-live, though: a hotkey that is first scored, registers again or deregisters can
-move others between pools, and a hotkey that starts matching a pool later joins
-it at the latest once its first matching round is the window's oldest. Only
-registered hotkeys with a positive blended score count toward a group. Hotkeys
-under the owner's coldkey count too, because the vote withholds them only
-afterwards, so a miner under the owner coldkey that matches another miner's
-values also cuts that miner's payout; do not run one. Values alone are compared.
-Revealed rounds are read from their consensus snapshots, which never change, so
-an open round's reveals never count, and a restarted validator rebuilds the same
-pools once it can read the tie seeds described next. Ties between pool members
-are ordered by a finalized mainnet block hash read from
-`--endure.market_data_endpoint` a minute after each round's reveal close, so a
-new round joins the pool window a minute or two after its reveals close, or once
-the archive can show that block. If it cannot show the previous round's block
-either, votes keep the newest window whose block the validator has read since it
-started; one that has read none yet, such as a validator that has just
-restarted, abstains as `score_state_unavailable` until a later vote reads a
-block. A starting validator answers `/live` before it reads any seed block, so a
-slow seed read does not hold off its container health check; the [archive
-preflight](#release-pinned-consensus-policy-key-2042) still runs first, under
-its own 120-second deadline. Scores, EMAs, consensus weighting and the [owner
-burn rate](#owner-burn-rate) are unchanged; the burn applies to the pooled
-vector. `/miners` reports the validator's newest pooled `weight_share` and
-`pool_size`. The window kept through an outage lives only in the running
-process, so a running validator keeps voting and serving `/miners` through one,
-while a restarted one does not vote, and its `/miners` answers 503, until it has
-read a block and computed them. The share is of the validator's earned weights
-before the vote withholds owner-coldkey hotkeys and before the burn, so with no
-miner under the owner coldkey it is each hotkey's share of the miners' pool.
-Pooling prices exact replication only: forecasts that differ in any value are
-paid as independent miners.
+Key `2044` pools identical forecasts before the vote is planned; the rule is in
+[identical forecasts](mining.md#identical-forecasts-share-one-payout). For
+operators:
+
+- **Tie seeds come from the archive.** The vote rounds each pool to whole u16
+  units once and orders equal remainders by the hash of the first finalized
+  mainnet block stamped at least a minute after the newest round's reveal close,
+  read from `--endure.market_data_endpoint`. A round joins the pool window once
+  that block is final, so every validator with the same window draws the same
+  order.
+- **Archive outages.** A running validator keeps voting with the newest window
+  whose seed it has read. One restarted before it can read a seed abstains with
+  `score_state_unavailable`, and its `/miners` answers 503, until it reads one.
+  `/live` answers meanwhile, and the
+  [archive preflight](#release-pinned-consensus-policy-key-2042) still runs
+  first.
+- **No miner under the owner coldkey.** Its hotkeys count toward pools and are
+  withheld only afterwards, so one that matches another miner cuts that miner's
+  payout.
+- **`/miners`** reports the newest pooled `weight_share` and `pool_size`, taken
+  before owner withholding and the burn. The burn applies to the pooled vector.
 
 ### Owner burn rate
 
