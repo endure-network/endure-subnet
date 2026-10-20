@@ -204,6 +204,24 @@ class _AbandonedGenerationState:
         self.condition = threading.Condition()
 
 
+class _ProcessEventCounters:
+    """RPC event totals shared by every transport generation in one process.
+
+    A generation can be created, record events, and then be discarded before it
+    is adopted (a failed ``create_subtensor`` during reconnection). Sharing one
+    counter object across every generation, including the replacement handed to
+    ``_reconnect_subtensor``, keeps those events conserved without re-adding a
+    copied snapshot (which would double-count the history a replacement already
+    inherits). The object is per process: it is created once per root gate and
+    never persisted or shared across processes.
+    """
+
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.rate_limited_total = 0
+        self.deferred_total = 0
+
+
 class AdaptiveRpcGate:
     """AIMD scheduler whose mutable fields are the live process-wide budget."""
 
@@ -214,6 +232,7 @@ class AdaptiveRpcGate:
         sleeper: Callable[[float], None] = time.sleep,
         operation_timeout_seconds: float = _DEFAULT_OPERATION_TIMEOUT_SECONDS,
         _abandoned_state: _AbandonedGenerationState | None = None,
+        _event_counters: _ProcessEventCounters | None = None,
     ) -> None:
         if operation_timeout_seconds <= 0:
             raise ValueError("operation_timeout_seconds must be positive")
@@ -224,8 +243,6 @@ class AdaptiveRpcGate:
         self._adaptive_rate = self._initial_rate
         self._next_request_monotonic = 0.0
         self._retry_after_monotonic = 0.0
-        self._rate_limited_total = 0
-        self._deferred_total = 0
         self._lock = threading.Lock()
         self._executor = self._new_executor()
         self._generation_lock = threading.Lock()
@@ -233,6 +250,7 @@ class AdaptiveRpcGate:
         self._transport_identity: int | None = None
         self._poisoned_operation_name: str | None = None
         self._abandoned_state = _abandoned_state or _AbandonedGenerationState()
+        self._event_counters = _event_counters or _ProcessEventCounters()
 
     @staticmethod
     def _new_executor() -> ThreadPoolExecutor:
@@ -257,19 +275,24 @@ class AdaptiveRpcGate:
             self._transport_identity = transport_identity
 
     def replacement(self) -> AdaptiveRpcGate:
-        """Create a fresh worker generation sharing the abandonment budget."""
+        """Create a fresh worker generation sharing process-wide budgets.
+
+        The abandonment budget and the RPC event totals are shared, not copied:
+        a discarded generation must not swallow events it recorded, and a
+        replacement that later records events must be visible to whichever gate
+        stays live.
+        """
         replacement = type(self)(
             clock=self._clock,
             sleeper=self._sleeper,
             operation_timeout_seconds=self._operation_timeout_seconds,
             _abandoned_state=self._abandoned_state,
+            _event_counters=self._event_counters,
         )
         with self._lock:
             replacement._adaptive_rate = self._adaptive_rate
             replacement._next_request_monotonic = self._next_request_monotonic
             replacement._retry_after_monotonic = self._retry_after_monotonic
-            replacement._rate_limited_total = self._rate_limited_total
-            replacement._deferred_total = self._deferred_total
         return replacement
 
     def call[T](
@@ -286,7 +309,8 @@ class AdaptiveRpcGate:
             now = self._clock()
             with self._lock:
                 if now < self._retry_after_monotonic:
-                    self._deferred_total += 1
+                    with self._event_counters.lock:
+                        self._event_counters.deferred_total += 1
                     raise RateLimited(
                         retry_after_monotonic=self._retry_after_monotonic,
                         provider_limited=False,
@@ -413,12 +437,15 @@ class AdaptiveRpcGate:
         with self._lock:
             with self._abandoned_state.condition:
                 abandoned_generations = self._abandoned_state.count
+            with self._event_counters.lock:
+                rate_limited_total = self._event_counters.rate_limited_total
+                deferred_total = self._event_counters.deferred_total
             return RateGateSnapshot(
                 adaptive_rate=self._adaptive_rate,
                 degraded=now < self._retry_after_monotonic,
                 retry_after_monotonic=self._retry_after_monotonic,
-                rate_limited_total=self._rate_limited_total,
-                deferred_total=self._deferred_total,
+                rate_limited_total=rate_limited_total,
+                deferred_total=deferred_total,
                 abandoned_generations=abandoned_generations,
             )
 
@@ -429,7 +456,8 @@ class AdaptiveRpcGate:
             return now >= self._retry_after_monotonic
 
     def _record_rate_limit(self, error: Exception, now: float) -> None:
-        self._rate_limited_total += 1
+        with self._event_counters.lock:
+            self._event_counters.rate_limited_total += 1
         self._adaptive_rate = max(_MIN_ADAPTIVE_RATE, self._adaptive_rate * 0.5)
         hinted_delay = _retry_after_seconds(error)
         delay = hinted_delay if hinted_delay is not None else 1.0 / self._adaptive_rate

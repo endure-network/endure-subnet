@@ -29,7 +29,11 @@ from endure.base.rate_gate import (
     RateLimited,
     RpcPriority,
 )
-from endure.base.validator import BaseValidatorNeuron
+from endure.base.validator import (
+    EMISSION_FAILED,
+    BaseValidatorNeuron,
+    WeightEmissionAttempt,
+)
 from endure.runtime.mock import MockRuntimeProvider, MockSubtensor
 from endure.scoring.weight_processing import normalize_scores
 
@@ -53,6 +57,19 @@ class _FailingRuntimeValidator(BaseValidatorNeuron):
 
     async def forward(self) -> None:
         raise RuntimeError("boom")
+
+
+class _FakeClock:
+    """Deterministic monotonic clock so cooldown boundaries are exact."""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.now += seconds
 
 
 @pytest.fixture
@@ -88,11 +105,86 @@ class TestConstructor:
         assert validator.neuron_type == "ValidatorNeuron"
         assert isinstance(validator.scores, list)
         assert validator.scores == [Decimal("0")] * int(validator.metagraph.n)
+        assert validator._weight_submissions_failed_process_total == 0
 
     def test_inherits_base_neuron_wiring(self, validator: _ConcreteValidator) -> None:
         assert validator.wallet is not None
         assert validator.subtensor is not None
         assert validator.metagraph is not None
+
+    def test_explicit_failed_weight_submission_reports_failed_status(
+        self,
+        validator: _ConcreteValidator,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        response = MagicMock(success=False, message="rejected")
+        monkeypatch.setattr(
+            validator,
+            "subtensor",
+            MagicMock(set_weights=MagicMock(return_value=response)),
+        )
+        attempt = WeightEmissionAttempt(
+            hotkeys=(),
+            raw_weights=(),
+            processed_uids=(),
+            processed_weights=(),
+            uint_uids=(),
+            uint_weights=(),
+            min_allowed_weights=None,
+            max_weight_limit=None,
+            status="error",
+            block=None,
+            submission_block=None,
+            baseline_last_update_block=None,
+            period_blocks=None,
+            confirmation_state="prepared",
+        )
+
+        result = validator._submit_prepared_weights(attempt)
+
+        assert result.status == EMISSION_FAILED
+
+    def test_explicit_failed_weight_submission_counts_process_total(
+        self,
+        validator: _ConcreteValidator,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        response = MagicMock(success=False, message="rejected")
+        monkeypatch.setattr(
+            validator,
+            "subtensor",
+            MagicMock(set_weights=MagicMock(return_value=response)),
+        )
+        attempt = WeightEmissionAttempt(
+            hotkeys=(),
+            raw_weights=(),
+            processed_uids=(),
+            processed_weights=(),
+            uint_uids=(),
+            uint_weights=(),
+            min_allowed_weights=None,
+            max_weight_limit=None,
+            status="error",
+            block=None,
+            submission_block=None,
+            baseline_last_update_block=None,
+            period_blocks=None,
+            confirmation_state="prepared",
+        )
+
+        validator._submit_prepared_weights(attempt)
+        validator._submit_prepared_weights(attempt)
+
+        assert validator._weight_submissions_failed_process_total == 2
+
+        validator.subtensor.set_weights.return_value = MagicMock(
+            success=True, message="accepted"
+        )
+        validator._submit_prepared_weights(attempt)
+        validator.subtensor.set_weights.side_effect = RuntimeError("ambiguous")
+        validator._submit_prepared_weights(attempt)
+
+        assert validator._weight_submissions_failed_process_total == 2
 
     def test_hotkeys_snapshot_matches_metagraph(
         self, validator: _ConcreteValidator
@@ -877,6 +969,112 @@ class TestRunSubtensorReconnect:
         assert reconnect_spy.call_count == 0
         assert runtime_validator._consecutive_loop_failures == 0
         assert runtime_validator.step >= 1
+
+
+class TestReconnectEventCounterConservation:
+    """RPC event totals survive a discarded or adopted replacement generation."""
+
+    @staticmethod
+    def _rejected() -> None:
+        raise RuntimeError({"code": -32029, "retryAfter": 4})
+
+    def _install_clocked_gate(
+        self, validator: _ConcreteValidator
+    ) -> tuple[AdaptiveRpcGate, _FakeClock]:
+        clock = _FakeClock()
+        gate = AdaptiveRpcGate(clock=clock, sleeper=clock.sleep)
+        validator.rpc_gate = gate
+        validator.gated_subtensor = GatedSubtensor(
+            validator.gated_subtensor._delegate, gate
+        )
+        validator.subtensor = validator.gated_subtensor
+        return gate, clock
+
+    def test_provider_rate_limit_during_rebuild_is_counted(
+        self,
+        validator: _ConcreteValidator,
+        mock_runtime_provider: MockRuntimeProvider,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        baseline = validator.rpc_gate.snapshot().rate_limited_total
+        monkeypatch.setattr(
+            mock_runtime_provider,
+            "create_subtensor",
+            MagicMock(side_effect=RuntimeError({"code": -32029, "retryAfter": 4})),
+        )
+
+        validator._reconnect_subtensor()
+
+        # The failed rebuild's replacement gate recorded the provider rejection;
+        # discarding it must not drop the event from the live process total.
+        assert validator.rpc_gate.snapshot().rate_limited_total == baseline + 1
+
+    def test_deferral_during_rebuild_cooldown_is_counted(
+        self,
+        validator: _ConcreteValidator,
+        mock_runtime_provider: MockRuntimeProvider,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        with pytest.raises(RateLimited):
+            validator.rpc_gate.call(RpcPriority.METAGRAPH, self._rejected)
+        baseline = validator.rpc_gate.snapshot().deferred_total
+        create_spy = MagicMock(side_effect=AssertionError("create must be deferred"))
+        monkeypatch.setattr(mock_runtime_provider, "create_subtensor", create_spy)
+
+        validator._reconnect_subtensor()
+
+        create_spy.assert_not_called()
+        assert validator.rpc_gate.snapshot().deferred_total == baseline + 1
+
+    def test_successful_rebuild_conserves_totals_without_double_counting(
+        self,
+        validator: _ConcreteValidator,
+        mock_runtime_provider: MockRuntimeProvider,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        gate, clock = self._install_clocked_gate(validator)
+        with pytest.raises(RateLimited):
+            gate.call(RpcPriority.METAGRAPH, self._rejected)
+        # Advance past the cooldown so the rebuild's create call can run.
+        clock.now = 4.0
+
+        in_flight_gate = validator.rpc_gate
+        original_create = mock_runtime_provider.create_subtensor
+
+        def create_during_rebuild(config: bt.Config) -> bt.Subtensor:
+            # An event lands on the live generation while the replacement is
+            # being built; adoption must keep it and must not re-add the
+            # history the replacement already holds.
+            with pytest.raises(RateLimited):
+                in_flight_gate.call(RpcPriority.METAGRAPH, self._rejected)
+            return original_create(config)
+
+        monkeypatch.setattr(
+            mock_runtime_provider, "create_subtensor", create_during_rebuild
+        )
+
+        validator._reconnect_subtensor()
+
+        snapshot = validator.rpc_gate.snapshot()
+        assert snapshot.rate_limited_total == 2
+        assert snapshot.deferred_total == 0
+
+    def test_new_validator_process_starts_counters_at_zero(
+        self, validator: _ConcreteValidator
+    ) -> None:
+        with pytest.raises(RateLimited):
+            validator.rpc_gate.call(RpcPriority.METAGRAPH, self._rejected)
+        assert validator.rpc_gate.snapshot().rate_limited_total == 1
+
+        # A fresh root gate models a new validator process: the counters must be
+        # per process, never module-global or persisted.
+        fresh_gate = AdaptiveRpcGate(clock=_FakeClock())
+        assert fresh_gate.snapshot().rate_limited_total == 0
+        assert fresh_gate.snapshot().deferred_total == 0
+
+        # ...while a same-process replacement must still inherit the total, so
+        # "per process" is the contract and not an accident of a fresh object.
+        assert validator.rpc_gate.replacement().snapshot().rate_limited_total == 1
 
 
 if __name__ == "__main__":  # pragma: no cover
