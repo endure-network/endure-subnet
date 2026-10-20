@@ -2,49 +2,22 @@
 
 ## v0.1.3 — identical-forecast pooling
 
-Protocol key `2044`; miners and validators must upgrade together. The release
-needs no chain-parameter change: SN30's `weights_version` (`2040`) accepts key
-`2044`. Package/API version is `0.1.3`. See the
+Protocol key `2044`; miners and validators must upgrade together. No
+chain-parameter change: SN30's `weights_version` (`2040`) accepts key `2044`.
+Package/API version is `0.1.3`. See the
 [release notes, operator upgrade and soak decision](docs/releases/v0.1.3.md).
 
-- Pool identical forecasts in emission weights. Each scored miner is assigned
-  to the oldest group of miners that revealed identical values with it in one
-  of the five newest revealed rounds, and the members of a group together weigh
-  what its best member would alone: each gives up the same amount of sharpened
-  score, or all of its own if that is less. Pools never overlap, `k` identical
-  submissions split one miner's weight, and forecasts that differ in any value
-  are scored and paid as before. Only submitted values are compared, never
-  nonces or free text.
-- Round each pool to whole u16 units once, over its members' UIDs less those
-  the chain withholds: members keep their units rounded down, and the units the
-  pool's total rounds half up to beyond that go to the largest remainders.
-  Equal remainders are ordered by the hash of the first finalized mainnet block
-  stamped at least one minute after the newest round's reveal close, so every
-  validator with the same window draws the same order; a round joins the window
-  once that block is final.
-- Read that block from the market-data archive. Every validator that reads live
-  mainnet data, testnet included, checks at startup that its archive is
-  mainnet, and refuses to start unless `health_tick_max_duration_seconds`
-  exceeds `resolution_budget_seconds` plus 600 seconds, room for two seed
-  reads. While the archive cannot show the newest seed, a running validator
-  votes with the newest window whose seed it has read; one that has read none,
-  such as a validator restarted while its archive answers but cannot yet show a
-  seed, abstains with `score_state_unavailable`, and its `/miners` answers 503,
-  until it reads one. An archive that is down outright fails the startup check.
-- Report the validator's newest pooled `weight_share` and each hotkey's
-  `pool_size` in `/miners`.
-- Digest-cover the pool key, the window over post-reveal rounds and their
-  consensus snapshots, the assignment to the oldest group, membership, the tie
-  order and its seed, the pooled normalization and the pool rounding. Scores,
-  EMAs, consensus weighting and the owner burn rate are unchanged. No schema
-  migration or new dependency.
-- Make release images write-once for their workflow. Before building, the
-  staging image workflow asks the registry for the commit's `sha-<commit>`
-  images: it builds and pushes them only if neither exists, reuses both without
-  rebuilding on a re-run and says so in its artifact (`RELEASE_IMAGES_REUSED`),
-  and stops if only one exists. A re-run cannot replace the images `:testnet`
-  and `:prod` take. Other writers to the packages are not bound, so the digests
-  a run records stay the reference.
+- Pool identical forecasts in emission weights: each hotkey joins the oldest
+  group that revealed its values in one of the five newest revealed rounds,
+  and a pool weighs what its best member would alone. Forecasts that differ in
+  any value are paid as before.
+- Round each pool to whole u16 units once; ties follow a finalized mainnet
+  block hash read from the market-data archive.
+- Validators that read live mainnet data, testnet included, check their
+  archive and tick budgets at startup.
+- `/miners` reports the pooled `weight_share` and each hotkey's `pool_size`.
+- Release images are write-once per commit; a re-run reuses them
+  (`RELEASE_IMAGES_REUSED`).
 
 ## v0.1.2 — owner burn rate
 

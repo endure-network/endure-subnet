@@ -273,45 +273,27 @@ first-parent staging lineage in commit
 `906c7da0c18c7768cfeebdaa566516f60e37ce9dc661d93b3df549bee3522ecf`.
 The published `v0.1.2` images retain that assignment.
 
-Key `2044` is leased to identical-forecast pooling. Emission weights assign each
-member to the oldest group of members that revealed identical values with it in
-one of the newest `POOL_WINDOW_ROUNDS = 5` revealed rounds (the payout
-half-life), and level the members assigned to one group to its best member: each
-gives up the same amount of sharpened score, or all of its own if that is less,
-so the pool weighs what its best member would alone. Pools never overlap, so a
-member gives up weight in one pool only, and `k` equal copies split one hotkey's
-weight. The vote rounds each pool to u16 once, over its members' UIDs less those
-the chain withholds: members keep their units rounded down, and the units the
-pool's total rounds half up to beyond that go to the largest remainders, equal
-remainders in an order drawn from the hash of the first finalized mainnet block
-stamped at least `TIE_SEED_DELAY` (one minute) after the newest round's reveal
-close, the same at every validator with that window; a round joins the window
-once that block is final. Members are registered hotkeys with a positive blended
-score; the vote withholds owner-coldkey hotkeys afterwards, from its own chain
-snapshot, so pooling reads no owner state. The pool key (submitted values only,
-never nonces or free text), the window over post-reveal rounds and their
-immutable consensus snapshots, the assignment to the oldest group, membership,
-the tie order and the pooled normalization are digest-covered in
-[duplicates.py](../endure/scoring/duplicates.py),
+Key `2044` is leased to identical-forecast pooling: emission weights assign each
+member to the oldest group that revealed identical values with it in one of the
+newest `POOL_WINDOW_ROUNDS = 5` revealed rounds, a pool weighs what its best
+member would alone, and the vote rounds each pool to u16 once, ordering equal
+remainders by the hash of the first finalized mainnet block stamped at least
+`TIE_SEED_DELAY` after the newest round's reveal close (see
+[identical forecasts](mining.md#identical-forecasts-share-one-payout)). The pool
+key, window, assignment, membership, tie order and pooled normalization are
+digest-covered in [duplicates.py](../endure/scoring/duplicates.py),
 [assessment_orchestrator.py](../endure/scoring/assessment_orchestrator.py) and
-[weights.py](../endure/scoring/weights.py), the pool rounding in
+[weights.py](../endure/scoring/weights.py); the pool rounding in
 [emission_policy.py](../endure/scoring/emission_policy.py) and
-[weight_processing.py](../endure/scoring/weight_processing.py), and the
-revealed-round query in [repository.py](../endure/storage/repository.py). The
-seed's block, its hash, what a failed read means and which window votes keep
-while the archive can show neither newest seed are also digest-covered
-(`chain_tie_seed` and the window choice in assessment_orchestrator.py, with the
-timestamp conversion in
-[market_sampling.py](../endure/scoring/market_sampling.py)), as is which runtimes
-read live mainnet data and so draw their seeds from it (`reads_live_mainnet` in
-[consensus_policy.py](../endure/protocol/consensus_policy.py)); only the archive
-reads, their retries and their deadline are unwatched I/O. Every such validator,
-on testnet too, checks at startup that its archive is mainnet. Scores, EMAs,
-consensus weighting, the
-owner burn rate and its commitment grammar are unchanged, and no schema
-migration is introduced. `/miners` reports the validator's newest pooled
-`weight_share` and each hotkey's `pool_size`. Miners and validators must upgrade
-together. See [identical forecasts](running_on_mainnet.md#identical-forecasts).
+[weight_processing.py](../endure/scoring/weight_processing.py); the
+revealed-round query in [repository.py](../endure/storage/repository.py); the
+seed's block, hash and failed-read handling in `chain_tie_seed`, with the
+timestamp conversion in [market_sampling.py](../endure/scoring/market_sampling.py);
+and which runtimes read live mainnet data in `reads_live_mainnet`
+([consensus_policy.py](../endure/protocol/consensus_policy.py)). Only the archive
+reads, their retries and their deadline are unwatched I/O. Scores, EMAs,
+consensus weighting and the owner burn rate are unchanged, and no schema
+migration is introduced.
 
 Its watched-tree digest is
 `777d3671ffd72c112fd853dc018c7f38449821da16a9d8539f113b07cc35ed47`.

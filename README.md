@@ -61,15 +61,10 @@ owner's explicit instruction. The owner changes the rate with
 [`scripts/set_burn_rate.py`](scripts/set_burn_rate.py), and validators apply it
 at their next weight attempt; see the [owner burn rate](docs/running_on_mainnet.md#owner-burn-rate).
 
-Key `2044` pools identical forecasts. Each registered hotkey with a positive
-score is assigned to the oldest group of hotkeys that revealed the same values
-as it in one of the newest five revealed rounds. Hotkeys assigned to the same
-group form a pool, which weighs what its best member would alone: every member
-gives up the same amount of sharpened score, or all of its own if that is less,
-so `k` equal copies split one hotkey's weight. Scores, EMAs, consensus
-weighting and the owner burn rate are unchanged,
-and `/miners` reports each hotkey's pooled `weight_share` and `pool_size`. See
-[identical forecasts](docs/mining.md#identical-forecasts-share-one-payout).
+Key `2044` pools identical forecasts: the hotkeys in one pool share what its
+best member would earn alone, and `/miners` reports each hotkey's `pool_size`.
+See [identical forecasts](docs/mining.md#identical-forecasts-share-one-payout)
+for who is pooled with whom.
 
 Known limitations: this is a testnet soak with one public validator endpoint;
 outcomes and feeds can diverge between validators; interfaces and
