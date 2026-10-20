@@ -52,12 +52,10 @@ protocol value `0` and validators ignore any configured floor (see the
 
 Start one validator with a registered hotkey, persistent database URL, a
 reachable axon address, and `--endure.serving_stage testnet`. Set
-`--endure.market_data_endpoint` to a Bittensor **mainnet** archive, or leave it
-at its default, the public mainnet archive. Testnet validators score mainnet
-Alpha data and draw the pool tie order from mainnet blocks, so the validator
-refuses to start unless the endpoint is a mainnet archive with 30 days of
-history. A compressed testnet run replays recorded fixtures and reads no
-archive. The command is:
+`--endure.market_data_endpoint` to a Bittensor **mainnet** archive with 30 days
+of history, or keep the default public mainnet archive: testnet validators score
+mainnet Alpha data, and the validator refuses to start otherwise. The command
+is:
 
 ```bash
 .venv/bin/python neurons/validator.py --netuid 504 --subtensor.network test \
@@ -88,12 +86,9 @@ receive weight,
 publish a rate from the netuid-504 owner hotkey, for example
 `python scripts/set_burn_rate.py --network test --netuid 504 --wallet-name <owner-wallet> --wallet-hotkey <owner-hotkey> --publish 9800`.
 
-From key `2044`, soak miners that reveal identical values are pooled. The
-miners in `deploy/soak-miners` all run the reference forecast on the same pool
-data, so expect them to pool and `/miners` to report their `pool_size`. The
-soak gate checks restarts, overdue rounds, probes and weight emissions, which
-pooling does not change. See [identical
-forecasts](mining.md#identical-forecasts-share-one-payout).
+The soak miners in `deploy/soak-miners` all run the reference forecast, so from
+key `2044` they pool and `/miners` reports their shared `pool_size`. See
+[identical forecasts](mining.md#identical-forecasts-share-one-payout).
 
 The Endure-operated testnet read API is
 `https://api.testnet.endure.network`, signed by validator hotkey

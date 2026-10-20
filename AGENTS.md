@@ -65,6 +65,10 @@ Always:
 - Promote with merge-commit PRs from `develop` → `staging` (auto-deploy) →
   `main` (stable checkpoint); never squash, rebase, or fast-forward a promotion.
 - Decimal for risk/economic values; type hints on public functions (pyright clean).
+- Keep docs lean: describe a mechanism once, in the doc that owns it, and link
+  to it elsewhere; CHANGELOG bullets of one or two lines; owner decisions only
+  in release notes. Guides say what to do; never record chat, review rounds or
+  decision history in the repo.
 
 Ask first:
 - Expanding scope beyond the current slice — raise it first.

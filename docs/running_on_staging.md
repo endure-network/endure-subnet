@@ -66,25 +66,12 @@ canary. The [v0.1.2 release notes](releases/v0.1.2.md) record this scoped
 exception and the limitations of the earlier soak evidence; the GitHub
 release records the actual release-check outcomes.
 
-For protocol key `2044` (`v0.1.3`), the owner decided on 2026-10-16 not to wait
-for a seven-day window. The scoped exception has three parts. First, private
-qualification of the release's source tree before it is public: `make verify`,
-and a local devnet run in which two miners revealing identical values share one
-miner's on-chain incentive, with a restart that rebuilds the pools. The staging
-commit that the tag promotes must carry the same tree, or the devnet run is
-repeated on it. Then a targeted soak of at most about 24 hours on testnet, with
-a confirmed key-`2044` weight submission and a deliberate restart after it that
-comes back to another confirmed submission as checkpoints, and, added on
-2026-10-19, one full round: the first testnet round run on key `2044` from
-commit to reveal close joins the pool window, and a confirmed submission is
-computed from it. Then the `:prod` promotion between 00:00 and 11:00 UTC,
-before the day's commit window opens. Validators that track `:prod` may upgrade
-on promotion; the team's own validator cuts over first as the mainnet canary,
-and operators are asked to upgrade once it has a confirmed key-`2044` weight
-submission and `/miners` reports `pool_size`. CI, localnet qualification and
-published images on the exact final staging commit remain required. The
-[v0.1.3 release notes](releases/v0.1.3.md) record the decision, and the GitHub
-release records the checkpoint and canary outcomes.
+For protocol key `2044` (`v0.1.3`), the owner scoped a further exception on
+2026-10-16: private qualification of the source tree, a targeted testnet soak
+of about 24 hours with a restart and one full round as checkpoints, and the
+`:prod` promotion before the day's commit window. The
+[v0.1.3 release notes](releases/v0.1.3.md) record its criteria, and the GitHub
+release records the outcomes.
 
 The default soak gate is the promotion evidence the mainnet decision consumes.
 It passes when the deployed staging environment shows, over seven consecutive
