@@ -27,7 +27,7 @@ from abc import abstractmethod
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
-from typing import Sequence, Union
+from typing import Iterable, Sequence, Union
 
 import bittensor as bt
 import numpy as np
@@ -415,8 +415,16 @@ class BaseValidatorNeuron(BaseNeuron):
         """Normalize the current score vector and submit it."""
         self._emit_weight_candidate(self.scores)
 
-    def _emit_weight_candidate(self, weights: Sequence[Decimal]) -> None:
-        """Execute one candidate through the shared durable emission hooks."""
+    def _emit_weight_candidate(
+        self,
+        weights: Sequence[Decimal],
+        *,
+        groups: Iterable[Sequence[int]] = (),
+    ) -> None:
+        """Execute one candidate through the shared durable emission hooks.
+
+        ``groups`` are UIDs the encoder rounds as one entry.
+        """
 
         if self.config.neuron.disable_set_weights:
             return
@@ -460,6 +468,7 @@ class BaseValidatorNeuron(BaseNeuron):
                 metagraph_size=int(self.metagraph.n),
                 min_allowed_weights=min_allowed_weights,
                 max_weight_limit=max_weight_limit,
+                groups=groups,
             )
             processed_weight_uids, processed_weights, uint_uids, uint_weights = (
                 vector.processed_uids,

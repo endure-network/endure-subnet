@@ -270,14 +270,20 @@
       "evidence_sha256": "879daa5ac891ed1b038b99cf77e530fcf52e908dc2ea3ed360208fb8b1270bd2",
       "key": 2042,
       "record_id": "activation-0045"
+    },
+    {
+      "digest": "b99135ebe7bde1f22ab7edf33ff581f5cabc2735cde979d22a423b70a6e11cd0",
+      "evidence_sha256": "906c7da0c18c7768cfeebdaa566516f60e37ce9dc661d93b3df549bee3522ecf",
+      "key": 2043,
+      "record_id": "activation-0046"
     }
   ],
   "current_lease": {
-    "authority_sha256": "2bf6bae0a796f277f3412af255602a7ffe62fb52595a68f7ec308e6b199cfa56",
-    "digest": "b99135ebe7bde1f22ab7edf33ff581f5cabc2735cde979d22a423b70a6e11cd0",
-    "holder": "feat/owner-burn-rate-2043",
-    "key": 2043
+    "authority_sha256": "234fa4a7d49b3ae5ed9e03a1853a299a03d8d89b7ecfce0393b12291f7e8f38a",
+    "digest": "777d3671ffd72c112fd853dc018c7f38449821da16a9d8539f113b07cc35ed47",
+    "holder": "feat/identical-forecast-pooling",
+    "key": 2044
   },
-  "previous_activation_id": "activation-0045",
+  "previous_activation_id": "activation-0046",
   "schema_version": 1
 }

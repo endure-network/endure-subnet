@@ -10,6 +10,7 @@ lookups in the same order.
 from __future__ import annotations
 
 from collections.abc import Callable
+from datetime import UTC, datetime
 from typing import Final
 
 from async_substrate_interface.errors import SubstrateRequestException
@@ -107,6 +108,18 @@ def canonical_snapshot_blocks(window: ResolutionWindow) -> tuple[int, ...]:
             CANONICAL_ALPHA_SNAPSHOT_CADENCE_BLOCKS,
         )
     )
+
+
+def utc_timestamp_milliseconds(value: datetime) -> int:
+    """Milliseconds since the Unix epoch, as finalized block timestamps count."""
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise AlphaMarketDataError("reveal_close must be timezone-aware")
+    utc_value = value.astimezone(UTC)
+    epoch = datetime(1970, 1, 1, tzinfo=UTC)
+    elapsed = utc_value - epoch
+    return (
+        elapsed.days * 86_400 + elapsed.seconds
+    ) * 1_000 + elapsed.microseconds // 1_000
 
 
 def first_block_at_or_after(

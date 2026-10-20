@@ -13,6 +13,7 @@ from scripts.quality_gates.checks import (
 _MINING_GUIDE_SCORING_MODULES = (
     "endure/scoring/risk/orchestrator.py",
     "endure/scoring/assessment_orchestrator.py",
+    "endure/scoring/duplicates.py",
     "endure/scoring/eligibility.py",
     "endure/scoring/weight_processing.py",
     "endure/publication/risk_tier.py",

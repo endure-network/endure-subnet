@@ -10,10 +10,10 @@ so constants cannot drift outside the contract again.
 from pathlib import Path
 
 ACTIVATED_VERSION_REGISTRY_DIGEST = (
-    "78663aaacad9b1c1f58fd973b95cf44fe93ed620f5fc62ed41fc8feb0a07ed48"
+    "d9cd6b795d5451c95909c85700536503cd991fc3c0234ef7bc5eae79a3eac6b1"
 )
 ACTIVATED_VERSION_HISTORY_DIGEST = (
-    "3ffe412a94b4670520fcb90a400c8ebdc2d0af21bebe149e8114d70a8cc0ec48"
+    "63f8dd700d7a4db5f3a2e078713d54a0ab01902a50d8b7235189b339fea73ffe"
 )
 
 WATCHED_PATHS = (
@@ -30,9 +30,9 @@ WATCHED_PATHS = (
 # Previous accepted protocol snapshot. When watched paths change, promote the
 # current values into the previous fields, then write the new digest and bump
 # the current version key.
-PREVIOUS_VERSION_KEY = 2042
+PREVIOUS_VERSION_KEY = 2043
 PREVIOUS_VERSION_DIGEST = (
-    "224eebd7dfcaa588c0a6aa94116d95a7851e44cb7c3a2e3260046de354f2b4a2"
+    "b99135ebe7bde1f22ab7edf33ff581f5cabc2735cde979d22a423b70a6e11cd0"
 )
 
 # Production serving status and CURRENT_VERSION_KEY stay unchanged until R6.
@@ -156,7 +156,28 @@ PREVIOUS_VERSION_DIGEST = (
 # limits, withheld UIDs, the owner's u16 share by the encoding's rounding), and
 # the submission-block owner-state recheck. The queries are unwatched RPC I/O;
 # no schema migration.
-CURRENT_VERSION_KEY = 2043
+# 2044: identical-forecast pooling. Emission weights pool exact-duplicate
+# forecasts: each registered hotkey with a positive blend is assigned to the
+# oldest group that revealed its values in one of the newest five revealed
+# rounds, and the hotkeys assigned to one group are levelled to its best
+# member: each gives up the same amount of sharpened score, or all of its own
+# if that is less. Pools never overlap, k equal copies split one hotkey's
+# weight, and joining copies never cost the rest of a pool more than they give
+# up themselves. The vote rounds each pool's total to u16 once, as one
+# hotkey's, breaking equal remainders in an order drawn from the first
+# finalized mainnet block stamped at least a minute after the newest round's
+# reveal close, the same at every validator with that window; a round joins
+# the window once that block is final.
+# Scores, EMAs, consensus weighting and the owner commitment are unchanged.
+# Watched decisions: the pool key (values only), the window, the assignment
+# to the oldest group, membership, the pooled normalization, the pool
+# rounding and its tie order, the tie seed's block, its hash, what a failed
+# read means and which window votes keep meanwhile (chain_tie_seed,
+# _seeded_window), and which runtimes read live mainnet data and draw seeds
+# from it (reads_live_mainnet). Reading the revealed-round IDs is a
+# watched storage query; only the archive reads are unwatched I/O. No schema
+# migration.
+CURRENT_VERSION_KEY = 2044
 CURRENT_VERSION_DIGEST = (
-    "b99135ebe7bde1f22ab7edf33ff581f5cabc2735cde979d22a423b70a6e11cd0"
+    "777d3671ffd72c112fd853dc018c7f38449821da16a9d8539f113b07cc35ed47"
 )

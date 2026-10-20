@@ -9,7 +9,9 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from itertools import count
 from types import SimpleNamespace
+from unittest.mock import patch
 
+import bittensor as bt
 import pytest
 from async_substrate_interface.errors import (
     MaxRetriesExceeded,
@@ -26,6 +28,7 @@ from endure.live.alpha_market_data import (
     LIVE_MARKET_DATA_MAX_ABANDONED_WORKERS,
     LIVE_MARKET_DATA_RATE_LIMIT_COOLDOWN_SECONDS,
     LIVE_MARKET_DATA_REQUEST_PAUSE_SECONDS,
+    LIVE_TIE_SEED_TIMEOUT_SECONDS,
     MAINNET_ARCHIVE_ENDPOINT,
     BittensorSubnetInfoFetcher,
     LiveAlphaPriceProvider,
@@ -35,7 +38,12 @@ from endure.live.alpha_market_data import (
 )
 from endure.protocol.consensus_policy import MAINNET_GENESIS_HASH
 from endure.protocol.risk_miner import LatestPoolObservation, baseline_risk_bundle
-from endure.scoring.assessment_orchestrator import ResolutionDeadlineExceeded
+from endure.scoring.assessment_orchestrator import (
+    TIE_SEED_READ_FAILURES,
+    ResolutionDeadlineExceeded,
+    chain_tie_seed,
+)
+from endure.scoring.duplicates import TIE_SEED_DELAY
 from endure.scoring.market_data import (
     AlphaMarketDataError,
     AlphaMarketDataUnavailable,
@@ -68,6 +76,8 @@ class FakeSubnetFetcher:
     genesis_answers: list[str | None] = field(default_factory=list)
     genesis_calls: int = 0
     timestamp_calls: list[int] = field(default_factory=list)
+    hash_calls: list[int] = field(default_factory=list)
+    missing_hashes: frozenset[int] = frozenset()
 
     def subnet(self, *, netuid: int, block: int | None = None) -> FakeDynamicInfo:
         self.calls.append((netuid, block))
@@ -99,6 +109,13 @@ class FakeSubnetFetcher:
     def timestamp_at_block(self, block: int) -> int:
         self.timestamp_calls.append(block)
         return self.timestamps_by_block[block]
+
+    def block_hash(self, block: int) -> str | None:
+        self.hash_calls.append(block)
+        if block in self.missing_hashes:
+            return None
+        # Upper-case hex, as some clients answer; the provider normalizes it.
+        return f"0xABCDEF{block:058X}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -654,6 +671,104 @@ def test_live_provider_defers_reveal_close_beyond_finalized_head() -> None:
     # When / Then: resolution defers rather than estimating an unfinalized block.
     with pytest.raises(AlphaMarketDataError, match="finalized"):
         provider.block_for_reveal_close(_reveal_close(37), now=_reveal_close(38))
+
+
+def _hash_fetcher(finalized: int) -> FakeSubnetFetcher:
+    return FakeSubnetFetcher(
+        responses={},
+        finalized=finalized,
+        timestamps_by_block={
+            0: _timestamp(0),
+            1: _timestamp(9),
+            2: _timestamp(21),
+            3: _timestamp(33),
+            4: _timestamp(45),
+        },
+    )
+
+
+def _seed_close(seconds_after_epoch: int) -> datetime:
+    """The reveal close whose tie seed is due ``seconds_after_epoch`` into 2026."""
+    return _reveal_close(seconds_after_epoch) - TIE_SEED_DELAY
+
+
+def test_live_tie_seed_is_the_first_finalized_block_hash_at_or_after_its_time() -> None:
+    # Given: finalized timestamps on either side of the seed's time.
+    fetcher = _hash_fetcher(finalized=4)
+    provider = LiveAlphaPriceProvider(
+        config=LiveAlphaPriceProviderConfig(request_pause_seconds=Decimal("0")),
+        fetcher=fetcher,
+    )
+
+    # When / Then: the first block stamped at or after it, as lower-case hex.
+    assert chain_tie_seed(provider.tie_seed_reads(), _seed_close(10)) == (
+        f"0xabcdef{2:058x}"
+    )
+    assert fetcher.hash_calls == [2]
+
+
+def test_live_tie_seed_is_unknown_until_the_finalized_head_reaches_it() -> None:
+    # Given: the finalized head is still stamped before the seed's time.
+    fetcher = _hash_fetcher(finalized=3)
+    provider = LiveAlphaPriceProvider(
+        config=LiveAlphaPriceProviderConfig(request_pause_seconds=Decimal("0")),
+        fetcher=fetcher,
+    )
+
+    # When / Then: nothing is known until the head passes it.
+    assert chain_tie_seed(provider.tie_seed_reads(), _seed_close(34)) is None
+    assert fetcher.hash_calls == []
+    fetcher.finalized = 4
+    assert chain_tie_seed(provider.tie_seed_reads(), _seed_close(34)) == (
+        f"0xabcdef{4:058x}"
+    )
+
+
+def test_live_tie_seed_reads_keep_their_own_deadline() -> None:
+    # Given: the tick's resolution budget is already exhausted.
+    clock = [0.0]
+    provider = LiveAlphaPriceProvider(
+        config=LiveAlphaPriceProviderConfig(request_pause_seconds=Decimal("0")),
+        fetcher=_hash_fetcher(finalized=4),
+        now_fn=lambda: clock[0],
+        deadline_exceeded_fn=lambda: True,
+    )
+
+    # When / Then: a seed still reads, and the tick's deadline returns after.
+    reads = provider.tie_seed_reads()
+    assert chain_tie_seed(reads, _seed_close(10)) == f"0xabcdef{2:058x}"
+    with pytest.raises(ResolutionDeadlineExceeded):
+        provider.last_finalized_block_at_or_before(
+            _reveal_close(10), now=_reveal_close(11)
+        )
+    # A seed's reads stop at its own deadline; the next seed starts a new one.
+    clock[0] = LIVE_TIE_SEED_TIMEOUT_SECONDS
+    with pytest.raises(ResolutionDeadlineExceeded):
+        reads.timestamp_at_block(4)
+    assert provider.tie_seed_reads().timestamp_at_block(4) == _timestamp(45)
+
+
+def test_live_tie_seed_reads_raise_and_log_what_the_archive_cannot_answer() -> None:
+    # Given: an archive that cannot read the head's timestamp or one block's hash.
+    fetcher = _hash_fetcher(finalized=4)
+    fetcher.missing_hashes = frozenset({2})
+    provider = LiveAlphaPriceProvider(
+        config=LiveAlphaPriceProviderConfig(
+            request_pause_seconds=Decimal("0"), max_attempts=2
+        ),
+        fetcher=fetcher,
+    )
+
+    # When / Then: each read raises a failure that leaves the seed unknown.
+    with patch.object(bt.logging, "warning") as warning:
+        with pytest.raises(TIE_SEED_READ_FAILURES):
+            chain_tie_seed(provider.tie_seed_reads(), _seed_close(10))
+        del fetcher.timestamps_by_block[4]
+        with pytest.raises(TIE_SEED_READ_FAILURES):
+            chain_tie_seed(provider.tie_seed_reads(), _seed_close(10))
+    assert fetcher.hash_calls == [2, 2]
+    logged = [call.args[0] for call in warning.call_args_list]
+    assert sum("tie seed read failed" in line for line in logged) == 2  # noqa: PLR2004
 
 
 def test_live_provider_derives_wall_clock_window_from_finalized_timestamps() -> None:

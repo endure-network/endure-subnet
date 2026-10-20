@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import re
 import sqlite3
 from contextlib import closing
@@ -31,25 +32,34 @@ from endure.base.validator import (
     WEIGHT_EMISSION_FINALITY_MARGIN_BLOCKS,
     BaseValidatorNeuron,
 )
+from endure.protocol.canonical import canonical_bundle_bytes
 from endure.protocol.consensus_policy import (
     MAINNET_GENESIS_HASH,
     SN30_NETUID,
     SN30_OWNER_HOTKEY,
 )
+from endure.protocol.risk_miner import LatestPoolObservation, baseline_risk_bundle
 from endure.protocol.round_engine import DEFAULT_OFFSETS, compute_fixed_utc_windows
 from endure.protocol.schedulers import FixedUtcScheduler
 from endure.protocol.version_contract import CURRENT_VERSION_KEY
 from endure.protocol.vertical import AssessmentRoundProgram, VerticalRuntime
+from endure.scoring.assessment_orchestrator import FinalizedChainReads, TieSeedReads
+from endure.scoring.duplicates import TIE_SEED_DELAY, tie_ordered
 from endure.scoring.emission_policy import (
     FULL_BURN_BPS,
     OWNER_STATE_METAGRAPH_INDICES,
     owner_burn_weights,
 )
 from endure.scoring.market_data import recorded_mainnet_fixture_provider
+from endure.scoring.market_sampling import utc_timestamp_milliseconds
 from endure.scoring.risk.orchestrator import RiskScoringOrchestrator, risk_coordinate
 from endure.scoring.weight_processing import chain_weight_vector, emission_candidate
 from endure.scoring.weights import ema_update
-from endure.storage.repository import Storage, WeightEmissionChainSnapshot
+from endure.storage.repository import (
+    ROUND_STATE_REVEALED,
+    Storage,
+    WeightEmissionChainSnapshot,
+)
 from neurons.validator import _OWNER_READ_ATTEMPTS, Validator, _read_owner_fact
 from tests.neurons.test_emission_health import _check_storage_calls
 from tests.scoring.test_emission_policy import commitment_record
@@ -212,6 +222,7 @@ def replay_validator(
     chain: ReplayChain,
     *,
     network: str = "finney",
+    tie_seed_reads: TieSeedReads | None = None,
 ) -> ReplayValidator:
     validator = ReplayValidator.__new__(ReplayValidator)
     validator.config = copy.deepcopy(config)
@@ -250,6 +261,7 @@ def replay_validator(
         half_life_rounds=5,
         reveal_close_block=lambda _close: 100,
         registered_hotkeys=lambda: validator.metagraph.hotkeys,
+        tie_seed_reads=tie_seed_reads,
     )
     program = AssessmentRoundProgram(
         storage=storage,
@@ -263,6 +275,7 @@ def replay_validator(
         round_program=program,
         publisher="risk",
         scheduler=FixedUtcScheduler(),
+        pools=orchestrator.pools,
     )
     validator._reconstruct_scores()
     return validator
@@ -318,6 +331,67 @@ def record_resolved_scores(storage: Storage, chain: ReplayChain) -> None:
             )
             for hotkey, score, ema in values
         ],
+        now_iso=NOW,
+    )
+
+
+def record_identical_reveals(storage: Storage, chain: ReplayChain) -> None:
+    """Miners 1 and 2 reveal one forecast, miner 3 a moved one; all score 1."""
+    windows = compute_fixed_utc_windows(date(2026, 9, 18), offsets=DEFAULT_OFFSETS)
+    storage.open_round(
+        windows=windows,
+        schema_id=RISK_SCHEMA_ID,
+        universe=UniverseSnapshot(
+            round_id=windows.round_id, tickers=("44",), source_hash="fixture"
+        ),
+        now_iso=NOW,
+    )
+    bundle = baseline_risk_bundle(
+        round_id=windows.round_id,
+        netuids=(44,),
+        latest_observation=lambda _netuid: LatestPoolObservation(
+            price_rao=963_900_000, tao_reserve_rao=1_000_036_100
+        ),
+    ).to_canonical_payload()
+    moved = copy.deepcopy(bundle)
+    moved["assets"][0]["outputs"][0]["value"] += 1
+    miners = {1: bundle, 2: bundle, 3: moved}
+    for uid, payload in miners.items():
+        hotkey = chain.hotkeys[uid]
+        storage.record_commit(
+            windows.round_id, RISK_SCHEMA_ID, hotkey, "ab" * 32, now_iso=NOW
+        )
+        storage.record_reveal(
+            windows.round_id,
+            RISK_SCHEMA_ID,
+            hotkey,
+            bundle_json=canonical_bundle_bytes(payload).decode("utf-8"),
+            nonce_hex="cd" * 16,
+            accepted=True,
+            rejection_code=None,
+            now_iso=NOW,
+        )
+    storage.set_round_state(
+        windows.round_id, RISK_SCHEMA_ID, ROUND_STATE_REVEALED, now_iso=NOW
+    )
+    coordinate = risk_coordinate(44, HORIZON_5D_SECONDS, RiskOutput.MAX_DRAWDOWN)
+    ema = ema_update(None, Decimal(1), half_life_rounds=5)
+    storage.record_assessment_scoring_pass(
+        windows.round_id,
+        RISK_SCHEMA_ID,
+        horizon_value=HORIZON_5D_SECONDS,
+        realized_targets=(),
+        output_scores=(),
+        ema_updates=[
+            AssessmentEmaState(
+                miner_hotkey=chain.hotkeys[uid],
+                coordinate=coordinate,
+                ema=ema,
+                resolved_rounds=1,
+            )
+            for uid in miners
+        ],
+        score_history=[],
         now_iso=NOW,
     )
 
@@ -1413,3 +1487,86 @@ def test_a_rate_limited_attempt_keeps_the_known_burn_rate(
     assert validator._emission_reason == "chain_rate_limit"
     assert validator._emission_burn_bps == 9800
     assert len(chain.commitment_reads) == reads
+
+
+def test_identical_forecasts_share_one_payout_in_the_emitted_vote(
+    storage: Storage, mock_validator_config: bt.Config
+) -> None:
+    chain = ReplayChain(storage)
+    record_identical_reveals(storage, chain)
+    validator = replay_validator(storage, mock_validator_config, chain)
+    advance_past_startup_fence(validator, chain)
+    validator.set_weights()
+
+    # Equal scores, but miners 1 and 2 revealed the same values: together they
+    # weigh what miner 3 weighs alone, rounded as one entry.
+    [(uids, weights, _key)] = chain.submissions
+    shares = dict(zip(uids, weights, strict=True))
+    assert set(shares) == {1, 2, 3}
+    assert shares[3] == 65535
+    assert sorted((shares[1], shares[2])) == [32767, 32768]
+    payout = validator._payout
+    assert payout is not None
+    assert payout.pool_sizes == {chain.hotkeys[1]: 2, chain.hotkeys[2]: 2}
+
+
+def _block_hash(block: int) -> str:
+    return "0x" + hashlib.sha256(str(block).encode()).hexdigest()
+
+
+def _chain_reads() -> FinalizedChainReads:
+    """A finalized chain with a block every second since the Unix epoch."""
+    return FinalizedChainReads(
+        finalized_block=lambda: 2_000_000_000,
+        timestamp_at_block=lambda block: block * 1_000,
+        block_hash=_block_hash,
+    )
+
+
+def _tie_seed(day: date) -> str:
+    windows = compute_fixed_utc_windows(day, offsets=DEFAULT_OFFSETS)
+    seed_at = windows.reveal_close + TIE_SEED_DELAY
+    return _block_hash(utc_timestamp_milliseconds(seed_at) // 1_000)
+
+
+def test_each_vote_orders_pool_ties_by_its_newest_rounds_block(
+    storage: Storage, mock_validator_config: bt.Config
+) -> None:
+    chain = ReplayChain(storage)
+    record_identical_reveals(storage, chain)
+    validator = replay_validator(
+        storage, mock_validator_config, chain, tie_seed_reads=_chain_reads
+    )
+    advance_past_startup_fence(validator, chain)
+    validator.set_weights()
+    pool = (frozenset(chain.hotkeys[1:3]),)
+    first = tie_ordered(pool, _tie_seed(date(2026, 9, 18)))[0][0]
+    later = next(
+        date(2026, 9, day)
+        for day in range(19, 30)
+        if tie_ordered(pool, _tie_seed(date(2026, 9, day)))[0][0] != first
+    )
+
+    def tie_winner(vote: tuple[tuple[int, ...], tuple[int, ...], int]) -> str:
+        shares = dict(zip(vote[0], vote[1], strict=True))
+        assert sorted((shares[1], shares[2])) == [32767, 32768]
+        return chain.hotkeys[1 if shares[1] > shares[2] else 2]
+
+    # A newer revealed round, even an empty one, reseeds the pool's ties.
+    assert tie_winner(chain.submissions[0]) == first
+    windows = compute_fixed_utc_windows(later, offsets=DEFAULT_OFFSETS)
+    storage.open_round(
+        windows=windows,
+        schema_id=RISK_SCHEMA_ID,
+        universe=UniverseSnapshot(
+            round_id=windows.round_id, tickers=("44",), source_hash="fixture"
+        ),
+        now_iso=NOW,
+    )
+    storage.set_round_state(
+        windows.round_id, RISK_SCHEMA_ID, ROUND_STATE_REVEALED, now_iso=NOW
+    )
+    chain.confirm_and_pace()
+    validator.set_weights()
+
+    assert tie_winner(chain.submissions[1]) != first

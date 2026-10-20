@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import time
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal, localcontext
@@ -17,11 +17,49 @@ from endure.assessment.coordinates import (
     AssessmentScoreHistoryRow,
 )
 from endure.assessment.schemas.wire import AggressiveDirection, DeviationMode
+from endure.protocol.consensus_policy import normalize_genesis_hash
 from endure.scoring.context import TR_CONTEXT
+from endure.scoring.duplicates import (
+    POOL_WINDOW_ROUNDS,
+    TIE_SEED_DELAY,
+    IdenticalGroups,
+    OrderedPools,
+    duplicate_pools,
+    identical_forecast_groups,
+    pool_sizes_of,
+    tie_ordered,
+)
+from endure.scoring.market_data import AlphaMarketDataError
+from endure.scoring.market_sampling import (
+    ARCHIVE_FETCH_FAILURES,
+    first_block_at_or_after,
+    utc_timestamp_milliseconds,
+)
 from endure.scoring.weights import ema_update, normalize_weights
 from endure.storage.repository import Storage
 
 _NANOSECONDS_PER_SECOND: Final = 1_000_000_000
+
+
+@dataclass(frozen=True, slots=True)
+class FinalizedChainReads:
+    """Archive reads of the finalized mainnet chain behind one pool tie seed.
+
+    Each read raises when the archive cannot answer, including a block hash it
+    has no value for. The reads of one seed share a deadline of their own.
+    """
+
+    finalized_block: Callable[[], int]
+    timestamp_at_block: Callable[[int], int]
+    block_hash: Callable[[int], str]
+
+
+# Starts the reads behind one pool tie seed.
+type TieSeedReads = Callable[[], FinalizedChainReads]
+
+
+class TieSeedUnavailable(Exception):
+    """No pool window has a known tie seed, so no vote can order its ties."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,6 +105,33 @@ class ResolutionDeadlineExceeded(Exception):
     expires mid-fetch. Distinct from data-unavailability on purpose: deadline
     exhaustion must defer the coordinate to the next tick, never void it
     through the unavailable-target grace path."""
+
+
+# A tie seed whose reads fail stays unknown, so its round waits to join the
+# pool window.
+TIE_SEED_READ_FAILURES: Final = (
+    *ARCHIVE_FETCH_FAILURES,
+    AlphaMarketDataError,
+    ResolutionDeadlineExceeded,
+)
+
+
+def chain_tie_seed(reads: FinalizedChainReads, reveal_close: datetime) -> str | None:
+    """The tie seed of a pool window whose newest round closed its reveals then.
+
+    It is the hash of the first finalized block stamped at least
+    ``TIE_SEED_DELAY`` after ``reveal_close``, as lowercase ``0x`` hex, or
+    ``None`` while the finalized head is stamped earlier.
+    """
+    target_ms = utc_timestamp_milliseconds(reveal_close + TIE_SEED_DELAY)
+    finalized = reads.finalized_block()
+    if reads.timestamp_at_block(finalized) < target_ms:
+        return None
+    block = first_block_at_or_after(
+        target_ms, finalized_block=finalized, timestamp_at=reads.timestamp_at_block
+    )
+    # Every validator must hash the same text, whatever its client returns.
+    return normalize_genesis_hash(reads.block_hash(block))
 
 
 REALIZED_TARGET_RESOLVED = "resolved"
@@ -274,12 +339,26 @@ class AssessmentScoringOrchestrator:
         config: AssessmentScoringConfig,
         half_life_rounds: int,
         registered_hotkeys: Callable[[], Sequence[str]] | None = None,
+        tie_seed_reads: TieSeedReads | None = None,
     ) -> None:
         self._storage = storage
         self._config = config
         self._half_life = half_life_rounds
         self._registered_hotkeys = registered_hotkeys
         self._scored_outputs = frozenset(output.output for output in config.outputs)
+        # Identical-forecast groups per revealed round in the pool window. A
+        # revealed round's consensus snapshot is immutable, so each one is read
+        # once; a restart reads the window again.
+        self._identical_groups: dict[str, IdenticalGroups] = {}
+        self._pools: OrderedPools = ()
+        # Without the chain (dev and compressed runtimes) each round's ID seeds
+        # its window's tie order. That seed is known in advance, so a live
+        # validator passes reads of the finalized mainnet chain instead.
+        self._tie_seed_reads = tie_seed_reads
+        self._tie_seeds: dict[str, str] = {}
+        # The newest window this process seeded, which its votes keep while the
+        # archive can show neither newest round's seed.
+        self._last_seeded_window: tuple[list[str], str] | None = None
 
     def _eligible_coordinate(self, coordinate: AssessmentCoordinate) -> bool:
         """True when the coordinate contributes to payout and consensus blends."""
@@ -466,13 +545,104 @@ class AssessmentScoringOrchestrator:
     def weights(self) -> dict[str, Decimal]:
         blended = self.blended_scores()
         if self._registered_hotkeys is not None:
-            registered = set(self._registered_hotkeys())
+            registered = frozenset(self._registered_hotkeys())
             blended = {
                 hotkey: score
                 for hotkey, score in blended.items()
                 if hotkey in registered
             }
-        return normalize_weights(blended)
+        # Only a scored, registered copy shares a payout.
+        scored = frozenset(hotkey for hotkey, score in blended.items() if score > 0)
+        pools = self.duplicate_pools(scored)
+        self._pools = pools
+        return normalize_weights(blended, pools=pools)
+
+    def pools(self) -> OrderedPools:
+        """Identical-forecast pools behind the newest ``weights()`` result."""
+        return self._pools
+
+    def pool_sizes(self) -> dict[str, int]:
+        """Identical-forecast pool sizes behind the newest ``weights()`` result."""
+        return pool_sizes_of(self._pools)
+
+    def duplicate_pools(self, scored: Collection[str] | None = None) -> OrderedPools:
+        """Identical-forecast pools over the newest revealed rounds.
+
+        Revealed rounds score from their immutable consensus snapshot and the
+        chain keeps their seeds, so a restart rebuilds the same pools once it
+        can read those seeds; an open round's reveals never count. With
+        ``scored``, only those hotkeys count as pool members, so only copies
+        that are still registered and scored share a pool. Each hotkey pools
+        with the oldest group it joined in the window. Each pool lists its
+        hotkeys in the tie order drawn from the seed of the window's newest
+        round.
+        """
+        revealed, seed = self._seeded_window()
+        known = self._identical_groups
+        window = {
+            round_id: known[round_id]
+            if round_id in known
+            else identical_forecast_groups(self._config.accepted_values(round_id))
+            for round_id in revealed
+        }
+        self._identical_groups = window
+        return tie_ordered(duplicate_pools(window.values(), scored), seed=seed)
+
+    def _seeded_window(self) -> tuple[list[str], str]:
+        """The pool window's rounds, newest first, and the seed of its ties.
+
+        A revealed round joins the window once its seed is known, a minute or
+        two after its reveal close; until then the window still ends one round
+        earlier. If the round before has no known seed either, the archive is
+        failing: votes keep the newest window this process seeded, and with
+        none the vote fails rather than order ties by a seed others may not
+        share.
+        """
+        revealed = self._storage.revealed_round_ids(
+            self._config.schema_id, limit=POOL_WINDOW_ROUNDS + 1
+        )
+        self._tie_seeds = {
+            round_id: seed
+            for round_id, seed in self._tie_seeds.items()
+            if round_id in revealed
+        }
+        if not revealed:
+            return [], ""
+        seed = self._tie_seed(revealed[0])
+        if seed is not None:
+            return self._seeded(revealed[:POOL_WINDOW_ROUNDS], seed)
+        earlier = revealed[1:]
+        if not earlier:
+            return [], ""
+        seed = self._tie_seed(earlier[0])
+        if seed is not None:
+            return self._seeded(earlier[:POOL_WINDOW_ROUNDS], seed)
+        if self._last_seeded_window is not None:
+            return self._last_seeded_window
+        raise TieSeedUnavailable(
+            f"neither round {revealed[0]} nor {earlier[0]} has a known tie seed"
+        )
+
+    def _seeded(self, window: list[str], seed: str) -> tuple[list[str], str]:
+        self._last_seeded_window = (window, seed)
+        return window, seed
+
+    def _tie_seed(self, round_id: str) -> str | None:
+        if self._tie_seed_reads is None:
+            return round_id
+        seed = self._tie_seeds.get(round_id)
+        if seed is None:
+            windows = self._storage.round_windows(round_id, self._config.schema_id)
+            if windows is None:
+                raise TieSeedUnavailable(f"round {round_id} has no stored windows")
+            try:
+                seed = chain_tie_seed(self._tie_seed_reads(), windows.reveal_close)
+            except TIE_SEED_READ_FAILURES:
+                # The reads logged why; the round waits for its seed.
+                seed = None
+            if seed is not None:
+                self._tie_seeds[round_id] = seed
+        return seed
 
     def _single_horizon(self) -> int:
         [horizon] = self._config.horizons

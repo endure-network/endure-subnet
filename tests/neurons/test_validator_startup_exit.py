@@ -331,6 +331,8 @@ def _run_wedged_real_construction(tmp_dir: str) -> None:
         patch.object(validator, "configure_log_shipping"),
         patch.object(LiveRuntimeProvider, "create_base", wedged_create_base),
         patch.object(validator, "_STARTUP_SHUTDOWN_GRACE_SECONDS", 0.5),
+        # Testnet probes its mainnet archive first; this test is about transport.
+        patch.object(validator, "validate_mainnet_archive"),
     ):
         _entrypoint(validator.main)
 

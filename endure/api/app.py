@@ -43,7 +43,7 @@ from endure.protocol.version_contract import CURRENT_VERSION_KEY
 from endure.publication.risk_feed import Signer, build_signed_risk_feed
 from endure.runtime.identity import runtime_identity
 from endure.scoring.context import TR_CONTEXT
-from endure.scoring.weights import normalize_weights
+from endure.scoring.weights import Payout, normalize_weights
 from endure.storage.repository import (
     POST_EMBARGO_ROUND_STATES,
     ROUND_STATE_OPEN,
@@ -188,6 +188,7 @@ def _assessment_leaderboard(
     storage: Storage,
     schema_id: str,
     active_coordinates: frozenset[AssessmentCoordinate] | None,
+    payout: Payout | None,
 ) -> list[dict[str, object]]:
     states = (
         state
@@ -202,7 +203,12 @@ def _assessment_leaderboard(
         for hotkey, hotkey_states in sorted(by_hotkey.items())
         if hotkey_states
     }
-    weights = normalize_weights(blends)
+    # The validator's newest earned weights: registered hotkeys only,
+    # identical forecasts pooled, before the vote withholds owner-coldkey
+    # hotkeys and before the owner burn. Without them, the plain
+    # normalization of the blends.
+    weights = normalize_weights(blends) if payout is None else payout.weights
+    pool_sizes = {} if payout is None else payout.pool_sizes
     ranked = sorted(blends, key=lambda hotkey: (-blends[hotkey], hotkey))
     return [
         {
@@ -210,6 +216,7 @@ def _assessment_leaderboard(
             "miner_hotkey": hotkey,
             "blended_score": str(blends[hotkey]),
             "weight_share": str(weights.get(hotkey, Decimal(0))),
+            "pool_size": pool_sizes.get(hotkey, 1),
             "horizon_emas": _assessment_horizon_emas(by_hotkey[hotkey]),
             "coordinate_emas": _assessment_ema_payloads(by_hotkey[hotkey]),
         }
@@ -341,6 +348,7 @@ def _register_core_routes(  # noqa: PLR0913 — explicit read API dependencies
     *,
     runtime_health: Callable[[], RuntimeHealth] | None,
     active_coordinates: frozenset[AssessmentCoordinate] | None,
+    payout: Callable[[], Payout | None] | None,
 ) -> None:
     @app.get("/live")
     async def live() -> dict[str, str]:
@@ -431,7 +439,15 @@ def _register_core_routes(  # noqa: PLR0913 — explicit read API dependencies
 
     @app.get("/miners")
     def miners_leaderboard() -> list[dict[str, object]]:
-        return _assessment_leaderboard(storage, schema_id, active_coordinates)
+        current = None if payout is None else payout()
+        if payout is not None and current is None:
+            # Until the validator has computed its weights (at startup, or
+            # while it cannot read a pool tie seed), the plain normalization
+            # would misreport what it pays.
+            raise HTTPException(
+                status_code=503, detail="validator weights not computed yet"
+            )
+        return _assessment_leaderboard(storage, schema_id, active_coordinates, current)
 
     @app.get("/rounds/{round_id}")
     def round_meta(round_id: str) -> dict[str, object]:
@@ -546,6 +562,7 @@ def build_app(  # noqa: PLR0913 — explicit read API dependencies
     runtime_health: Callable[[], RuntimeHealth] | None = None,
     active_coordinates: frozenset[AssessmentCoordinate] | None = None,
     publication_identity: PublicationIdentity = _UNSIGNED_PUBLICATION_IDENTITY,
+    payout: Callable[[], Payout | None] | None = None,
 ) -> FastAPI:
     app = FastAPI(title="Endure Alpha Risk validator read API", version=__version__)
     # Read-only public API: permissive CORS so browser dashboards can call it.
@@ -563,6 +580,7 @@ def build_app(  # noqa: PLR0913 — explicit read API dependencies
         publisher,
         runtime_health=runtime_health,
         active_coordinates=active_coordinates,
+        payout=payout,
     )
     _register_round_data_routes(app, storage, schema_id)
     _register_risk_routes(app, storage, publication_identity)
