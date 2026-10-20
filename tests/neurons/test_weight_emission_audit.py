@@ -2546,6 +2546,7 @@ class TestWeightEmissionAudit:
         validator.config.endure.health_startup_grace_seconds = 1
         validator.thread = MagicMock()
         validator.thread.is_alive.return_value = True
+        validator._durable_scores_loaded = True
 
         health = validator.runtime_health()
 
@@ -2589,6 +2590,7 @@ class TestWeightEmissionAudit:
         validator.config.endure.health_startup_grace_seconds = 1
         validator.thread = MagicMock()
         validator.thread.is_alive.return_value = True
+        validator._durable_scores_loaded = True
 
         assert validator.runtime_health().get("weight_emission_degraded") is False
 
@@ -2632,6 +2634,7 @@ class TestWeightEmissionAudit:
         validator.config.endure.health_startup_grace_seconds = 1
         validator.thread = MagicMock()
         validator.thread.is_alive.return_value = True
+        validator._durable_scores_loaded = True
 
         assert validator.runtime_health().get("weight_emission_degraded") is True
 
@@ -3040,7 +3043,7 @@ class TestSetWeightsAttemptWrapping:
         )
         assert prepared.cr4_reveal_deadline_block == 732
         assert attempt.status == "submitted"
-        assert neuron.spec_version == 1002
+        assert neuron.spec_version == 1003
         assert attempt.protocol_version_key == CURRENT_VERSION_KEY
         assert attempt.intent_hash is not None
         assert attempt.intent_hash.startswith(f"{CURRENT_VERSION_KEY}:")

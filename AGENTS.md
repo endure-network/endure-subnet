@@ -76,10 +76,11 @@ Never:
   mismatches; placeholders without `raise NotImplementedError("spec §X.Y — …")`.
 - Copy code from earlier Endure prototypes — port or clean-room rewrite.
 - Commit `.env`, wallets, mnemonics, coldkey/hotkey JSON, or keys.
-- Mainnet-deploy before the testnet soak gate passes. Alpha Risk serves on
-  mainnet only behind the explicit `--endure.serving_stage mainnet`
-  acknowledgement and only from the `:prod` image channel
-  (`docs/running_on_mainnet.md`).
+- Mainnet-deploy before the testnet soak gate passes, unless the owner has
+  recorded a scoped release exception, with its criteria, in the release
+  notes (`docs/running_on_staging.md`). Alpha Risk serves on mainnet only
+  behind the explicit `--endure.serving_stage mainnet` acknowledgement and
+  only from the `:prod` image channel (`docs/running_on_mainnet.md`).
 
 ## Gotchas
 - Python 3.12 only — CI gates on 3.12; make your venv match.

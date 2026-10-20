@@ -29,6 +29,7 @@ from endure.assessment.schemas.subnet_alpha_risk import (
 from endure.protocol.canonical import canonical_bundle_bytes
 from endure.protocol.round_engine import DEFAULT_OFFSETS, compute_windows
 from endure.scoring.assessment_orchestrator import REALIZED_TARGET_RESOLVED
+from endure.scoring.weights import Payout
 from endure.storage.repository import Storage
 from endure.storage.tables import rounds
 
@@ -836,6 +837,50 @@ class TestRiskAssessmentReadRoutes:
         assert rows[0]["blended_score"] == "0.9"
         assert rows[0]["horizon_emas"] == {"2592000": "0.9"}
         assert Decimal(rows[0]["weight_share"]) > Decimal(rows[1]["weight_share"])
+        assert [row["pool_size"] for row in rows] == [1, 1]
+
+    def test_miners_leaderboard_reports_the_validators_pooled_payout(
+        self, storage: Storage
+    ) -> None:
+        self._seed_assessment_rows(storage)
+        payout = Payout(
+            weights={"hk-good": Decimal("0.25"), "hk-weak": Decimal("0.75")},
+            pool_sizes={"hk-good": 4},
+        )
+        client = TestClient(
+            build_app(
+                storage=storage,
+                schema_id=RISK_SCHEMA_ID,
+                publisher="risk",
+                payout=lambda: payout,
+            )
+        )
+
+        rows = client.get("/miners").json()
+
+        # Ranked by blended score; shares and pools are what the validator pays.
+        assert [row["miner_hotkey"] for row in rows] == ["hk-good", "hk-weak"]
+        assert [row["weight_share"] for row in rows] == ["0.25", "0.75"]
+        assert [row["pool_size"] for row in rows] == [4, 1]
+
+    def test_miners_leaderboard_waits_for_the_validators_weights(
+        self, storage: Storage
+    ) -> None:
+        self._seed_assessment_rows(storage)
+        client = TestClient(
+            build_app(
+                storage=storage,
+                schema_id=RISK_SCHEMA_ID,
+                publisher="risk",
+                payout=lambda: None,
+            )
+        )
+
+        response = client.get("/miners")
+
+        # Unpooled shares would misreport what the validator pays.
+        assert response.status_code == 503
+        assert response.json() == {"detail": "validator weights not computed yet"}
 
     def test_round_data_routes_use_assessment_tables(self, storage: Storage) -> None:
         self._seed_assessment_rows(storage)

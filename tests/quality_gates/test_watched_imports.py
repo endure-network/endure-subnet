@@ -26,10 +26,12 @@ from endure.protocol.consensus_policy import (
     consensus_settings_pinned,
     ignored_consensus_settings,
     mainnet_policy_applies,
+    reads_live_mainnet,
     require_emitting_validator_serves_axon,
     serves_alpha_risk,
 )
 from endure.protocol.version_contract import WATCHED_PATHS
+from endure.scoring.assessment_orchestrator import chain_tie_seed
 from endure.scoring.eligibility import DeregistrationTracker, scoring_set
 from endure.scoring.emission_policy import (
     plan_emission,
@@ -44,6 +46,7 @@ from endure.scoring.market_sampling import (
     require_archive_value,
     retry_exhausted_failure,
     snapshot_failure_is_outage,
+    utc_timestamp_milliseconds,
 )
 from endure.scoring.weight_processing import chain_weight_vector, emission_candidate
 from endure.utils import config
@@ -57,14 +60,15 @@ _MECHANICS_ALLOWLIST = frozenset(
     {"endure.storage.tables", "endure.storage.sqlite_security"}
 )
 
-# Policy decisions consumed by unwatched runtime code; each must be defined in
-# a watched file, not merely re-exported through one.
+# Policy decisions that unwatched runtime code consumes or wires in; each must
+# be defined in a watched file, not merely re-exported through one.
 _POLICY: tuple[Callable[..., object] | type, ...] = (
     miner_admission,
     classify_chain,
     chain_needs_genesis,
     chain_owner_vote_network,
     mainnet_policy_applies,
+    reads_live_mainnet,
     consensus_settings_pinned,
     ignored_consensus_settings,
     require_emitting_validator_serves_axon,
@@ -83,6 +87,8 @@ _POLICY: tuple[Callable[..., object] | type, ...] = (
     require_archive_value,
     retry_exhausted_failure,
     snapshot_failure_is_outage,
+    utc_timestamp_milliseconds,
+    chain_tie_seed,
 )
 
 

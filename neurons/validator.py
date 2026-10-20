@@ -70,13 +70,14 @@ from endure.base.validator import (
     normalize_commitment_hash,
 )
 from endure.live.alpha_market_data import (
+    LIVE_TIE_SEED_TIMEOUT_SECONDS,
     LiveAlphaPriceProvider,
     LiveAlphaPriceProviderConfig,
     read_chain_genesis,
     validate_mainnet_archive,
 )
 from endure.protocol.admission import miner_admission
-from endure.protocol.consensus_policy import OwnerVoteNetwork
+from endure.protocol.consensus_policy import OwnerVoteNetwork, reads_live_mainnet
 from endure.protocol.handlers import SubmissionHandlers
 from endure.protocol.risk_runtime import (
     RECORDED_FIXTURE_WINDOW_START_BLOCK,
@@ -90,7 +91,12 @@ from endure.protocol.version_contract import CURRENT_VERSION_KEY
 from endure.protocol.vertical import AssessmentRoundProgram, VerticalRuntime
 from endure.runtime.identity import runtime_identity
 from endure.runtime.resolve import resolve_runtime_provider
-from endure.scoring.assessment_orchestrator import ResolutionBudget
+from endure.scoring.assessment_orchestrator import (
+    ResolutionBudget,
+    TieSeedReads,
+    TieSeedUnavailable,
+)
+from endure.scoring.duplicates import OrderedPools, pool_sizes_of
 from endure.scoring.eligibility import DeregistrationTracker, scoring_set
 from endure.scoring.emission_policy import (
     CHAIN_SNAPSHOT_METAGRAPH_INDICES,
@@ -111,6 +117,7 @@ from endure.scoring.emission_policy import (
 from endure.scoring.market_data import recorded_mainnet_fixture_provider
 from endure.scoring.policy import DEFAULT_PAYOUT_HALF_LIFE_ROUNDS
 from endure.scoring.risk.orchestrator import RiskScoringOrchestrator
+from endure.scoring.weights import Payout
 from endure.storage.repository import (
     CR4_REVEAL_SCAN_BATCH_BLOCKS,
     OPEN_WEIGHT_EMISSION_CONFIRMATION_STATES,
@@ -126,9 +133,9 @@ from endure.utils.config import (
     DevOnlyConfigError,
     active_runtime_schema_id,
     apply_consensus_settings,
+    chain_class,
     devnet_owner_vote_enabled,
     owner_vote_network,
-    permits_dev_only_runtime,
     require_compression_runtime_allowed,
     require_devnet_owner_vote_allowed,
     require_explicit_netuid,
@@ -291,11 +298,28 @@ class Validator(BaseValidatorNeuron):
                 "endure.health_tick_max_duration_seconds; a budget at or above "
                 "the watchdog window cannot prevent stale-tick restarts"
             )
+        # A live tick that scores, and every live vote, may also read two pool
+        # tie seeds, each under its own deadline.
+        if _uses_live_mainnet_data(resolved_config) and int(
+            resolved_config.endure.resolution_budget_seconds
+        ) + 2 * LIVE_TIE_SEED_TIMEOUT_SECONDS >= int(
+            resolved_config.endure.health_tick_max_duration_seconds
+        ):
+            raise RuntimeError(
+                "endure.health_tick_max_duration_seconds must exceed "
+                "endure.resolution_budget_seconds plus two "
+                f"{LIVE_TIE_SEED_TIMEOUT_SECONDS:.0f}-second tie seed reads; "
+                "a live tick waiting on a slow archive would otherwise outlive "
+                "the watchdog window"
+            )
         # Local inputs fail offline, before the network-bound archive probe:
         # the SQLite URL/path (and schema), then the mainnet hotkey file.
         _run_migrations(resolved_config.endure.database_url)
         if uses_mainnet_consensus_policy(resolved_config):
             _require_hotkey(resolved_config)
+        if _uses_live_mainnet_data(resolved_config):
+            # Scoring and pool tie seeds read this archive on testnet too, so
+            # every validator that reads one must read mainnet.
             validate_mainnet_archive(
                 str(resolved_config.endure.market_data_endpoint), netuid=30
             )
@@ -331,10 +355,10 @@ class Validator(BaseValidatorNeuron):
             max_reveals_per_round=int(self.config.endure.max_reveals_per_round),
         )
         self._blended_snapshot: dict[str, Decimal] = {}
+        self._payout: Payout | None = None
+        self._pools: OrderedPools = ()
         self._vertical_runtime: VerticalRuntime
         self._service = self._build_service()
-        self._reconstruct_scores()
-        self._durable_scores_loaded = True
         self._seed_deregistration_tracker()
         self._tick_failures = 0
         self._last_tick_ok: str | None = None
@@ -350,6 +374,30 @@ class Validator(BaseValidatorNeuron):
         self._api_thread: threading.Thread | None = None
         self._attach_handlers()
         self._start_api()
+        self._load_durable_scores()
+
+    def _load_durable_scores(self) -> None:
+        """Rebuild scores from durable EMAs once ``/live`` answers.
+
+        A live runtime reads pool tie seeds from its archive here, so the load
+        runs as a long operation and a slow archive cannot hold off ``/live``.
+        A seed the archive cannot give yet leaves the validator abstaining
+        until a later vote reads it; any other failure still stops startup.
+        """
+        self._begin_long_op()
+        try:
+            self._reconstruct_scores()
+        except TieSeedUnavailable as error:
+            self._block_emission(
+                EmissionBlocked(
+                    "score_state_unavailable",
+                    f"durable score state unavailable: {safe_error(error)}",
+                ),
+                self._chain_block_hint(),
+            )
+        finally:
+            self._end_long_op()
+        self._durable_scores_loaded = True
 
     def runtime_health(self) -> RuntimeHealth:
         """Stuck-loop observability, merged into /health. Tick fields are the
@@ -498,13 +546,15 @@ class Validator(BaseValidatorNeuron):
             and time.monotonic() - self._started_monotonic
             > int(self.config.endure.health_startup_grace_seconds)
         )
-        self._refresh_emission_health(
-            current_block,
-            open_confirmation=(
-                confirmation is not None and confirmation.open_submissions > 0
-            ),
-            startup_fence=startup_fence,
-        )
+        if getattr(self, "_durable_scores_loaded", False):
+            # While startup loads scores, the zero vector describes no mode.
+            self._refresh_emission_health(
+                current_block,
+                open_confirmation=(
+                    confirmation is not None and confirmation.open_submissions > 0
+                ),
+                startup_fence=startup_fence,
+            )
         submission_overdue = (
             self._emission_deadline is not None
             and time.monotonic() > self._emission_deadline
@@ -703,6 +753,7 @@ class Validator(BaseValidatorNeuron):
             publisher=self._vertical_runtime.publisher,
             active_coordinates=self._vertical_runtime.active_coordinates,
             runtime_health=self.runtime_health,
+            payout=lambda: getattr(self, "_payout", None),
             publication_identity=PublicationIdentity(
                 signer=lambda payload: self.wallet.hotkey.sign(data=payload),
                 hotkey=str(self.wallet.hotkey.ss58_address),
@@ -1052,7 +1103,7 @@ class Validator(BaseValidatorNeuron):
             self._emission_blocked_reason = None
         self._owner_vote_recipient = plan.recipient
         try:
-            self._emit_weight_candidate(plan.weights)
+            self._emit_weight_candidate(plan.weights, groups=plan.groups)
         except EmissionBlocked as blocked:
             # The prepared-vector recheck refused before sending; the emitter
             # already counted the failed attempt. Returning lets sync() advance
@@ -1218,6 +1269,7 @@ class Validator(BaseValidatorNeuron):
                 local_hotkeys=self.metagraph.hotkeys,
                 scores=self.scores,
                 owner_commitment=commitment,
+                pools=getattr(self, "_pools", ()),
             )
 
         try:
@@ -1682,6 +1734,13 @@ class Validator(BaseValidatorNeuron):
 
     def _apply_weights(self, weights: dict[str, Decimal]) -> None:
         self.scores = [weights.get(hotkey, ZERO) for hotkey in self.metagraph.hotkeys]
+        runtime: VerticalRuntime | None = getattr(self, "_vertical_runtime", None)
+        pools = None if runtime is None else runtime.pools
+        # The vote rounds each pool as one entry, so it needs the same pools.
+        self._pools = () if pools is None else pools()
+        self._payout = Payout(
+            weights=dict(weights), pool_sizes=pool_sizes_of(self._pools)
+        )
         bt.logging.info(
             f"scores refreshed from blended EMAs ({len(weights)} miners scored)"
         )
@@ -1770,6 +1829,12 @@ class Validator(BaseValidatorNeuron):
             )
 
 
+def _uses_live_mainnet_data(config: bt.Config) -> bool:
+    return reads_live_mainnet(
+        chain_class(config), compressed=compression_enabled(config)
+    )
+
+
 def _recorded_fixture_block(_reveal_close: datetime) -> int:
     return RECORDED_FIXTURE_WINDOW_START_BLOCK
 
@@ -1785,12 +1850,14 @@ def _build_risk_vertical_runtime(validator: Validator) -> VerticalRuntime:
         due_seconds = risk_runtime.due_seconds_by_horizon
         reveal_close_block = _recorded_fixture_block
         window_end_block = None
+        tie_seed_reads: TieSeedReads | None = None
     else:
         scheduler = scheduler_for_schema(RISK_SCHEMA_ID)
-        if permits_dev_only_runtime(validator.config):
+        if not _uses_live_mainnet_data(validator.config):
             price_provider = recorded_mainnet_fixture_provider()
             reveal_close_block = _recorded_fixture_block
             window_end_block = None
+            tie_seed_reads = None
         else:
             live_provider = LiveAlphaPriceProvider(
                 config=LiveAlphaPriceProviderConfig(
@@ -1812,6 +1879,9 @@ def _build_risk_vertical_runtime(validator: Validator) -> VerticalRuntime:
 
             reveal_close_block = live_reveal_close_block
             window_end_block = live_window_end_block
+            # Pool ties are ordered by a mainnet block no one knows before the
+            # round's reveals close.
+            tie_seed_reads = live_provider.tie_seed_reads
             price_provider = live_provider
         due_seconds = {}
     orchestrator = RiskScoringOrchestrator(
@@ -1821,6 +1891,7 @@ def _build_risk_vertical_runtime(validator: Validator) -> VerticalRuntime:
         reveal_close_block=reveal_close_block,
         window_end_block=window_end_block,
         registered_hotkeys=lambda: list(validator.metagraph.hotkeys),
+        tie_seed_reads=tie_seed_reads,
         **(
             {"active_netuids": _RECORDED_FIXTURE_NETUIDS}
             if compression_enabled(validator.config)
@@ -1839,6 +1910,7 @@ def _build_risk_vertical_runtime(validator: Validator) -> VerticalRuntime:
         publisher="risk",
         scheduler=scheduler,
         active_coordinates=orchestrator.active_coordinates,
+        pools=orchestrator.pools,
     )
 
 
@@ -1854,6 +1926,7 @@ def _build_forge_vertical_runtime(validator: Validator) -> VerticalRuntime:
         storage=validator._storage,
         price_provider=recorded_mainnet_fixture_provider(),
         half_life_rounds=DEFAULT_PAYOUT_HALF_LIFE_ROUNDS,
+        registered_hotkeys=lambda: list(validator.metagraph.hotkeys),
     )
     return VerticalRuntime(
         round_program=AssessmentRoundProgram(
@@ -1866,6 +1939,7 @@ def _build_forge_vertical_runtime(validator: Validator) -> VerticalRuntime:
         ),
         publisher="assessment",
         scheduler=scheduler,
+        pools=orchestrator.pools,
     )
 
 
