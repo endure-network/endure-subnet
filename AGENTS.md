@@ -90,6 +90,9 @@ Never:
 - Python 3.12 only — CI gates on 3.12; make your venv match.
 - `develop` is the integration branch. `staging` is both the auto-deploy branch
   and its deploy environment (`docs/running_on_staging.md`); `main` is stable.
+- A docs-only push to `develop` (`docs/**`, `*.md`) skips the localnet
+  qualification. Staging always runs it, because the release image gate needs
+  it on the exact tip, and Coolify ignores docs, so docs never redeploy.
 
 ## More context
 - `docs/specs/2026-07-06-alpha-risk-v1-scope.md` — current Alpha Risk scope
