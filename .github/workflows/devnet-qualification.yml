@@ -37,18 +37,56 @@ env:
   CHAIN_RPC_PORT: "9944"
 
 jobs:
+  changes:
+    name: Detect docs-only develop pushes
+    # Only a push to develop may skip the chain run. Staging pushes always run
+    # it: the release image gate needs a qualified run on the exact staging tip.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/develop'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      docs_only: ${{ steps.diff.outputs.docs_only }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+
+      - name: Classify the pushed changes
+        id: diff
+        env:
+          BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          # Docs only means every changed path is under docs/ or ends in .md.
+          # An unknown base commit counts as a code change. The list is read
+          # in full first, so grep stopping early cannot break the diff, and
+          # without rename detection a file moved into docs/ still shows its
+          # old path.
+          docs_only=false
+          if git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
+            changed="$(git diff --no-renames --name-only "$BEFORE" "$GITHUB_SHA")"
+            if ! grep -qvE '^docs/|\.md$' <<<"$changed"; then
+              docs_only=true
+            fi
+          fi
+          echo "docs_only=$docs_only" >> "$GITHUB_OUTPUT"
+
   qualify:
     name: Localnet commit/reveal qualification
+    needs: changes
     # A pull request into develop qualifies only when someone applies the
     # `qualify` label -- a 45-minute chain run is too expensive to fire on
     # every commit. Develop and staging pushes, plus promotions into staging,
-    # are automatic so published images are qualified at their exact SHA.
+    # are automatic so published images are qualified at their exact SHA. A
+    # docs-only push to develop skips it; `!cancelled()` keeps the run when
+    # the docs check is skipped or fails.
     if: >-
-      github.event_name == 'push'
-      || (github.event.action == 'labeled'
-          && github.event.label.name == 'qualify')
-      || (github.event.pull_request.base.ref == 'staging'
-          && github.event.action != 'labeled')
+      needs.changes.outputs.docs_only != 'true' && !cancelled()
+      && (github.event_name == 'push'
+          || (github.event.action == 'labeled'
+              && github.event.label.name == 'qualify')
+          || (github.event.pull_request.base.ref == 'staging'
+              && github.event.action != 'labeled'))
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
