@@ -49,9 +49,11 @@ compatibility in [version_contract.py](../endure/protocol/version_contract.py).
   (`--subtensor.network`) carries metagraph sync, commit/reveal identity, and
   weight extrinsics for netuid `504`; the archive market-data connection
   (`--endure.market_data_endpoint`) resolves Alpha observables against
-  Bittensor **mainnet** and must reach an archive node. Budget them
-  separately: resolution is archive-query-heavy, and a shared or rate-limited
-  endpoint degrades scoring before it degrades liveness. Bittensor `>=10.3`
+  Bittensor **mainnet** and must reach a mainnet archive node, or the validator
+  refuses to start (compressed test runs replay recorded fixtures instead).
+  Budget them separately: resolution is archive-query-heavy, and a shared or
+  rate-limited endpoint degrades scoring before it degrades liveness.
+  Bittensor `>=10.3`
   ignores `--subtensor.chain_endpoint`, so a custom subtensor RPC (for example
   a keyed provider URL) must be passed as the `--subtensor.network` value
   itself. Redact keyed endpoints in public reports.
@@ -104,8 +106,11 @@ when inconsistent: `--endure.health_tick_max_age_seconds` and
 exceed `health_tick_max_age_seconds`, and
 `--endure.resolution_budget_seconds` must stay below
 `health_tick_max_duration_seconds` so a budgeted resolution pass can never
-outlive the watchdog window. Raising `health_tick_max_duration_seconds` also
-widens the overdue grace above.
+outlive the watchdog window. A validator that reads live mainnet data also needs
+room for two pool tie seed reads of up to 300 seconds each:
+`health_tick_max_duration_seconds` must exceed `resolution_budget_seconds` plus
+600, with some margin. Raising `health_tick_max_duration_seconds` also widens
+the overdue grace above.
 
 Beyond `round_resolution`, monitor the `runtime` block of `/health`:
 
@@ -238,13 +243,18 @@ clear previously submitted on-chain weights.
 Mode has no latch: scores are rebuilt from durable EMAs at startup, after every
 metagraph resync, and at the start of every weight attempt, and a failed scoring
 tick keeps the previous vector, so a restart while scored resumes earned
-weights, a running validator agrees with a restarted one, and a miner that
-re-registered at a new UID keeps its earned weight. If durable score state
-cannot be read, emission abstains with the `score_state_unavailable` block (no
-owner vote, no stale weights, and `/health` never reports `owner_vote` from a
-stale zeroed vector). Open weight batches recorded under a previous
-validator identity are marked `unconfirmed` once their deadlines pass, so they
-no longer hold emission on `confirmation_pending`.
+weights, and a running validator agrees with a restarted one once both have
+read the same pool tie seed. A miner that re-registers at a new UID keeps its
+earned weight only if it returns before validators archive its score state,
+which they do at the first scoring pass after 2 consecutive metagraph resyncs
+miss its hotkey; after that it starts from zero. If durable score state cannot
+be read, emission abstains with the `score_state_unavailable` block (no owner
+vote, no stale weights, and `/health` never reports `owner_vote` from a stale
+zeroed vector). A restarted validator that cannot read a pool tie seed yet
+abstains with the same block, and its `/miners` answers 503, until it reads one.
+Open weight batches recorded under a previous validator identity are marked
+`unconfirmed` once their deadlines pass, so they no longer hold emission on
+`confirmation_pending`.
 
 Keep the mainnet database durable and use consistent SQLite backups; a
 restored backup reproduces its own scoring state. Never copy a testnet database
@@ -253,9 +263,11 @@ final Endure process with the axon on and `--neuron.disable_set_weights`
 omitted/default-false. An explicitly true flag disables both the owner vote and
 earned emission indefinitely; positive scores never enable it automatically.
 
-An archive outage delays new scores; it does not erase previously earned scores
-or independently disable their emission. Mainnet startup requires the
-[archive preflight](running_on_mainnet.md#release-pinned-consensus-policy-key-2042).
+An archive outage delays new scores; it does not erase previously earned scores,
+and a running validator keeps emitting them. Every validator that reads live
+mainnet data, testnet included, must pass the
+[archive preflight](running_on_mainnet.md#release-pinned-consensus-policy-key-2042)
+to start.
 On served testnet and mainnet the miner stake floor, per-round commit/reveal
 caps and epoch length are protocol values: other values are ignored with a
 startup warning, and only mock/local chains honor them.

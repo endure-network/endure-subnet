@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.1.3 — identical-forecast pooling
+
+Protocol key `2044`; miners and validators must upgrade together. No
+chain-parameter change: SN30's `weights_version` (`2040`) accepts key `2044`.
+Package/API version is `0.1.3`. See the
+[release notes, operator upgrade and soak decision](docs/releases/v0.1.3.md).
+
+- Pool identical forecasts in emission weights: each hotkey joins the oldest
+  group that revealed its values in one of the five newest revealed rounds,
+  and a pool weighs what its best member would alone. Forecasts that differ in
+  any value are paid as before.
+- Round each pool to whole u16 units once; ties follow a finalized mainnet
+  block hash read from the market-data archive.
+- Validators that read live mainnet data, testnet included, check their
+  archive and tick budgets at startup.
+- `/miners` reports the pooled `weight_share` and each hotkey's `pool_size`.
+- Release images are write-once per commit; a re-run reuses them
+  (`RELEASE_IMAGES_REUSED`).
+
 ## v0.1.2 — owner burn rate
 
 Protocol key `2043`; miners and validators must upgrade together. Chain

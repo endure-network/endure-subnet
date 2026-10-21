@@ -31,6 +31,7 @@ from endure.scoring.assessment_orchestrator import (
     AssessmentScoringOrchestrator,
     ResolutionBudget,
     ScoredOutputConfig,
+    TieSeedReads,
     submitted_assessment_values,
 )
 from endure.scoring.market_data import (
@@ -97,6 +98,7 @@ class RiskScoringOrchestrator(AssessmentScoringOrchestrator):
         window_end_block: WindowEndBlock | None = None,
         registered_hotkeys: Callable[[], Sequence[str]] | None = None,
         active_netuids: tuple[int, ...] = ALPHA_RISK_WHITELISTED_NETUIDS,
+        tie_seed_reads: TieSeedReads | None = None,
     ) -> None:
         self._storage_for_window = storage
         self._reveal_close_block = reveal_close_block
@@ -110,6 +112,7 @@ class RiskScoringOrchestrator(AssessmentScoringOrchestrator):
             ),
             half_life_rounds=half_life_rounds,
             registered_hotkeys=registered_hotkeys,
+            tie_seed_reads=tie_seed_reads,
         )
 
     def resolve_and_score(

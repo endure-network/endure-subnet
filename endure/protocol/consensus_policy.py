@@ -195,6 +195,16 @@ def mainnet_policy_applies(chain: ChainClass, *, served: bool) -> bool:
     return served and chain == "mainnet"
 
 
+def reads_live_mainnet(chain: ChainClass, *, compressed: bool) -> bool:
+    """Runtimes off development chains score live mainnet Alpha data.
+
+    They also seed pool ties with its finalized blocks, so each one checks at
+    startup that its archive is mainnet, on testnet too. Development chains
+    and compressed runs replay recorded fixtures, and round IDs seed their ties.
+    """
+    return chain != "dev" and not compressed
+
+
 def consensus_settings_pinned(chain: ChainClass, *, served: bool) -> bool:
     """Served Alpha Risk on mainnet or testnet runs the protocol settings.
 

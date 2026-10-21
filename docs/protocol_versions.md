@@ -266,3 +266,44 @@ Key `2043` ships as [`v0.1.2`](releases/v0.1.2.md). Miners and validators must
 upgrade together; the release does not raise the chain's weight-version floor.
 SN30's chain `weights_version` of `2040` accepts key-`2043` submissions
 unchanged.
+
+Key `2043` is recorded as `activation-0046`. It first appeared on the public
+first-parent staging lineage in commit
+`02ab118662e910d14077c8f6cd491fb60d7c2d24`; its source-bound receipt is
+`906c7da0c18c7768cfeebdaa566516f60e37ce9dc661d93b3df549bee3522ecf`.
+The published `v0.1.2` images retain that assignment.
+
+Key `2044` is leased to identical-forecast pooling: emission weights assign each
+member to the oldest group that revealed identical values with it in one of the
+newest `POOL_WINDOW_ROUNDS = 5` revealed rounds, a pool weighs what its best
+member would alone, and the vote rounds each pool to u16 once, ordering equal
+remainders by the hash of the first finalized mainnet block stamped at least
+`TIE_SEED_DELAY` after the newest round's reveal close (see
+[identical forecasts](mining.md#identical-forecasts-share-one-payout)). The pool
+key, window, assignment, membership, tie order and pooled normalization are
+digest-covered in [duplicates.py](../endure/scoring/duplicates.py),
+[assessment_orchestrator.py](../endure/scoring/assessment_orchestrator.py) and
+[weights.py](../endure/scoring/weights.py); the pool rounding in
+[emission_policy.py](../endure/scoring/emission_policy.py) and
+[weight_processing.py](../endure/scoring/weight_processing.py); the
+revealed-round query in [repository.py](../endure/storage/repository.py); the
+seed's block, hash and failed-read handling in `chain_tie_seed`, with the
+timestamp conversion in [market_sampling.py](../endure/scoring/market_sampling.py);
+and which runtimes read live mainnet data in `reads_live_mainnet`
+([consensus_policy.py](../endure/protocol/consensus_policy.py)). Only the archive
+reads, their retries and their deadline are unwatched I/O. Scores, EMAs,
+consensus weighting and the owner burn rate are unchanged, and no schema
+migration is introduced.
+
+Its watched-tree digest is
+`777d3671ffd72c112fd853dc018c7f38449821da16a9d8539f113b07cc35ed47`.
+The public lease authority receipt uses
+`PREVIOUS_RECEIPT=2bf6bae0a796f277f3412af255602a7ffe62fb52595a68f7ec308e6b199cfa56`,
+`CURRENT_VERSION_KEY=2044`, and
+`CURRENT_VERSION_DIGEST=777d3671ffd72c112fd853dc018c7f38449821da16a9d8539f113b07cc35ed47`
+under the `LEASE_AUTHORITY` format above, producing
+`234fa4a7d49b3ae5ed9e03a1853a299a03d8d89b7ecfce0393b12291f7e8f38a`.
+Key `2044` ships as [`v0.1.3`](releases/v0.1.3.md). Miners and validators must
+upgrade together; the release does not raise the chain's weight-version floor.
+SN30's chain `weights_version` of `2040` accepts key-`2044` submissions
+unchanged.

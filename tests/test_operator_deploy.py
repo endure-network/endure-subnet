@@ -311,6 +311,7 @@ def test_release_workflow_publishes_only_a_green_staging_sha() -> None:
     assert (
         workflow.index("      - name: Wait for successful release workflows")
         < workflow.index("      - name: Recheck the current staging commit")
+        < workflow.index("      - name: Keep release images write-once")
         < workflow.index("      - name: Authenticate to the container registry")
         < workflow.index("      - name: Build validator")
         < workflow.index("      - name: Build miner")
@@ -347,6 +348,206 @@ def test_release_workflow_publishes_only_a_green_staging_sha() -> None:
         ]
         assert not unpinned, f"{workflow_path.name}: {unpinned}"
     assert seen_references
+
+
+def _run_write_once_check(
+    tmp_path: Path, validator_status: str, miner_status: str
+) -> tuple[subprocess.CompletedProcess[str], list[str], list[str]]:
+    """Run the write-once step against a fake registry: the process, the images
+    it asked about, and the lines it added to GITHUB_ENV."""
+    workflow = yaml.safe_load(
+        (ROOT / ".github/workflows/publish-release-images.yml").read_text()
+    )
+    steps = {step.get("name"): step for step in workflow["jobs"]["publish"]["steps"]}
+    step = steps["Keep release images write-once"]
+    assert step["shell"] == "bash"
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir(parents=True)
+    curl = fake_bin / "curl"
+    curl.write_text(
+        """#!/usr/bin/env python3
+import os, sys
+args = sys.argv[1:]
+url = args[-1]
+if url.startswith('https://ghcr.io/token?scope=repository:example/'):
+    assert url.endswith(':pull&service=ghcr.io'), url
+    print('{"token": "pull-token"}')
+    sys.exit(0)
+assert url.startswith('https://ghcr.io/v2/example/'), url
+assert '--head' in args and 'Authorization: Bearer pull-token' in args, args
+image, tag = url.removeprefix('https://ghcr.io/v2/example/').split('/manifests/')
+assert tag == 'sha-' + 'b' * 40, tag
+with open(os.environ['CHECK_LOG'], 'a') as log:
+    log.write(image + '\\n')
+status = os.environ['STATUS_' + image.removeprefix('endure-subnet-').upper()]
+if status == 'down':
+    print('curl: (7) Failed to connect', file=sys.stderr)
+    sys.exit(7)
+print(status, end='')
+"""
+    )
+    curl.chmod(0o755)
+    jq = fake_bin / "jq"
+    jq.write_text(
+        """#!/usr/bin/env python3
+import json, sys
+assert sys.argv[1:] == ['-er', '.token'], sys.argv
+token = json.load(sys.stdin).get('token')
+if not token:
+    sys.exit(1)
+print(token)
+"""
+    )
+    jq.chmod(0o755)
+    log = tmp_path / "checked.log"
+    log.touch()
+    github_env = tmp_path / "github.env"
+    github_env.touch()
+    result = subprocess.run(
+        ["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", str(step["run"])],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin}:{Path(sys.executable).parent}:" + os.environ["PATH"],
+            "VALIDATOR_TAG": "ghcr.io/example/endure-subnet-validator:sha-" + "b" * 40,
+            "MINER_TAG": "ghcr.io/example/endure-subnet-miner:sha-" + "b" * 40,
+            "STATUS_VALIDATOR": validator_status,
+            "STATUS_MINER": miner_status,
+            "CHECK_LOG": str(log),
+            "GITHUB_ENV": str(github_env),
+        },
+    )
+    return result, log.read_text().splitlines(), github_env.read_text().splitlines()
+
+
+def test_release_images_are_write_once(tmp_path: Path) -> None:
+    both = ["endure-subnet-validator", "endure-subnet-miner"]
+
+    unpublished, checked, env = _run_write_once_check(tmp_path / "new", "404", "404")
+    assert unpublished.returncode == 0, unpublished.stderr
+    assert checked == both
+    assert env == []
+
+    published, checked, env = _run_write_once_check(tmp_path / "rerun", "200", "200")
+    assert published.returncode == 0, published.stderr
+    assert checked == both
+    assert env == ["RELEASE_IMAGES_PUBLISHED=true"]
+
+    for name, validator_status, miner_status in (
+        ("validator", "200", "404"),
+        ("miner", "404", "200"),
+    ):
+        half, checked, env = _run_write_once_check(
+            tmp_path / name, validator_status, miner_status
+        )
+        assert half.returncode == 1
+        assert "Only one of" in half.stderr
+        assert "delete that version in GitHub Packages" in half.stderr
+        assert checked == both
+        assert env == []
+
+    for name, status in (("unknown", "500"), ("denied", "401"), ("down", "down")):
+        unknown, checked, env = _run_write_once_check(tmp_path / name, status, "200")
+        assert unknown.returncode != 0
+        assert checked == ["endure-subnet-validator"]
+        assert env == []
+
+    workflow = yaml.safe_load(
+        (ROOT / ".github/workflows/publish-release-images.yml").read_text()
+    )
+    steps = {step.get("name"): step for step in workflow["jobs"]["publish"]["steps"]}
+    for name in ("Build validator", "Build miner", "Publish images"):
+        assert steps[name]["if"] == "env.RELEASE_IMAGES_PUBLISHED != 'true'"
+    for name in ("Recheck release qualification", "Record deployable digests"):
+        assert "if" not in steps[name]
+
+
+def _run_record_step(
+    tmp_path: Path, published: str | None
+) -> tuple[subprocess.CompletedProcess[str], list[str], str]:
+    """Run the digest-recording step with a fake registry inspection: the
+    process, the artifact's lines and the step summary."""
+    workflow = yaml.safe_load(
+        (ROOT / ".github/workflows/publish-release-images.yml").read_text()
+    )
+    steps = {step.get("name"): step for step in workflow["jobs"]["publish"]["steps"]}
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir(parents=True)
+    docker = fake_bin / "docker"
+    docker.write_text(
+        """#!/usr/bin/env python3
+import json, sys
+assert sys.argv[1:4] == ['buildx', 'imagetools', 'inspect'], sys.argv
+digit = '1' if 'validator' in sys.argv[-1] else '2'
+print(json.dumps({'digest': 'sha256:' + digit * 64}))
+"""
+    )
+    docker.chmod(0o755)
+    jq = fake_bin / "jq"
+    jq.write_text(
+        """#!/usr/bin/env python3
+import json, sys
+assert sys.argv[1:] == ['-r', '.digest'], sys.argv
+print(json.load(sys.stdin)['digest'])
+"""
+    )
+    jq.chmod(0o755)
+    summary = tmp_path / "summary.md"
+    env = {
+        **os.environ,
+        "PATH": f"{fake_bin}:{Path(sys.executable).parent}:" + os.environ["PATH"],
+        "SOURCE_SHA": "b" * 40,
+        "VALIDATOR_TAG": "ghcr.io/example/endure-subnet-validator:sha-" + "b" * 40,
+        "MINER_TAG": "ghcr.io/example/endure-subnet-miner:sha-" + "b" * 40,
+        "GITHUB_STEP_SUMMARY": str(summary),
+    }
+    env.pop("RELEASE_IMAGES_PUBLISHED", None)
+    if published is not None:
+        env["RELEASE_IMAGES_PUBLISHED"] = published
+    result = subprocess.run(
+        [
+            "bash",
+            "--noprofile",
+            "--norc",
+            "-eo",
+            "pipefail",
+            "-c",
+            str(steps["Record deployable digests"]["run"]),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        cwd=tmp_path,
+        env=env,
+    )
+    artifact = tmp_path / "release-images.env"
+    lines = artifact.read_text().splitlines() if artifact.exists() else []
+    return result, lines, summary.read_text() if summary.exists() else ""
+
+
+def test_release_artifact_says_whether_images_were_reused(tmp_path: Path) -> None:
+    recorded = [
+        "SOURCE_SHA=" + "b" * 40,
+        "VALIDATOR_IMAGE=ghcr.io/example/endure-subnet-validator@sha256:" + "1" * 64,
+        "MINER_IMAGE=ghcr.io/example/endure-subnet-miner@sha256:" + "2" * 64,
+    ]
+    built, lines, summary = _run_record_step(tmp_path / "built", None)
+    assert built.returncode == 0, built.stderr
+    assert lines == [*recorded, "RELEASE_IMAGES_REUSED=false"]
+    assert "reused them" not in summary
+
+    reused, lines, summary = _run_record_step(tmp_path / "reused", "true")
+    assert reused.returncode == 0, reused.stderr
+    assert lines == [*recorded, "RELEASE_IMAGES_REUSED=true"]
+    assert "this run reused them without rebuilding" in summary
+
+    workflow = (ROOT / ".github/workflows/publish-release-images.yml").read_text()
+    assert 'test "$(wc -l < release-images.env)" -eq 4' in workflow
+    assert (
+        "grep -Ex 'RELEASE_IMAGES_REUSED=(true|false)' release-images.env" in workflow
+    )
 
 
 def test_operator_compose_uses_published_images_and_host_durability() -> None:

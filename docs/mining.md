@@ -133,6 +133,28 @@ change inside an open commit window submits netuids that round does not
 accept and has its reveal rejected for that one round. Upgrade between rounds,
 or read the round universe before assembling.
 
+## Identical forecasts share one payout
+
+From key `2044`, validators pool hotkeys that reveal exactly the same values.
+Each hotkey joins the oldest group of hotkeys that revealed its values in one of
+the five newest revealed rounds, and a pool weighs what its best member would
+alone, so `k` copies in one pool split one hotkey's weight. A hotkey that starts
+matching an existing pool joins it at the latest once the round it first
+matched in is the window's oldest, so `pool_size` can grow without a new match.
+A hotkey that stops matching leaves once its matching rounds leave the window.
+Only submitted values are compared, not nonces, confidence or reason codes, and
+only registered hotkeys with a positive score count. Scores and EMAs are
+unchanged; only emission weights are pooled.
+
+Validators cannot tell an original from a copy, so a forecast another hotkey can
+reproduce, such as the reference miner run unchanged, pools with that copy.
+Build your own estimates.
+
+`/miners` reports each hotkey's `pool_size` and pooled `weight_share`. Pooling is
+defined in [duplicates.py](../endure/scoring/duplicates.py) and
+[weights.py](../endure/scoring/weights.py), and its rounding in
+[weight_processing.py](../endure/scoring/weight_processing.py).
+
 ## Commit, reveal, and scoring
 
 For each frozen round universe, construct the Alpha Risk bundle, commit its

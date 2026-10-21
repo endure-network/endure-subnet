@@ -23,7 +23,7 @@ from endure.scoring.lending.market_data import (
     FixtureAlphaPriceProvider,
 )
 from endure.scoring.lending.orchestrator import LendingScoringOrchestrator
-from endure.storage.repository import Storage
+from endure.storage.repository import ROUND_STATE_CLOSED, Storage
 
 NOW = datetime(2026, 7, 6, 12, 0, tzinfo=UTC).isoformat()
 ROUND = "2026-07-06"
@@ -282,3 +282,24 @@ class TestBlendedScoresAndWeights:
 
         assert orchestrator.blended_scores() == {}
         assert orchestrator.weights() == {}
+
+    def test_weights_and_pools_count_only_registered_hotkeys(
+        self, storage: Storage
+    ) -> None:
+        _open_round_with_universe(storage, (44,))
+        for hotkey in ("hk-a", "hk-b", "hk-gone"):
+            _accept_baseline_bundle(storage, hotkey=hotkey, netuids=(44,))
+        orchestrator = LendingScoringOrchestrator(
+            storage=storage,
+            price_provider=_provider(),
+            half_life_rounds=2,
+            registered_hotkeys=lambda: ["hk-a", "hk-b"],
+        )
+        orchestrator.resolve_and_score(ROUND, now_iso=NOW)
+        storage.set_round_state(
+            ROUND, FORGE_LENDING_SCHEMA_ID, ROUND_STATE_CLOSED, now_iso=NOW
+        )
+
+        # hk-gone revealed the same bundle, then deregistered.
+        assert set(orchestrator.weights()) == {"hk-a", "hk-b"}
+        assert orchestrator.pool_sizes() == {"hk-a": 2, "hk-b": 2}

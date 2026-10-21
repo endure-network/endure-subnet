@@ -1,17 +1,18 @@
 # Running Endure on Mainnet
 
-> **Mainnet serving is opt-in and owner-gated.** `v0.1.2` retains
+> **Mainnet serving is opt-in and owner-gated.** `v0.1.3` retains
 > experimental economic limitations. Alpha Risk serves on mainnet only when
 > the operator passes the explicit `--endure.serving_stage mainnet` acknowledgement on a
 > recognized mainnet endpoint, and only releases promoted to the `:prod`
-> image channel under the [owner release decision](releases/v0.1.2.md)
+> image channel under the [owner release decision](releases/v0.1.3.md)
 > are supported there. Do not run a staging release candidate or a locally built image on mainnet.
 
-`v0.1.2` uses protocol key `2043` ([version contract](../endure/protocol/version_contract.py)).
-It replaces the key-`2042` `v0.1.1` images: miners and validators upgrade
-together, the subnet owner publishes the [owner burn rate](#owner-burn-rate)
-before the cutover, and chain parameters, including `weights_version`, are
-unchanged. The [release notes](releases/v0.1.2.md) summarise the operator upgrade.
+`v0.1.3` uses protocol key `2044` ([version contract](../endure/protocol/version_contract.py)).
+It replaces the key-`2043` `v0.1.2` images and adds
+[identical-forecast pooling](#identical-forecasts): miners and validators
+upgrade together, the published [owner burn rate](#owner-burn-rate) stays in
+place through the cutover, and the release needs no chain-parameter change:
+`weights_version` (`2040`) accepts key `2044`. The [release notes](releases/v0.1.3.md) summarise the operator upgrade.
 Supported development uses Python `>=3.12,<3.13` and Bittensor `>=10.5,<11`.
 Endure's mainnet netuid is `30`; the subnet rates itself under the same rules
 as every other member of the Alpha Risk universe.
@@ -177,6 +178,30 @@ pipeline; a submission is not an immediate finalized confirmation. The
 is context for the owner, permit, and rate checks, not a second writer to run
 alongside Endure.
 
+### Identical forecasts
+
+Key `2044` pools identical forecasts before the vote is planned; the rule is in
+[identical forecasts](mining.md#identical-forecasts-share-one-payout). For
+operators:
+
+- **Tie seeds come from the archive.** The vote rounds each pool to whole u16
+  units once and orders equal remainders by the hash of the first finalized
+  mainnet block stamped at least a minute after the newest round's reveal close,
+  read from `--endure.market_data_endpoint`. A round joins the pool window once
+  that block is final, so every validator with the same window draws the same
+  order.
+- **Archive outages.** A running validator keeps voting with the newest window
+  whose seed it has read. One restarted before it can read a seed abstains with
+  `score_state_unavailable`, and its `/miners` answers 503, until it reads one.
+  `/live` answers meanwhile, and the
+  [archive preflight](#release-pinned-consensus-policy-key-2042) still runs
+  first.
+- **No miner under the owner coldkey.** Its hotkeys count toward pools and are
+  withheld only afterwards, so one that matches another miner cuts that miner's
+  payout.
+- **`/miners`** reports the newest pooled `weight_share` and `pool_size`, taken
+  before owner withholding and the burn. The burn applies to the pooled vector.
+
 ### Owner burn rate
 
 Key `2043` lets the owner keep part of every earned vote. At each scored
@@ -291,7 +316,7 @@ validator abstains without submitting: `emission_mode=abstain`,
 | `owner_snapshot_inconsistent` | snapshot has no owner hotkey, owner at more than one UID, or local metagraph disagreeing with the chain UID | 503 after 2 epochs (200 blocks) |
 | `chain_snapshot_inconsistent` | no or stale chain snapshot, incoherent rate data, or a scored UID whose hotkey differs between the local metagraph and the chain snapshot (the earned weight is never sent to the new registrant) | 503 after 2 epochs (200 blocks) |
 | `validator_identity_invalid` | the validator's own UID/hotkey is not valid in the snapshot | 503 after 2 epochs (200 blocks) |
-| `score_state_unavailable` | durable score state (EMAs) cannot be read, at an attempt or after a resync; no owner vote and no stale weights | 503 after 2 epochs (200 blocks) |
+| `score_state_unavailable` | durable score state (EMAs) cannot be read, at an attempt or after a resync, or a validator started during an archive outage cannot read a pool tie seed yet; no owner vote and no stale weights | 503 after 2 epochs (200 blocks) |
 | `owner_commitment_unavailable` | the owner burn-rate commitment cannot be read at a scored attempt | 503 after 2 epochs (200 blocks) |
 
 Blocks are retried each epoch and clear automatically once chain state is safe
@@ -334,9 +359,14 @@ no retained history decision. Scores are rebuilt from durable EMAs at startup,
 after every metagraph resync, and at the start of every weight attempt, and a
 failed scoring tick keeps the previous vector, so neither a restart nor a tick
 failure reads as zero scores: a validator restarted while scored resumes
-earned weights with no owner-vote flicker, a running validator agrees with a
-restarted one, and a miner that re-registered at a new UID keeps its earned
-weight. If the durable score state cannot be read, emission abstains with the
+earned weights with no owner-vote flicker. A miner that re-registers at a new
+UID keeps its earned weight only if it returns before validators archive its
+score state, which they do at the first scoring pass after 2 consecutive
+metagraph resyncs miss its hotkey; after that it starts from zero. A running validator agrees with a restarted one
+once both have read the same pool tie seed; a validator restarted during an
+archive outage does not vote until it can read one (see
+[identical forecasts](#identical-forecasts)).
+If the durable score state cannot be read, emission abstains with the
 `score_state_unavailable` block above: no owner vote, no stale weights, and
 `/health` never claims `owner_vote` from a stale zeroed vector.
 Open weight batches recorded under a previous validator identity, for example
@@ -358,12 +388,12 @@ RPC/inclusion/finality delays, and the health detection window below. Postpone a
 cutover with insufficient headroom; this release cannot instantly rescue a
 validator already approaching inactivity.
 
-1. Agree the key-2043 release and canonical policy with independently operated
+1. Agree the key-2044 release and canonical policy with independently operated
    validators before asking miners to register. Promote qualified images through
    the existing release process and pin their digests. Miners upgrade in the
    same window: validators reject submissions carrying another protocol key.
-   Publish the intended [owner burn rate](#owner-burn-rate) before the cutover;
-   until it is published, key-2043 validators burn the whole vote.
+   Keep the intended [owner burn rate](#owner-burn-rate) published through the
+   cutover; without it, key-2043 and later validators burn the whole vote.
 2. Back up and preserve the distinct mainnet database and use a read-only
    host-mounted mainnet hotkey. Never copy testnet score state or use the
    testnet wallet-archive bootstrap. Use a consistent SQLite backup
@@ -390,7 +420,7 @@ validator already approaching inactivity.
 5. An explicitly true `disable_set_weights` is an indefinite off switch for both
    modes, not an unattended cutover configuration. Scores never auto-enable it.
    Do not raise chain `weights_version` for this cutover: SN30's value is
-   `2040` and Subtensor accepts a `version_key` at or above it, so key-`2043`
+   `2040` and Subtensor accepts a `version_key` at or above it, so key-`2044`
    submissions are accepted unchanged. Raising it is a later, deliberate owner
    decision only after every permit validator runs the new key; raising it
    earlier would reject validators still on an older key.

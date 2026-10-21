@@ -22,7 +22,7 @@ recorded as a failed submission.
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal, localcontext
 from typing import Final, Literal, NamedTuple
@@ -151,6 +151,10 @@ class EmissionPlan:
     # A due scored attempt still needs this owner hotkey's commitment: read it
     # at the snapshot block and plan again. Such a plan has no vector to send.
     commitment_owner: str | None = None
+    # Each identical-forecast pool's earning UIDs. The encoder rounds a pool as
+    # one entry, so its many small copies cannot each round up to a unit; the
+    # UIDs keep the pool's tie order, which breaks equal remainders.
+    groups: tuple[tuple[int, ...], ...] = ()
 
 
 def select_emission_mode(
@@ -299,6 +303,7 @@ def plan_emission(  # noqa: PLR0913 — one snapshot plus the attempt's identity
     local_hotkeys: Sequence[str],
     scores: Sequence[Decimal],
     owner_commitment: OwnerCommitment | None = None,
+    pools: Iterable[Sequence[str]] = (),
 ) -> EmissionPlan:
     """Plan one attempt from one snapshot, or raise ``EmissionBlocked``.
 
@@ -306,7 +311,9 @@ def plan_emission(  # noqa: PLR0913 — one snapshot plus the attempt's identity
     block; it sets the burn rate of a scored attempt. Without it, a due scored
     attempt on an owner-vote network returns ``commitment_owner`` and no
     vector, so the commitment is read only once owner, permit and rate limit
-    allow the attempt.
+    allow the attempt. ``pools`` are the identical-forecast pools behind
+    ``scores``, each listing its hotkeys in tie order (``tie_ordered``): the
+    same pools give the same vote at any block.
     """
     if snapshot is None or snapshot.block != block:
         raise EmissionBlocked(
@@ -316,6 +323,7 @@ def plan_emission(  # noqa: PLR0913 — one snapshot plus the attempt's identity
     weights = tuple(scores)
     burn_bps: int | None = None
     needs_commitment = False
+    withheld: frozenset[int] = frozenset()
     if mode == "scored":
         # Earned weight follows a hotkey, never a UID: a slot re-registered on
         # chain but not yet in the local metagraph must not receive it.
@@ -404,7 +412,30 @@ def plan_emission(  # noqa: PLR0913 — one snapshot plus the attempt's identity
         weights=weights,
         recipient=recipient,
         burn_bps=burn_bps,
+        groups=_pool_uids(pools, local_hotkeys, withheld),
     )
+
+
+def _pool_uids(
+    pools: Iterable[Sequence[str]],
+    hotkeys: Sequence[str],
+    withheld: Collection[int],
+) -> tuple[tuple[int, ...], ...]:
+    """Each pool's UIDs in the local metagraph, less those that never earn.
+
+    The UIDs keep the pool's tie order, which breaks equal remainders when the
+    encoder shares out a pool's units.
+    """
+    uid_of = {hotkey: uid for uid, hotkey in enumerate(hotkeys)}
+    groups = (
+        tuple(
+            uid_of[hotkey]
+            for hotkey in pool
+            if hotkey in uid_of and uid_of[hotkey] not in withheld
+        )
+        for pool in pools
+    )
+    return tuple(sorted((group for group in groups if len(group) > 1), key=sorted))
 
 
 def _vote_network_weights(
@@ -616,10 +647,10 @@ def _recheck_owner_burn_share(
     """Require the owner's u16 share to equal the burn rate up to rounding.
 
     The encoder scales the largest entry to the u16 maximum and rounds each
-    exact value by at most one half. With ``n`` UIDs and u16 total ``T >= 65535``
-    the owner's share can therefore differ from the burn rate by at most
-    ``(n + 1) / (2T)``, under 0.2% for 256 UIDs; the check is exact integer
-    arithmetic and also enforces its premises.
+    exact value, or each pool's exact total, by at most one half. With ``n``
+    UIDs and u16 total ``T >= 65535`` the owner's share can therefore differ
+    from the burn rate by at most ``(n + 1) / (2T)``, under 0.2% for 256 UIDs;
+    the check is exact integer arithmetic and also enforces its premises.
     """
     if (
         not uint_weights

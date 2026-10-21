@@ -1,12 +1,12 @@
 # Endure Subnet
 
-> **Release `v0.1.2`, with experimental economics.** See the
-> [release notes and soak decision](docs/releases/v0.1.2.md). Alpha Risk serves on
+> **Release `v0.1.3`, with experimental economics.** See the
+> [release notes and soak decision](docs/releases/v0.1.3.md). Alpha Risk serves on
 > mainnet only behind the explicit `--endure.serving_stage mainnet`
 > acknowledgement, on releases promoted to the `:prod` image channel after the
 > owner release decision ([running_on_mainnet.md](docs/running_on_mainnet.md)).
-> The current protocol key is `2043` ([contract](endure/protocol/version_contract.py));
-> miners and validators upgrade together, and `v0.1.1` images (key `2042`) are superseded.
+> The current protocol key is `2044` ([contract](endure/protocol/version_contract.py));
+> miners and validators upgrade together, and `v0.1.2` images (key `2043`) are superseded.
 > Activated and retired leases are tracked in the [version registry](docs/protocol_versions.md).
 
 Endure is a Bittensor risk-intelligence subnet: miners submit falsifiable
@@ -60,6 +60,11 @@ malformed commitment burns the whole vote, so miners are paid only on the
 owner's explicit instruction. The owner changes the rate with
 [`scripts/set_burn_rate.py`](scripts/set_burn_rate.py), and validators apply it
 at their next weight attempt; see the [owner burn rate](docs/running_on_mainnet.md#owner-burn-rate).
+
+Key `2044` pools identical forecasts: the hotkeys in one pool share what its
+best member would earn alone, and `/miners` reports each hotkey's `pool_size`.
+See [identical forecasts](docs/mining.md#identical-forecasts-share-one-payout)
+for who is pooled with whom.
 
 Known limitations: this is a testnet soak with one public validator endpoint;
 outcomes and feeds can diverge between validators; interfaces and

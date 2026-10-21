@@ -1,7 +1,7 @@
 # Running Endure on Testnet
 
-> **Experimental testnet alpha.** `v0.1.2` uses protocol key `2043`; superseded
-> `v0.1.1` images use key `2042`, and miners and validators upgrade together.
+> **Experimental testnet alpha.** `v0.1.3` uses protocol key `2044`; superseded
+> `v0.1.2` images use key `2043`, and miners and validators upgrade together.
 > This is not a mainnet guide. The authoritative source compatibility value is
 > [version_contract.py](../endure/protocol/version_contract.py).
 
@@ -52,13 +52,16 @@ protocol value `0` and validators ignore any configured floor (see the
 
 Start one validator with a registered hotkey, persistent database URL, a
 reachable axon address, and `--endure.serving_stage testnet`. Set
-`--endure.market_data_endpoint` to your archive source. The command is:
+`--endure.market_data_endpoint` to a Bittensor **mainnet** archive with 30 days
+of history, or keep the default public mainnet archive: testnet validators score
+mainnet Alpha data, and the validator refuses to start otherwise. The command
+is:
 
 ```bash
 .venv/bin/python neurons/validator.py --netuid 504 --subtensor.network test \
   --wallet.name <wallet-name> --wallet.hotkey <validator-hotkey> \
   --endure.serving_stage testnet --endure.database_url <persistent-db-url> \
-  --endure.market_data_endpoint <archive-endpoint> --endure.api_port 8714 \
+  --endure.market_data_endpoint <mainnet-archive-endpoint> --endure.api_port 8714 \
   --axon.port <axon-port> --axon.external_ip <reachable-ip>
 ```
 
@@ -82,6 +85,10 @@ another coldkey to exercise earned weights. Before a soak that needs miners to
 receive weight,
 publish a rate from the netuid-504 owner hotkey, for example
 `python scripts/set_burn_rate.py --network test --netuid 504 --wallet-name <owner-wallet> --wallet-hotkey <owner-hotkey> --publish 9800`.
+
+The soak miners in `deploy/soak-miners` all run the reference forecast, so from
+key `2044` they pool and `/miners` reports their shared `pool_size`. See
+[identical forecasts](mining.md#identical-forecasts-share-one-payout).
 
 The Endure-operated testnet read API is
 `https://api.testnet.endure.network`, signed by validator hotkey

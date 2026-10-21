@@ -120,8 +120,14 @@ release images** workflow for that staging tip. The workflow waits for the
 required CI jobs for that exact commit, refuses any commit that is no longer
 the staging tip, then publishes separate validator and miner images to GHCR
 with OCI source labels. It produces a `release-images-<sha>` artifact
-containing both digest-pinned references. A manual rerun, once the workflow is
-available on the default branch, must provide that same full staging SHA.
+containing both digest-pinned references, and whether the run reused images an
+earlier run published (`RELEASE_IMAGES_REUSED`). A manual rerun, once the
+workflow is available on the default branch, must provide that same full
+staging SHA. The workflow never replaces a published `sha-<sha>` image: it
+builds and pushes both only if neither exists, and stops if only one does. A
+run that failed between its two pushes leaves that state without recording
+digests or moving a channel; delete the one published version in GitHub
+Packages, after checking that it came from that run, and re-run the workflow.
 
 This workflow publishes artifacts only. It never contacts an operator host or
 changes another deployment environment.

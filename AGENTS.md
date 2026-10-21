@@ -65,6 +65,10 @@ Always:
 - Promote with merge-commit PRs from `develop` → `staging` (auto-deploy) →
   `main` (stable checkpoint); never squash, rebase, or fast-forward a promotion.
 - Decimal for risk/economic values; type hints on public functions (pyright clean).
+- Keep docs lean: describe a mechanism once, in the doc that owns it, and link
+  to it elsewhere; CHANGELOG bullets of one or two lines; owner decisions only
+  in release notes. Guides say what to do; never record chat, review rounds or
+  decision history in the repo.
 
 Ask first:
 - Expanding scope beyond the current slice — raise it first.
@@ -76,15 +80,19 @@ Never:
   mismatches; placeholders without `raise NotImplementedError("spec §X.Y — …")`.
 - Copy code from earlier Endure prototypes — port or clean-room rewrite.
 - Commit `.env`, wallets, mnemonics, coldkey/hotkey JSON, or keys.
-- Mainnet-deploy before the testnet soak gate passes. Alpha Risk serves on
-  mainnet only behind the explicit `--endure.serving_stage mainnet`
-  acknowledgement and only from the `:prod` image channel
-  (`docs/running_on_mainnet.md`).
+- Mainnet-deploy before the testnet soak gate passes, unless the owner has
+  recorded a scoped release exception, with its criteria, in the release
+  notes (`docs/running_on_staging.md`). Alpha Risk serves on mainnet only
+  behind the explicit `--endure.serving_stage mainnet` acknowledgement and
+  only from the `:prod` image channel (`docs/running_on_mainnet.md`).
 
 ## Gotchas
 - Python 3.12 only — CI gates on 3.12; make your venv match.
 - `develop` is the integration branch. `staging` is both the auto-deploy branch
   and its deploy environment (`docs/running_on_staging.md`); `main` is stable.
+- A docs-only push to `develop` (`docs/**`, `*.md`) skips the localnet
+  qualification. Staging always runs it, because the release image gate needs
+  it on the exact tip, and Coolify ignores docs, so docs never redeploy.
 
 ## More context
 - `docs/specs/2026-07-06-alpha-risk-v1-scope.md` — current Alpha Risk scope

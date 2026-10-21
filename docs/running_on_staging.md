@@ -66,6 +66,13 @@ canary. The [v0.1.2 release notes](releases/v0.1.2.md) record this scoped
 exception and the limitations of the earlier soak evidence; the GitHub
 release records the actual release-check outcomes.
 
+For protocol key `2044` (`v0.1.3`), the owner scoped a further exception on
+2026-10-16: private qualification of the source tree, a targeted testnet soak
+of about 24 hours with a restart and one full round as checkpoints, and the
+`:prod` promotion before the day's commit window. The
+[v0.1.3 release notes](releases/v0.1.3.md) record its criteria, and the GitHub
+release records the outcomes.
+
 The default soak gate is the promotion evidence the mainnet decision consumes.
 It passes when the deployed staging environment shows, over seven consecutive
 days with an unchanged deployed revision:
