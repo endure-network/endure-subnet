@@ -1,8 +1,11 @@
 # Changelog
 
-## Unreleased
+## v0.1.4 — archive resilience and horizon-maturity blend
 
-Protocol key `2045` is leased; miners and validators must upgrade together.
+Protocol key `2045`; miners and validators must upgrade together. No
+chain-parameter change: SN30's `weights_version` (`2040`) accepts key `2045`.
+Package/API version is `0.1.4`. See the
+[release notes, operator upgrade and soak decision](docs/releases/v0.1.4.md).
 
 - The blend counts each 30-day EMA by its maturity, so first 30-day rounds no
   longer halve it; up to 20% of a 5-day score waits on the 30-day record.
