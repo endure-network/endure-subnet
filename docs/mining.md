@@ -34,7 +34,8 @@ Use the command shape in [the testnet runbook](running_on_testnet.md). Endure's
 testnet netuid is `504`; supply your wallet name/hotkey, a reachable axon address, and
 `--endure.serving_stage testnet`. Alpha Risk obtains market data through
 `--endure.market_data_endpoint`; do not supply a private endpoint in a public
-report. The miner entry point is [neurons/miner.py](../neurons/miner.py).
+report. The reference miner reads only the current mainnet chain head, so any
+mainnet node works; it does not need the rate-limited public archive. The miner entry point is [neurons/miner.py](../neurons/miner.py).
 Live miner axons accept requests only from registered hotkeys carrying a
 validator permit. Mock/local development keeps the configurable permissive
 behavior, but live operation ignores attempts to allow unregistered callers.

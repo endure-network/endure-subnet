@@ -69,6 +69,9 @@ LIVE_MARKET_DATA_REQUEST_TIMEOUT_SECONDS: Final = 10.0
 LIVE_MARKET_DATA_TIMEOUT_WORKERS: Final = 1
 LIVE_MARKET_DATA_MAX_ABANDONED_WORKERS: Final = 3
 LIVE_MARKET_DATA_RATE_LIMIT_COOLDOWN_SECONDS: Final = 60.0
+# A read that meets the cooldown waits in slices this long, so the caller's
+# deadline is still checked while it waits.
+LIVE_MARKET_DATA_COOLDOWN_POLL_SECONDS: Final = Decimal("5")
 LIVE_MARKET_DATA_MIN_REQUEST_INTERVAL_SECONDS: Final = 0.5
 LIVE_MARKET_DATA_HEAD_CACHE_TTL_SECONDS: Final = 30.0
 LIVE_MARKET_DATA_MAX_SERIES_CACHE_ENTRIES: Final = 64
@@ -93,6 +96,11 @@ CHAIN_GENESIS_MAX_BACKOFF_SECONDS: Final = 5.0
 
 _HTTP_TOO_MANY_REQUESTS: Final = 429
 _JSONRPC_RATE_LIMIT_CODE: Final = -32029
+# twox128("Timestamp") ++ twox128("Now"), a SCALE u64 of milliseconds.
+_TIMESTAMP_NOW_STORAGE_KEY: Final = (
+    "0xf0c365c3cf59d671eb72da0e7a4113c49f1f0515f462cdcf84e0f1d6045dfcbb"
+)
+_ENCODED_U64_LENGTH: Final = len("0x") + 16
 
 
 def _is_archive_rate_limited(error: BaseException) -> bool:
@@ -102,12 +110,15 @@ def _is_archive_rate_limited(error: BaseException) -> bool:
     response = getattr(error, "response", None)
     if getattr(response, "status_code", None) == _HTTP_TOO_MANY_REQUESTS:
         return True
-    return str(_HTTP_TOO_MANY_REQUESTS) in str(error)
+    return f"HTTP {_HTTP_TOO_MANY_REQUESTS}" in str(error)
 
 
 def _is_archive_request_rate_limited(error: BaseException) -> bool:
     # In-band throttling arrives as a well-formed JSON-RPC error (-32029 or a
-    # textual rate-limit message): the connection is healthy, never void it.
+    # textual rate-limit message such as the public archive's "Historical work
+    # rate limit exceeded"): the connection is healthy, never void it, but the
+    # source is over its budget, so it still arms the cooldown. A raw request
+    # raises only the message, so the text is matched too.
     # Only SubstrateRequestException qualifies — a transport-level error whose
     # text mentions rate limiting must still void the connection.
     if not isinstance(error, SubstrateRequestException):
@@ -121,7 +132,8 @@ def _is_archive_request_rate_limited(error: BaseException) -> bool:
                 and detail.get("code") == _JSONRPC_RATE_LIMIT_CODE
             ):
                 return True
-    return "rate limit" in str(error).lower()
+    text = str(error).lower()
+    return "rate limit" in text or "too many requests" in text
 
 
 # A pruned node reports discarded historical state through the RPC error, not
@@ -140,18 +152,37 @@ def _is_missing_history(error: BaseException) -> bool:
     )
 
 
+class ArchiveCoolingDown(ConnectionError):
+    """The archive throttled this source; nothing is sent until the cooldown ends."""
+
+
+class ArchiveNotMainnet(Exception):
+    """The archive answered a genesis other than Bittensor mainnet's.
+
+    Deliberately neither missing data nor an outage, so scoring can never
+    resolve or void a target from it.
+    """
+
+
+class ArchiveReadinessUnverified(Exception):
+    """Only transient failures stopped the startup check before its deadline.
+
+    Throttling, timeouts and transport errors are retried until the deadline,
+    so reaching it leaves the archive unverified rather than refused. A wrong
+    chain or missing history fails sooner with ``AlphaMarketDataUnavailable``.
+    """
+
+
 class SupportsInt(Protocol):
     def __int__(self) -> int: ...
 
 
-class StorageValueLike(Protocol):
-    @property
-    def value(self) -> SupportsInt | None: ...
-
-
 class DynamicInfoLike(Protocol):
-    tao_in: SupportsInt
-    alpha_in: SupportsInt
+    @property
+    def tao_in(self) -> SupportsInt: ...
+
+    @property
+    def alpha_in(self) -> SupportsInt: ...
 
 
 class AlphaSubnetInfoFetcher(Protocol):
@@ -175,13 +206,9 @@ class ArchiveSubstrateLike(Protocol):
 
     def get_block_hash(self, block_id: int) -> str | None: ...
 
-    def query(
-        self,
-        module: str,
-        storage_function: str,
-        params: list[str] | None = None,
-        block_hash: str | None = None,
-    ) -> StorageValueLike: ...
+    def rpc_request(
+        self, method: str, params: list[str] | None
+    ) -> dict[str, object]: ...
 
 
 class Sleeper(Protocol):
@@ -208,6 +235,39 @@ class LiveAlphaPriceProviderConfig:
 class _SnapshotFetchResult:
     snapshot: AlphaPriceSnapshot | None
     connection_available: bool
+
+
+@dataclass(frozen=True, slots=True)
+class PoolReserves:
+    tao_in: int
+    alpha_in: int
+
+
+class _ReserveReader:
+    """SDK adapter that reads pool reserves with one runtime call.
+
+    ``Subtensor.subnet`` also queries the Alpha price, a second historical
+    runtime call per snapshot whose value is never used.
+    """
+
+    def __init__(self, subtensor: bt.Subtensor) -> None:
+        self._subtensor = subtensor
+
+    def subnet(self, netuid: int, block: int | None = None) -> PoolReserves | None:
+        decoded = self._subtensor.query_runtime_api(
+            "SubnetInfoRuntimeApi", "get_dynamic_info", params=[netuid], block=block
+        )
+        if not isinstance(decoded, dict):
+            return None
+        return PoolReserves(
+            tao_in=int(decoded["tao_in"]), alpha_in=int(decoded["alpha_in"])
+        )
+
+    def get_current_block(self) -> int:
+        return self._subtensor.get_current_block()
+
+    def close(self) -> None:
+        self._subtensor.close()
 
 
 class BittensorSubnetInfoFetcher:
@@ -248,7 +308,9 @@ class BittensorSubnetInfoFetcher:
             self._make_subtensor = lambda: subtensor
         else:
             self._make_subtensor = subtensor_factory or (
-                lambda: bt.Subtensor(network=endpoint, archive_endpoints=[endpoint])
+                lambda: _ReserveReader(
+                    bt.Subtensor(network=endpoint, archive_endpoints=[endpoint])
+                )
             )
         self._make_substrate: Callable[[], ArchiveSubstrateLike] = lambda: (
             SubstrateInterface(url=endpoint)
@@ -324,12 +386,13 @@ class BittensorSubnetInfoFetcher:
                 substrate.get_block_hash(block),
                 f"missing block hash for block={block}",
             )
-            timestamp = substrate.query("Timestamp", "Now", block_hash=block_hash)
-            return int(
-                require_archive_value(
-                    timestamp.value, f"missing Timestamp.Now for block={block}"
-                )
+            # A raw read: SubstrateInterface.query decodes an in-band JSON-RPC
+            # error, such as a throttle, as the storage default of zero, where
+            # rpc_request raises it.
+            response = substrate.rpc_request(
+                "state_getStorage", [_TIMESTAMP_NOW_STORAGE_KEY, block_hash]
             )
+            return _decode_timestamp(response.get("result"), block=block)
 
         return int(self._call_archive_operation(operation))
 
@@ -338,18 +401,19 @@ class BittensorSubnetInfoFetcher:
         return self._call_archive_operation(lambda: substrate.get_block_hash(block))
 
     def _apply_rate_limit_cooldown(self, error: BaseException) -> None:
-        if _is_archive_rate_limited(error):
+        if _is_archive_rate_limited(error) or _is_archive_request_rate_limited(error):
             self._cooldown_until = (
                 self._now_fn() + LIVE_MARKET_DATA_RATE_LIMIT_COOLDOWN_SECONDS
             )
             bt.logging.warning(
-                "Alpha archive rate-limited (HTTP 429); backing off "
-                f"{LIVE_MARKET_DATA_RATE_LIMIT_COOLDOWN_SECONDS:.0f}s"
+                "Alpha archive rate-limited; backing off "
+                f"{LIVE_MARKET_DATA_RATE_LIMIT_COOLDOWN_SECONDS:.0f}s: "
+                f"{safe_error(error)}"
             )
 
     def _active_subtensor(self) -> SubtensorLike:
         if self._now_fn() < self._cooldown_until:
-            raise ConnectionError("archive rate-limited; cooling down")
+            raise ArchiveCoolingDown("archive rate-limited; cooling down")
         subtensor = self._subtensor
         if subtensor is None:
             try:
@@ -366,7 +430,7 @@ class BittensorSubnetInfoFetcher:
 
     def _active_substrate(self) -> ArchiveSubstrateLike:
         if self._now_fn() < self._cooldown_until:
-            raise ConnectionError("archive rate-limited; cooling down")
+            raise ArchiveCoolingDown("archive rate-limited; cooling down")
         substrate = self._substrate
         if substrate is None:
             try:
@@ -387,7 +451,7 @@ class BittensorSubnetInfoFetcher:
             return self._call_with_timeout(operation)
         except Exception as error:  # noqa: BLE001 — SDK failures must void snapshots
             # The cached SDK connection may be poisoned after any operation error.
-            # A 429 additionally guards the next reconnect behind the cooldown.
+            # A throttled source additionally waits out the cooldown.
             if not _is_archive_request_rate_limited(error):
                 self._executor.submit(
                     _close_archive_clients, self._subtensor, self._substrate
@@ -448,6 +512,26 @@ class BittensorSubnetInfoFetcher:
             self._abandoned_workers_condition.notify_all()
 
 
+def _decode_timestamp(encoded: object, *, block: int) -> int:
+    """Decode a raw ``Timestamp.Now`` read.
+
+    Only genesis stores no timestamp. After it, a missing or zero value is a
+    failed read, retried like a transport error and never used as a time.
+    """
+    timestamp = 0
+    if (
+        isinstance(encoded, str)
+        and len(encoded) == _ENCODED_U64_LENGTH
+        and encoded.startswith("0x")
+    ):
+        timestamp = int.from_bytes(bytes.fromhex(encoded[2:]), "little")
+    if timestamp == 0 and block != 0:
+        raise SubstrateRequestException(
+            f"archive returned no Timestamp.Now for block={block}"
+        )
+    return timestamp
+
+
 def _close_late_archive_client[T](future: Future[T]) -> None:
     try:
         client = future.result()
@@ -503,6 +587,7 @@ class LiveAlphaPriceProvider:
         self._first_timestamp_blocks: dict[int, int] = {}
         self._last_timestamp_blocks: dict[int, int] = {}
         self._probing = False
+        self._mainnet_confirmed = False
 
     @property
     def endpoint(self) -> str:
@@ -514,7 +599,9 @@ class LiveAlphaPriceProvider:
         ``netuid`` must be a known active mainnet Alpha subnet, not the chain
         netuid on which this validator happens to be registered. The probe
         resolves one 30-day boundary, exercising the same deep timestamp
-        bisection as scoring, then reads just that historical pool.
+        bisection as scoring, then reads just that historical pool. Raises
+        ``ArchiveReadinessUnverified`` when only transient failures reach the
+        deadline, and ``AlphaMarketDataUnavailable`` for anything definitive.
         """
         previous_deadline = self._deadline_exceeded_fn
         deadline = self._now_fn() + LIVE_MARKET_DATA_ARCHIVE_PROBE_TIMEOUT_SECONDS
@@ -525,6 +612,12 @@ class LiveAlphaPriceProvider:
         self._probing = True
         try:
             self._validate_archive(netuid=netuid)
+        except ResolutionDeadlineExceeded:
+            raise ArchiveReadinessUnverified(
+                "mainnet archive readiness unverified: only transient failures "
+                "(throttling, timeouts, transport) within the "
+                f"{LIVE_MARKET_DATA_ARCHIVE_PROBE_TIMEOUT_SECONDS:.0f}-second check"
+            ) from None
         except Exception:  # noqa: BLE001 — fail closed without endpoint credentials
             raise AlphaMarketDataUnavailable(
                 "mainnet archive readiness failed: mainnet identity, deep finalized "
@@ -537,15 +630,7 @@ class LiveAlphaPriceProvider:
     def _validate_archive(self, *, netuid: int) -> None:
         if netuid <= 0:
             raise AlphaMarketDataUnavailable("archive probe requires an Alpha subnet")
-        # A node that answers no genesis yet is retried like any missing
-        # read; only a genesis that differs after normalization is refused.
-        genesis = self._with_retry(
-            lambda: require_archive_value(
-                self._fetcher.genesis_hash(), "returned no genesis hash"
-            )
-        )
-        if normalize_genesis_hash(genesis) != MAINNET_GENESIS_HASH:
-            raise AlphaMarketDataUnavailable("archive is not Bittensor mainnet")
+        self._confirm_mainnet()
         finalized = self._with_retry(self._fetcher.finalized_block)
         if finalized <= 0:
             raise AlphaMarketDataUnavailable("archive has no finalized history")
@@ -768,16 +853,36 @@ class LiveAlphaPriceProvider:
             )
 
     def _with_retry[T](self, operation: Callable[[], T]) -> T:
+        self._confirm_mainnet()
+        return self._retry(operation)
+
+    def _confirm_mainnet(self) -> None:
+        # Nothing is read from an archive before it answers the mainnet
+        # genesis. A node that answers no genesis yet is retried like any
+        # missing read; only a genesis that differs after normalization is
+        # refused.
+        if self._mainnet_confirmed:
+            return
+        genesis = self._retry(
+            lambda: require_archive_value(
+                self._fetcher.genesis_hash(), "returned no genesis hash"
+            )
+        )
+        if normalize_genesis_hash(genesis) != MAINNET_GENESIS_HASH:
+            raise ArchiveNotMainnet("archive is not Bittensor mainnet")
+        self._mainnet_confirmed = True
+
+    def _retry[T](self, operation: Callable[[], T]) -> T:
         # Attempt-level progress marks keep the watchdog honest: each attempt
         # is bounded (request timeout + capped backoff), while a wedged thread
         # stops marking and still trips it. The deadline check must live at
         # the same granularity: boundary bisections alone are ~2x24 lookups
         # with up to a ~68s retry ladder each, so a degraded archive could
         # otherwise hold one tick far past the watchdog window before
-        # price_series ever runs.
+        # price_series ever runs. Waiting out a rate-limit cooldown spends no
+        # attempt, since no request leaves the process until it ends.
         attempt = 0
         while True:
-            attempt += 1
             if self._deadline_exceeded_fn is not None and self._deadline_exceeded_fn():
                 raise ResolutionDeadlineExceeded(
                     "resolution budget exhausted during archive operation"
@@ -786,7 +891,10 @@ class LiveAlphaPriceProvider:
                 self._progress_fn()
             try:
                 return operation()
+            except ArchiveCoolingDown:
+                self._sleep(LIVE_MARKET_DATA_COOLDOWN_POLL_SECONDS)
             except ARCHIVE_FETCH_FAILURES as error:
+                attempt += 1
                 # The startup probe outlasts transient transport failures (a
                 # 429 cooldown) until its deadline; missing history still fails
                 # after max_attempts so a pruned node is refused promptly.
@@ -832,16 +940,29 @@ class LiveAlphaPriceProvider:
         }
 
 
-def validate_mainnet_archive(endpoint: str, *, netuid: int) -> None:
-    """Read-only startup preflight; release its SDK clients before returning."""
-    fetcher = BittensorSubnetInfoFetcher(endpoint)
+def validate_mainnet_archive(
+    endpoint: str,
+    *,
+    netuid: int,
+    fetcher: AlphaSubnetInfoFetcher | None = None,
+) -> None:
+    """Read-only archive check.
+
+    A fetcher it builds is released before it returns. A caller's fetcher
+    stays open, keeping its cooldown and its bound on abandoned workers across
+    repeated checks.
+    """
+    owned: BittensorSubnetInfoFetcher | None = None
+    if fetcher is None:
+        fetcher = owned = BittensorSubnetInfoFetcher(endpoint)
     try:
         LiveAlphaPriceProvider(
             config=LiveAlphaPriceProviderConfig(endpoint=endpoint),
             fetcher=fetcher,
         ).validate_archive(netuid=netuid)
     finally:
-        fetcher.close()
+        if owned is not None:
+            owned.close()
 
 
 class GenesisClient(Protocol):

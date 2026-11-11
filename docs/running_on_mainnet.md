@@ -88,16 +88,29 @@ them at the next protocol key change. Their values never apply:
 
 Before transport startup, a read-only market-data preflight verifies Finney's
 genesis identity (compared as normalized hex; an empty genesis answer is
-retried like other missing data), deep finalized timestamp history used by
-boundary search, and positive Alpha/TAO reserves for subnet 30 at least 30
-days before the finalized head. A reachable non-archive endpoint is
-insufficient. Transient transport failures, including an HTTP 429 cooldown
-during a coordinated restart, are
-retried until the probe's 120-second deadline; missing historical data,
-including a pruned node's `UnknownBlock: State already discarded` error, fails
-promptly. The SQLite database URL/path and the mainnet hotkey file are checked
-offline before the probe. Failure refuses startup; successful probing is not a
-guarantee of future archive availability. Chain identity is derived on every start —
+retried like other missing data), finalized timestamps 30 days deep, and
+positive Alpha/TAO reserves for subnet 30 at least 30 days before the
+finalized head. A reachable non-archive endpoint is
+insufficient. A wrong chain or missing historical data, including a pruned
+node's `UnknownBlock: State already discarded` error, refuses startup
+promptly. Transient failures, including rate limiting, timeouts and transport
+errors, are retried until the probe's 120-second deadline; if only they remain,
+the validator starts with `/health` `runtime.archive_check` set to
+`unverified` and re-runs the check hourly until it reports `passed`. Until the
+archive answers the mainnet genesis, the validator reads nothing from it. A
+re-check that finds a definitive failure stops the validator, as a failed
+startup check does. The SQLite database URL/path and the mainnet hotkey file
+are checked offline before the probe. Successful probing is not a guarantee of
+future archive availability.
+
+Give each validator its own keyed archive endpoint for `MARKET_DATA_ENDPOINT`.
+Resolution reads the archive heavily, and the public
+`wss://archive.chain.opentensor.ai:443` throttles historical reads with
+`Historical work rate limit exceeded`. After any rate-limit answer a validator
+pauses all archive reads for 60 seconds, so throttling slows resolution rather
+than stopping it.
+
+Chain identity is derived on every start —
 from a named endpoint, or by reading the genesis of any non-aliased endpoint —
 and is never taken from an operator config file.
 Validator and miner processes end with an explicit process exit after log

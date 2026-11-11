@@ -10,7 +10,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import update
 
-from endure.api.app import PublicationIdentity, RuntimeHealth, build_app
+from endure.api.app import ArchiveCheck, PublicationIdentity, RuntimeHealth, build_app
 from endure.assessment.coordinates import (
     AssessmentConsensusRow,
     AssessmentCoordinate,
@@ -103,6 +103,7 @@ def _runtime(
     rpc_degraded: bool = False,
     assessment_due_seconds: dict[int, int] | None = None,
     overdue_grace_seconds: int | None = None,
+    archive_check: ArchiveCheck | None = None,
 ) -> RuntimeHealth:
     runtime: RuntimeHealth = {
         "validator_loop_alive": validator_loop_alive,
@@ -134,6 +135,8 @@ def _runtime(
         runtime["assessment_due_seconds"] = assessment_due_seconds
     if overdue_grace_seconds is not None:
         runtime["overdue_grace_seconds"] = overdue_grace_seconds
+    if archive_check is not None:
+        runtime["archive_check"] = archive_check
     return runtime
 
 
@@ -251,6 +254,20 @@ class TestRuntimeHealth:
 
         assert response.status_code == 503
         assert response.json()["status"] == "degraded"
+
+    @pytest.mark.parametrize(
+        ("archive_check", "status_code"),
+        [("passed", 200), ("unverified", 200), ("failed", 503)],
+    )
+    def test_only_a_failed_archive_check_degrades_to_503(
+        self, storage: Storage, archive_check: ArchiveCheck, status_code: int
+    ) -> None:
+        response = self._client(storage, _runtime(archive_check=archive_check)).get(
+            "/health"
+        )
+
+        assert response.status_code == status_code
+        assert response.json()["runtime"]["archive_check"] == archive_check
 
     def test_single_empty_scored_round_stays_ok(self, storage: Storage) -> None:
         response = self._client(storage, _runtime(empty_scored_rounds=1)).get("/health")
