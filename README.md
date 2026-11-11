@@ -5,8 +5,9 @@
 > mainnet only behind the explicit `--endure.serving_stage mainnet`
 > acknowledgement, on releases promoted to the `:prod` image channel after the
 > owner release decision ([running_on_mainnet.md](docs/running_on_mainnet.md)).
-> The current protocol key is `2044` ([contract](endure/protocol/version_contract.py));
-> miners and validators upgrade together, and `v0.1.2` images (key `2043`) are superseded.
+> This source candidate uses protocol key `2045` ([contract](endure/protocol/version_contract.py));
+> published `v0.1.3` images use key `2044`, and adopting `2045` requires a coordinated
+> release in which miners and validators upgrade together.
 > Activated and retired leases are tracked in the [version registry](docs/protocol_versions.md).
 
 Endure is a Bittensor risk-intelligence subnet: miners submit falsifiable

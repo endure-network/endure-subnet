@@ -356,9 +356,6 @@ class AssessmentScoringOrchestrator:
         # validator passes reads of the finalized mainnet chain instead.
         self._tie_seed_reads = tie_seed_reads
         self._tie_seeds: dict[str, str] = {}
-        # The newest window this process seeded, which its votes keep while the
-        # archive can show neither newest round's seed.
-        self._last_seeded_window: tuple[list[str], str] | None = None
 
     def _eligible_coordinate(self, coordinate: AssessmentCoordinate) -> bool:
         """True when the coordinate contributes to payout and consensus blends."""
@@ -594,9 +591,10 @@ class AssessmentScoringOrchestrator:
         A revealed round joins the window once its seed is known, a minute or
         two after its reveal close; until then the window still ends one round
         earlier. If the round before has no known seed either, the archive is
-        failing: votes keep the newest window this process seeded, and with
-        none the vote fails rather than order ties by a seed others may not
-        share.
+        failing: votes take the newest stored seed and the newest revealed
+        rounds up to its round, so a running and a restarted validator on one
+        database vote alike. With no stored seed, the vote fails rather than
+        order ties by a seed others may not share.
         """
         revealed = self._storage.revealed_round_ids(
             self._config.schema_id, limit=POOL_WINDOW_ROUNDS + 1
@@ -610,29 +608,35 @@ class AssessmentScoringOrchestrator:
             return [], ""
         seed = self._tie_seed(revealed[0])
         if seed is not None:
-            return self._seeded(revealed[:POOL_WINDOW_ROUNDS], seed)
+            return revealed[:POOL_WINDOW_ROUNDS], seed
         earlier = revealed[1:]
         if not earlier:
             return [], ""
         seed = self._tie_seed(earlier[0])
         if seed is not None:
-            return self._seeded(earlier[:POOL_WINDOW_ROUNDS], seed)
-        if self._last_seeded_window is not None:
-            return self._last_seeded_window
-        raise TieSeedUnavailable(
-            f"neither round {revealed[0]} nor {earlier[0]} has a known tie seed"
+            return earlier[:POOL_WINDOW_ROUNDS], seed
+        stored = self._storage.newest_tie_seed(self._config.schema_id)
+        if stored is None:
+            raise TieSeedUnavailable(
+                f"neither round {revealed[0]} nor {earlier[0]} has a known tie seed"
+            )
+        round_id, seed = stored
+        window = self._storage.revealed_round_ids(
+            self._config.schema_id, limit=POOL_WINDOW_ROUNDS, at_or_before=round_id
         )
-
-    def _seeded(self, window: list[str], seed: str) -> tuple[list[str], str]:
-        self._last_seeded_window = (window, seed)
         return window, seed
 
     def _tie_seed(self, round_id: str) -> str | None:
         if self._tie_seed_reads is None:
             return round_id
-        seed = self._tie_seeds.get(round_id)
+        schema_id = self._config.schema_id
+        # A seed is the hash of a finalized block, so the stored one is final:
+        # a restarted validator votes without reading the archive again.
+        seed = self._tie_seeds.get(round_id) or self._storage.tie_seed(
+            round_id, schema_id
+        )
         if seed is None:
-            windows = self._storage.round_windows(round_id, self._config.schema_id)
+            windows = self._storage.round_windows(round_id, schema_id)
             if windows is None:
                 raise TieSeedUnavailable(f"round {round_id} has no stored windows")
             try:
@@ -641,7 +645,9 @@ class AssessmentScoringOrchestrator:
                 # The reads logged why; the round waits for its seed.
                 seed = None
             if seed is not None:
-                self._tie_seeds[round_id] = seed
+                self._storage.record_tie_seed(round_id, schema_id, seed)
+        if seed is not None:
+            self._tie_seeds[round_id] = seed
         return seed
 
     def _single_horizon(self) -> int:

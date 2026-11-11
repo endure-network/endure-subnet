@@ -598,8 +598,8 @@ class LiveAlphaPriceProvider:
 
         ``netuid`` must be a known active mainnet Alpha subnet, not the chain
         netuid on which this validator happens to be registered. The probe
-        resolves one 30-day boundary, exercising the same deep timestamp
-        bisection as scoring, then reads just that historical pool. Raises
+        resolves one 30-day boundary, exercising the same timestamp search as
+        scoring, then reads just that historical pool. Raises
         ``ArchiveReadinessUnverified`` when only transient failures reach the
         deadline, and ``AlphaMarketDataUnavailable`` for anything definitive.
         """
