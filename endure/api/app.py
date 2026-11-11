@@ -23,7 +23,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal, localcontext
-from typing import TYPE_CHECKING, Final, NotRequired, TypedDict
+from typing import TYPE_CHECKING, Final, Literal, NotRequired, TypedDict
 
 from fastapi import FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -89,11 +89,15 @@ class RpcGateHealth(TypedDict):
     abandoned_generations: int
 
 
+type ArchiveCheck = Literal["passed", "unverified", "failed"]
+
+
 class RuntimeHealth(TypedDict):
     """Validator-loop health surfaced under /health's ``runtime`` field.
 
-    A dead loop, stale tick, nonzero tick/universe/resolution failures, or two
-    consecutive empty scored rounds returns a degraded 503 response.
+    A dead loop, stale tick, nonzero tick/universe/resolution failures, two
+    consecutive empty scored rounds, or a failed archive check returns a
+    degraded 503 response.
     """
 
     process_started_at: NotRequired[str]
@@ -110,6 +114,7 @@ class RuntimeHealth(TypedDict):
     last_universe_error: str | None
     consecutive_resolution_failures: NotRequired[int]
     last_resolution_error: str | None
+    archive_check: NotRequired[ArchiveCheck | None]
     consecutive_empty_scored_rounds: NotRequired[int]
     last_empty_scored_round: str | None
     last_set_weights_ok: NotRequired[str | None]
@@ -407,6 +412,7 @@ def _register_core_routes(  # noqa: PLR0913 — explicit read API dependencies
                 or runtime["consecutive_tick_failures"] > 0
                 or runtime.get("consecutive_universe_failures", 0) > 0
                 or runtime.get("consecutive_resolution_failures", 0) > 0
+                or runtime.get("archive_check") == "failed"
                 or runtime.get("consecutive_empty_scored_rounds", 0)
                 >= _EMPTY_SCORED_ROUNDS_HEALTH_THRESHOLD
                 or runtime.get("consecutive_set_weights_failures", 0) > 0

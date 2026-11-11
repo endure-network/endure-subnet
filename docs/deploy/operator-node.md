@@ -49,6 +49,8 @@ WALLET_ROOT=/absolute/path/to/your-role-wallets
 WALLET_NAME=replace-me
 HOTKEY=replace-me
 EXTERNAL_IP=replace-with-your-public-ip
+# Validators: your own keyed mainnet archive (see running_on_mainnet.md).
+# Miners: any mainnet node, such as wss://lite.chain.opentensor.ai:443.
 MARKET_DATA_ENDPOINT=wss://archive.chain.opentensor.ai:443
 ```
 

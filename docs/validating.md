@@ -51,8 +51,9 @@ compatibility in [version_contract.py](../endure/protocol/version_contract.py).
   (`--endure.market_data_endpoint`) resolves Alpha observables against
   Bittensor **mainnet** and must reach a mainnet archive node, or the validator
   refuses to start (compressed test runs replay recorded fixtures instead).
-  Budget them separately: resolution is archive-query-heavy, and a shared or
-  rate-limited endpoint degrades scoring before it degrades liveness.
+  Resolution is archive-query-heavy: use a keyed archive endpoint, because
+  the public archive throttles it (see the
+  [archive preflight](running_on_mainnet.md#release-pinned-consensus-policy-key-2042)).
   Bittensor `>=10.3`
   ignores `--subtensor.chain_endpoint`, so a custom subtensor RPC (for example
   a keyed provider URL) must be passed as the `--subtensor.network` value
@@ -107,10 +108,10 @@ exceed `health_tick_max_age_seconds`, and
 `--endure.resolution_budget_seconds` must stay below
 `health_tick_max_duration_seconds` so a budgeted resolution pass can never
 outlive the watchdog window. A validator that reads live mainnet data also needs
-room for two pool tie seed reads of up to 300 seconds each:
-`health_tick_max_duration_seconds` must exceed `resolution_budget_seconds` plus
-600, with some margin. Raising `health_tick_max_duration_seconds` also widens
-the overdue grace above.
+room for two pool tie seed reads of up to 300 seconds each and an archive
+re-check of up to 180 seconds: `health_tick_max_duration_seconds` must exceed
+`resolution_budget_seconds` plus 780, with some margin. Raising
+`health_tick_max_duration_seconds` also widens the overdue grace above.
 
 Beyond `round_resolution`, monitor the `runtime` block of `/health`:
 
@@ -118,6 +119,7 @@ Beyond `round_resolution`, monitor the `runtime` block of `/health`:
 | --- | --- | --- |
 | `validator_loop_alive`, `tick_stale` | `true`, `false` | the loop dies or ticks go stale — the process is up but not working |
 | `consecutive_tick_failures`, `consecutive_universe_failures`, `consecutive_resolution_failures` | `0` | values climb — persistent market-data or chain trouble |
+| `archive_check` | `passed` | `unverified` for hours (the archive keeps throttling the hourly check); a re-check that finds a wrong chain or missing history reports `failed` (503) and stops the validator, so fix `MARKET_DATA_ENDPOINT` |
 | `weight_emission_degraded`, `consecutive_set_weights_failures` | `false`, `0` | any degradation — emissions at risk |
 | `emission_mode`, `emission_reason`, `emission_blocked_reason` | intended mode and a known progress/wait reason | unexpected mode, an owner/chain-safety abstain reason (`/health` 503 immediately or after 2 epochs, see below), or a retained identity/vector failure |
 | `emission_expected`, `emission_next_eligible_block` | expected only after eligibility; next block where known | eligibility fails to advance without an explained gate |

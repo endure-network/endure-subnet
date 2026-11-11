@@ -87,11 +87,19 @@ def _run_blocked_archive_startup(tmp_dir: str) -> None:
         fetcher._make_substrate = lambda: substrate
         return fetcher
 
+    # A blocked archive leaves startup unverified, so the step after the probe
+    # fails instead, with the abandoned non-daemon archive worker still alive.
     with (
         patch.object(validator.Validator, "build_config", return_value=config),
         patch.object(validator, "configure_log_shipping"),
         patch.object(validator, "_require_hotkey"),
         patch.object(validator.bt.logging, "error", side_effect=print),
+        patch.object(validator.bt.logging, "warning", side_effect=print),
+        patch.object(
+            validator,
+            "resolve_runtime_provider",
+            side_effect=RuntimeError("transport unavailable"),
+        ),
         patch(
             "endure.live.alpha_market_data."
             "LIVE_MARKET_DATA_ARCHIVE_PROBE_TIMEOUT_SECONDS",
@@ -204,7 +212,8 @@ _CHILDREN = {
 _MARKERS = {
     "blocked_archive": (
         "archive worker entered; daemon=False",
-        "validator failed: AlphaMarketDataUnavailable:",
+        "mainnet archive readiness unverified",
+        "validator failed: RuntimeError: transport unavailable",
     ),
     "validator_unregistered": ("hotkey not registered; exiting",),
     "validator_dev_only_refusal": ("validator refused to start:",),
