@@ -43,7 +43,8 @@ from endure.protocol.version_contract import CURRENT_VERSION_KEY
 from endure.publication.risk_feed import Signer, build_signed_risk_feed
 from endure.runtime.identity import runtime_identity
 from endure.scoring.context import TR_CONTEXT
-from endure.scoring.weights import Payout, normalize_weights
+from endure.scoring.policy import DEFAULT_PAYOUT_HALF_LIFE_ROUNDS
+from endure.scoring.weights import Payout, blended_score, normalize_weights
 from endure.storage.repository import (
     POST_EMBARGO_ROUND_STATES,
     ROUND_STATE_OPEN,
@@ -194,6 +195,7 @@ def _assessment_leaderboard(
     schema_id: str,
     active_coordinates: frozenset[AssessmentCoordinate] | None,
     payout: Payout | None,
+    horizons: tuple[int, ...],
 ) -> list[dict[str, object]]:
     states = (
         state
@@ -204,7 +206,11 @@ def _assessment_leaderboard(
     for state in states:
         by_hotkey.setdefault(state.miner_hotkey, []).append(state)
     blends = {
-        hotkey: _mean([state.ema for state in hotkey_states])
+        hotkey: blended_score(
+            hotkey_states,
+            horizons=horizons,
+            half_life_rounds=DEFAULT_PAYOUT_HALF_LIFE_ROUNDS,
+        )
         for hotkey, hotkey_states in sorted(by_hotkey.items())
         if hotkey_states
     }
@@ -453,7 +459,13 @@ def _register_core_routes(  # noqa: PLR0913 — explicit read API dependencies
             raise HTTPException(
                 status_code=503, detail="validator weights not computed yet"
             )
-        return _assessment_leaderboard(storage, schema_id, active_coordinates, current)
+        return _assessment_leaderboard(
+            storage,
+            schema_id,
+            active_coordinates,
+            current,
+            RISK_HORIZONS if publisher == "risk" else (),
+        )
 
     @app.get("/rounds/{round_id}")
     def round_meta(round_id: str) -> dict[str, object]:

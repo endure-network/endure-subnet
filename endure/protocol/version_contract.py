@@ -10,7 +10,7 @@ so constants cannot drift outside the contract again.
 from pathlib import Path
 
 ACTIVATED_VERSION_REGISTRY_DIGEST = (
-    "1e6154be2b21b1af30a72c6c51062aef329bcf1e6e8977fd47a223e157bfdd86"
+    "e0130b72dbb5a0713805a32e9f2cbaa67aaf3253c99e45e65655d2634c9001e3"
 )
 ACTIVATED_VERSION_HISTORY_DIGEST = (
     "5bfeba5b44268d40534f512949808c75ef5744c9cd2986de2e30675a0b9257e2"
@@ -188,9 +188,11 @@ PREVIOUS_VERSION_DIGEST = (
 # 25. Watched decisions: the seed store and its read before the chain
 # (_tie_seed, repository tie_seed/record_tie_seed), the window votes take in
 # an outage (_seeded_window, repository newest_tie_seed/revealed_round_ids)
-# and the boundary searches (market_sampling). Scores, EMAs and pooling are
-# unchanged.
+# and the boundary searches (market_sampling). The blended score counts each
+# 30d EMA by its maturity and holds back part of each (netuid, output) pair's
+# 5d score until its 30d record matures (blended_score, LONG_HORIZON_HOLD_BACK).
+# EMAs and pooling are unchanged.
 CURRENT_VERSION_KEY = 2045
 CURRENT_VERSION_DIGEST = (
-    "db6c1bad7a6c681759cf503f312eb0eef4b770d6b141bf9f58f44e88ffcd5c6d"
+    "933cf2b04ab774e8d8d1a0632790e15bacfd8fe332692fc24d3373eb75473e88"
 )

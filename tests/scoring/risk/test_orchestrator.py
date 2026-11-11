@@ -41,6 +41,7 @@ from endure.scoring.risk.orchestrator import (
     VOID_GRACE_SECONDS,
     RiskScoringOrchestrator,
 )
+from endure.scoring.weights import blended_score
 from endure.storage.repository import Storage
 
 NOW = datetime(2026, 7, 6, 12, 0, tzinfo=UTC).isoformat()
@@ -722,6 +723,10 @@ def _fast_decay_orchestrator(
     )
 
 
+def _blend(state: AssessmentEmaState) -> Decimal:
+    return blended_score([state], horizons=RISK_HORIZONS, half_life_rounds=2)
+
+
 def _ema_map(storage: Storage, hotkey: str) -> dict[AssessmentCoordinate, Decimal]:
     return {
         state.coordinate: state.ema
@@ -1330,7 +1335,13 @@ class TestRetiredCoordinates:
                 ),
                 now_iso=NOW,
             )
-        assert orchestrator.blended_scores() == {"hk-a": Decimal("0.2")}
+        active = AssessmentEmaState(
+            "hk-a",
+            _coordinate(44, RiskOutput.MAX_DRAWDOWN, RISK_HORIZONS[0]),
+            Decimal("0.2"),
+            5,
+        )
+        assert orchestrator.blended_scores() == {"hk-a": _blend(active)}
         assert orchestrator.weights() == {"hk-a": Decimal("1")}
 
     def test_retired_high_ema_does_not_prevent_absent_miner_pruning(
@@ -1392,7 +1403,7 @@ def test_retired_memory_resumes_on_reintroduction_and_obeys_deregistration(
         active_netuids=(1,),
         registered_hotkeys=lambda: ["hk-a"],
     )
-    assert reintroduced.blended_scores() == {"hk-a": Decimal("0.8")}
+    assert reintroduced.blended_scores() == {"hk-a": _blend(preserved)}
     assert reintroduced.weights() == {"hk-a": Decimal("1")}
     assert storage.assessment_ema_states(RISK_SCHEMA_ID) == [preserved]
     assert storage.archive_assessment_ema_horizon(
@@ -1423,6 +1434,7 @@ def test_retired_only_miner_keeps_old_absence_obligations_but_not_new_ones(
     _open_round_for(storage, new_round, (44,))
     assert current.resolve_and_score(new_round, RISK_HORIZONS[0], now_iso=new_now) == {}
     assert storage.assessment_ema_states(RISK_SCHEMA_ID) == preserved
+    expected_blends: dict[str, Decimal] = {}
     if low_active_memory:
         active_state = AssessmentEmaState(
             "hk-a",
@@ -1432,6 +1444,7 @@ def test_retired_only_miner_keeps_old_absence_obligations_but_not_new_ones(
         )
         storage.upsert_assessment_ema(RISK_SCHEMA_ID, active_state, now_iso=NOW)
         preserved.append(active_state)
+        expected_blends = {"hk-a": _blend(active_state)}
     old_round, old_now = _round_for(7)
     _open_round_for(storage, old_round, (1,))
     assert current.resolve_and_score(old_round, RISK_HORIZONS[1], now_iso=old_now) == {
@@ -1439,9 +1452,7 @@ def test_retired_only_miner_keeps_old_absence_obligations_but_not_new_ones(
     }
     history = storage.assessment_score_history_for_round(old_round, RISK_SCHEMA_ID)
     assert history and all(row.round_score == 0 for row in history)
-    assert current.blended_scores() == (
-        {"hk-a": Decimal("0.001")} if low_active_memory else {}
-    )
+    assert current.blended_scores() == expected_blends
     assert all(
         state in storage.assessment_ema_states(RISK_SCHEMA_ID) for state in preserved
     )
@@ -1484,5 +1495,11 @@ def test_consensus_publication_uses_only_active_coordinate_memory(
 
     assert program.publish_consensus(ROUND, datetime.fromisoformat(NOW))
 
-    assert compute.call_args.args[1] == {"active": Decimal("0.9")}
+    expected = AssessmentEmaState(
+        "active",
+        _coordinate(44, RiskOutput.MAX_DRAWDOWN, RISK_HORIZONS[0]),
+        Decimal("0.9"),
+        5,
+    )
+    assert compute.call_args.args[1] == {"active": _blend(expected)}
     assert storage.assessment_consensus_for(ROUND, RISK_SCHEMA_ID)

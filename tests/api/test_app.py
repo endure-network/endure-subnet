@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+from collections.abc import Iterable
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
@@ -23,18 +24,28 @@ from endure.assessment.schemas.forge_lending import FORGE_LENDING_SCHEMA_ID
 from endure.assessment.schemas.subnet_alpha_risk import (
     HORIZON_5D_SECONDS,
     HORIZON_30D_SECONDS,
+    RISK_HORIZONS,
     RISK_SCHEMA_ID,
     RiskOutput,
 )
 from endure.protocol.canonical import canonical_bundle_bytes
 from endure.protocol.round_engine import DEFAULT_OFFSETS, compute_windows
 from endure.scoring.assessment_orchestrator import REALIZED_TARGET_RESOLVED
-from endure.scoring.weights import Payout
+from endure.scoring.policy import DEFAULT_PAYOUT_HALF_LIFE_ROUNDS
+from endure.scoring.weights import Payout, blended_score
 from endure.storage.repository import Storage
 from endure.storage.tables import rounds
 
 ROUND = "2026-06-09"
 NOW = datetime(2026, 6, 9, 21, 0, tzinfo=UTC).isoformat()
+
+
+def _blend(states: Iterable[AssessmentEmaState]) -> Decimal:
+    return blended_score(
+        list(states),
+        horizons=RISK_HORIZONS,
+        half_life_rounds=DEFAULT_PAYOUT_HALF_LIFE_ROUNDS,
+    )
 
 
 @pytest.fixture
@@ -825,13 +836,13 @@ class TestRiskAssessmentReadRoutes:
                     miner_hotkey="hk-good",
                     coordinate=coordinate,
                     ema=Decimal("0.9"),
-                    resolved_rounds=2,
+                    resolved_rounds=20,
                 ),
                 AssessmentEmaState(
                     miner_hotkey="hk-weak",
                     coordinate=coordinate,
                     ema=Decimal("0.3"),
-                    resolved_rounds=1,
+                    resolved_rounds=10,
                 ),
             ],
             score_history=[
@@ -851,7 +862,11 @@ class TestRiskAssessmentReadRoutes:
         rows = self._client(storage).get("/miners").json()
 
         assert [row["miner_hotkey"] for row in rows] == ["hk-good", "hk-weak"]
-        assert rows[0]["blended_score"] == "0.9"
+        assert Decimal(rows[0]["blended_score"]) == _blend(
+            state
+            for state in storage.assessment_ema_states(RISK_SCHEMA_ID)
+            if state.miner_hotkey == "hk-good"
+        )
         assert rows[0]["horizon_emas"] == {"2592000": "0.9"}
         assert Decimal(rows[0]["weight_share"]) > Decimal(rows[1]["weight_share"])
         assert [row["pool_size"] for row in rows] == [1, 1]
@@ -934,7 +949,7 @@ class TestRiskAssessmentReadRoutes:
                 "horizon_seconds": HORIZON_30D_SECONDS,
                 "output": RiskOutput.MAX_DRAWDOWN.value,
                 "ema": "0.9",
-                "resolved_rounds": 2,
+                "resolved_rounds": 20,
             }
         ]
 
@@ -1082,6 +1097,11 @@ def test_risk_leaderboard_filters_active_memory_but_raw_scores_preserve_it(
     )
     client = TestClient(app)
     rows = {row["miner_hotkey"]: row for row in client.get("/miners").json()}
+    mixed = [
+        state
+        for state in storage.assessment_ema_states(RISK_SCHEMA_ID)
+        if state.miner_hotkey == "mixed"
+    ]
     assert set(rows) == (
         {"mixed", "retired", "production"}
         if mode == "default"
@@ -1092,10 +1112,12 @@ def test_risk_leaderboard_filters_active_memory_but_raw_scores_preserve_it(
     if mode == "default":
         # None is "unfiltered" for every publisher: the validator always passes
         # its runtime's active set, and the read API never substitutes a policy.
-        assert Decimal(rows["mixed"]["blended_score"]) == Decimal("0.6")
+        assert Decimal(rows["mixed"]["blended_score"]) == _blend(mixed)
         assert len(rows["mixed"]["coordinate_emas"]) == 2
     elif rows:
-        assert Decimal(rows["mixed"]["blended_score"]) == Decimal("0.2")
+        assert Decimal(rows["mixed"]["blended_score"]) == _blend(
+            state for state in mixed if state.coordinate.target_id == str(active)
+        )
         assert all(
             row["target_id"] == str(active) for row in rows["mixed"]["coordinate_emas"]
         )
