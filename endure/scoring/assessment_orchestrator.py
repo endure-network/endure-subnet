@@ -35,7 +35,7 @@ from endure.scoring.market_sampling import (
     first_block_at_or_after,
     utc_timestamp_milliseconds,
 )
-from endure.scoring.weights import ema_update, normalize_weights
+from endure.scoring.weights import blended_score, ema_update, normalize_weights
 from endure.storage.repository import Storage
 
 _NANOSECONDS_PER_SECOND: Final = 1_000_000_000
@@ -528,16 +528,19 @@ class AssessmentScoringOrchestrator:
         return round_scores
 
     def blended_scores(self) -> dict[str, Decimal]:
-        by_hotkey: dict[str, list[Decimal]] = {}
+        by_hotkey: dict[str, list[AssessmentEmaState]] = {}
         for state in self._storage.assessment_ema_states(self._config.schema_id):
             if not self._eligible_coordinate(state.coordinate):
                 continue
-            by_hotkey.setdefault(state.miner_hotkey, []).append(state.ema)
-        with localcontext(TR_CONTEXT):
-            return {
-                hotkey: sum(emas, Decimal(0)) / Decimal(len(emas))
-                for hotkey, emas in sorted(by_hotkey.items())
-            }
+            by_hotkey.setdefault(state.miner_hotkey, []).append(state)
+        return {
+            hotkey: blended_score(
+                states,
+                horizons=self._config.horizons,
+                half_life_rounds=self._half_life,
+            )
+            for hotkey, states in sorted(by_hotkey.items())
+        }
 
     def weights(self) -> dict[str, Decimal]:
         blended = self.blended_scores()

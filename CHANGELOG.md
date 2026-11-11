@@ -4,6 +4,8 @@
 
 Protocol key `2045` is leased; miners and validators must upgrade together.
 
+- The blend counts each 30-day EMA by its maturity, so first 30-day rounds no
+  longer halve it; up to 20% of a 5-day score waits on the 30-day record.
 - Each round's pool tie seed is stored once read (migration `0016`), so a
   restarted validator votes without reading the archive, even through an outage.
 - Timestamp-to-block searches start near the target: about 4 archive reads
