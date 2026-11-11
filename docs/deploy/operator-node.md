@@ -240,13 +240,15 @@ release's `VALIDATOR_IMAGE` and `MINER_IMAGE` (version tags or digests), then ru
 `deploy.sh` again. It takes another pre-change snapshot before switching both
 services together.
 
-There is one database-boundary exception: release `0014_drop_kre_tables` removes
-five legacy KRE tables, and older images know migrations only through `0013`.
-When rolling back across that boundary, stop both services and restore the
-integrity-checked pre-`0014` snapshot **before** starting the old images. Do not
-run the normal image-swap procedure first, and do not use `alembic downgrade`;
-the dropped KRE rows cannot be reconstructed. The automatic rollback after a
-failed start or health check already restores the pre-deploy snapshot.
+A release that adds a schema migration is a database boundary: older images
+refuse to start on a database migrated past the newest migration they know.
+When rolling back across one, stop both services and restore the
+integrity-checked pre-upgrade snapshot **before** starting the old images;
+everything written since the upgrade is lost. Do not run the normal image-swap
+procedure first, and do not use `alembic downgrade`: the rows
+`0014_drop_kre_tables` dropped cannot be reconstructed. The release notes say
+whether a release adds a migration. The automatic rollback after a failed start
+or health check already restores the pre-deploy snapshot.
 
 A separate image-identity exception applies to the first migration from legacy
 local `:dev` images: those images have no registry digests or source identity.

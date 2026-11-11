@@ -1,20 +1,15 @@
 # Running Endure on Mainnet
 
-> **Mainnet serving is opt-in and owner-gated.** `v0.1.3` retains
+> **Mainnet serving is opt-in and owner-gated.** `v0.1.4` retains
 > experimental economic limitations. Alpha Risk serves on mainnet only when
 > the operator passes the explicit `--endure.serving_stage mainnet` acknowledgement on a
 > recognized mainnet endpoint, and only releases promoted to the `:prod`
-> image channel under the [owner release decision](releases/v0.1.3.md)
+> image channel under the [owner release decision](releases/v0.1.4.md)
 > are supported there. Do not run a staging release candidate or a locally built image on mainnet.
 
-`v0.1.3` uses protocol key `2044` ([version contract](../endure/protocol/version_contract.py));
-the current source candidate uses key `2045`, which ships only in a coordinated
-release.
-It replaces the key-`2043` `v0.1.2` images and adds
-[identical-forecast pooling](#identical-forecasts): miners and validators
-upgrade together, the published [owner burn rate](#owner-burn-rate) stays in
-place through the cutover, and the release needs no chain-parameter change:
-`weights_version` (`2040`) accepts key `2044`. The [release notes](releases/v0.1.3.md) summarise the operator upgrade.
+`v0.1.4` uses protocol key `2045` ([version contract](../endure/protocol/version_contract.py)).
+Miners and validators upgrade together; the [release notes](releases/v0.1.4.md)
+cover the upgrade.
 Supported development uses Python `>=3.12,<3.13` and Bittensor `>=10.5,<11`.
 Endure's mainnet netuid is `30`; the subnet rates itself under the same rules
 as every other member of the Alpha Risk universe.
@@ -403,7 +398,7 @@ RPC/inclusion/finality delays, and the health detection window below. Postpone a
 cutover with insufficient headroom; this release cannot instantly rescue a
 validator already approaching inactivity.
 
-1. Agree the key-2044 release and canonical policy with independently operated
+1. Agree the new release and canonical policy with independently operated
    validators before asking miners to register. Promote qualified images through
    the existing release process and pin their digests. Miners upgrade in the
    same window: validators reject submissions carrying another protocol key.
@@ -435,7 +430,7 @@ validator already approaching inactivity.
 5. An explicitly true `disable_set_weights` is an indefinite off switch for both
    modes, not an unattended cutover configuration. Scores never auto-enable it.
    Do not raise chain `weights_version` for this cutover: SN30's value is
-   `2040` and Subtensor accepts a `version_key` at or above it, so key-`2044`
+   `2040` and Subtensor accepts a `version_key` at or above it, so the new key's
    submissions are accepted unchanged. Raising it is a later, deliberate owner
    decision only after every permit validator runs the new key; raising it
    earlier would reject validators still on an older key.

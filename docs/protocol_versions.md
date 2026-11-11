@@ -341,3 +341,7 @@ The public lease authority receipt uses
 `CURRENT_VERSION_DIGEST=933cf2b04ab774e8d8d1a0632790e15bacfd8fe332692fc24d3373eb75473e88`
 under the `LEASE_AUTHORITY` format above, producing
 `e8cdf9e89de9b68d1b8bda9686dd1d2fc989af0307136b98a7968f5c71b32be3`.
+Key `2045` ships as [`v0.1.4`](releases/v0.1.4.md). Miners and validators must
+upgrade together; the release does not raise the chain's weight-version floor.
+SN30's chain `weights_version` of `2040` accepts key-`2045` submissions
+unchanged.
