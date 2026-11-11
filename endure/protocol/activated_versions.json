@@ -276,14 +276,20 @@
       "evidence_sha256": "906c7da0c18c7768cfeebdaa566516f60e37ce9dc661d93b3df549bee3522ecf",
       "key": 2043,
       "record_id": "activation-0046"
+    },
+    {
+      "digest": "777d3671ffd72c112fd853dc018c7f38449821da16a9d8539f113b07cc35ed47",
+      "evidence_sha256": "4c128a8ffdd56ea0512585749fc23e7efb54e2eb1992a499a12d5cec0d0d32da",
+      "key": 2044,
+      "record_id": "activation-0047"
     }
   ],
   "current_lease": {
-    "authority_sha256": "234fa4a7d49b3ae5ed9e03a1853a299a03d8d89b7ecfce0393b12291f7e8f38a",
-    "digest": "777d3671ffd72c112fd853dc018c7f38449821da16a9d8539f113b07cc35ed47",
-    "holder": "feat/identical-forecast-pooling",
-    "key": 2044
+    "authority_sha256": "86700d4456522c5eb9662e386f5f74f931dba046e409f7436c42a728d7dbc4a4",
+    "digest": "db6c1bad7a6c681759cf503f312eb0eef4b770d6b141bf9f58f44e88ffcd5c6d",
+    "holder": "feat/stored-tie-seeds-fast-search",
+    "key": 2045
   },
-  "previous_activation_id": "activation-0046",
+  "previous_activation_id": "activation-0047",
   "schema_version": 1
 }

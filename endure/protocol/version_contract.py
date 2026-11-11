@@ -10,10 +10,10 @@ so constants cannot drift outside the contract again.
 from pathlib import Path
 
 ACTIVATED_VERSION_REGISTRY_DIGEST = (
-    "d9cd6b795d5451c95909c85700536503cd991fc3c0234ef7bc5eae79a3eac6b1"
+    "1e6154be2b21b1af30a72c6c51062aef329bcf1e6e8977fd47a223e157bfdd86"
 )
 ACTIVATED_VERSION_HISTORY_DIGEST = (
-    "63f8dd700d7a4db5f3a2e078713d54a0ab01902a50d8b7235189b339fea73ffe"
+    "5bfeba5b44268d40534f512949808c75ef5744c9cd2986de2e30675a0b9257e2"
 )
 
 WATCHED_PATHS = (
@@ -30,9 +30,9 @@ WATCHED_PATHS = (
 # Previous accepted protocol snapshot. When watched paths change, promote the
 # current values into the previous fields, then write the new digest and bump
 # the current version key.
-PREVIOUS_VERSION_KEY = 2043
+PREVIOUS_VERSION_KEY = 2044
 PREVIOUS_VERSION_DIGEST = (
-    "b99135ebe7bde1f22ab7edf33ff581f5cabc2735cde979d22a423b70a6e11cd0"
+    "777d3671ffd72c112fd853dc018c7f38449821da16a9d8539f113b07cc35ed47"
 )
 
 # Production serving status and CURRENT_VERSION_KEY stay unchanged until R6.
@@ -177,7 +177,20 @@ PREVIOUS_VERSION_DIGEST = (
 # from it (reads_live_mainnet). Reading the revealed-round IDs is a
 # watched storage query; only the archive reads are unwatched I/O. No schema
 # migration.
-CURRENT_VERSION_KEY = 2044
+# 2045: archive resilience. A pool tie seed, once read, is stored per round
+# (migration 0016), so a restarted validator orders ties without the archive;
+# the seed's block and hash are unchanged. While the archive shows neither
+# newest round's seed, votes take the newest stored seed and the newest
+# revealed rounds up to its round, the same whether the validator restarted
+# or not. The timestamp-to-block boundary searches start from a 12-second
+# estimate corrected by one read, then gallop and bisect; they return the
+# block the bisection from block 0 returned, in a few reads instead of about
+# 25. Watched decisions: the seed store and its read before the chain
+# (_tie_seed, repository tie_seed/record_tie_seed), the window votes take in
+# an outage (_seeded_window, repository newest_tie_seed/revealed_round_ids)
+# and the boundary searches (market_sampling). Scores, EMAs and pooling are
+# unchanged.
+CURRENT_VERSION_KEY = 2045
 CURRENT_VERSION_DIGEST = (
-    "777d3671ffd72c112fd853dc018c7f38449821da16a9d8539f113b07cc35ed47"
+    "db6c1bad7a6c681759cf503f312eb0eef4b770d6b141bf9f58f44e88ffcd5c6d"
 )

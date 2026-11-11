@@ -289,14 +289,13 @@ def _archive_probe_provider(
     )
 
 
-def test_archive_readiness_uses_deep_history_and_timestamp_lookback() -> None:
+def test_archive_readiness_reads_the_pool_at_the_thirty_day_boundary() -> None:
     fetcher = _archive_probe_fetcher()
 
     _archive_probe_provider(fetcher).validate_archive(netuid=30)
 
-    # The old midpoint is required by scoring's binary search even though it
-    # precedes the 30-day reserve lookback; only one historical pool is fetched.
-    assert 50 in fetcher.timestamp_calls
+    # Scoring's boundary search finds the last block 30 days back, and only
+    # that one historical pool is fetched.
     assert fetcher.calls == [(30, 70)]
     assert fetcher.current_calls == 0
 
@@ -380,7 +379,7 @@ def test_live_provider_confirms_mainnet_once() -> None:
     assert fetcher.genesis_calls == 1
 
 
-@pytest.mark.parametrize("missing_block", [50, 70, 100])
+@pytest.mark.parametrize("missing_block", [70, 100])
 def test_archive_readiness_rejects_pruned_or_missing_timestamp_history(
     missing_block: int,
 ) -> None:

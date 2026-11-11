@@ -2,6 +2,7 @@
 
 > **Experimental testnet alpha.** `v0.1.3` uses protocol key `2044`; superseded
 > `v0.1.2` images use key `2043`, and miners and validators upgrade together.
+> The current source candidate uses key `2045`.
 > This is not a mainnet guide. The authoritative source compatibility value is
 > [version_contract.py](../endure/protocol/version_contract.py).
 

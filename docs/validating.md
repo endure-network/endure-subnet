@@ -252,8 +252,9 @@ which they do at the first scoring pass after 2 consecutive metagraph resyncs
 miss its hotkey; after that it starts from zero. If durable score state cannot
 be read, emission abstains with the `score_state_unavailable` block (no owner
 vote, no stale weights, and `/health` never reports `owner_vote` from a stale
-zeroed vector). A restarted validator that cannot read a pool tie seed yet
-abstains with the same block, and its `/miners` answers 503, until it reads one.
+zeroed vector). A validator that has stored no pool tie seed and cannot read
+one yet abstains with the same block, and its `/miners` answers 503, until it
+reads one.
 Open weight batches recorded under a previous validator identity are marked
 `unconfirmed` once their deadlines pass, so they no longer hold emission on
 `confirmation_pending`.

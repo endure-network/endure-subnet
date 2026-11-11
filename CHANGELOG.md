@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+Protocol key `2045` is leased; miners and validators must upgrade together.
+
+- Each round's pool tie seed is stored once read (migration `0016`), so a
+  restarted validator votes without reading the archive, even through an outage.
+- Timestamp-to-block searches start near the target: about 4 archive reads
+  instead of 25, returning the same blocks.
 - A validator whose archive only throttles at startup reports `unverified` in
   `runtime.archive_check` and re-checks hourly; a definitive failure stops it.
 - Nothing is read from a market-data archive before it answers the mainnet

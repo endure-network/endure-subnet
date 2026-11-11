@@ -54,7 +54,7 @@ from endure.storage.repository import (
 
 NOW = datetime(2026, 7, 20, 12, 0, tzinfo=UTC).isoformat()
 # NYSE sessions, oldest first: the test round windows use the session calendar.
-SESSIONS = tuple(date(2026, 7, day) for day in (6, 7, 8, 9, 10, 13, 14))
+SESSIONS = tuple(date(2026, 7, day) for day in (6, 7, 8, 9, 10, 13, 14, 15, 16, 17))
 
 type Values = Mapping[AssessmentCoordinate, int]
 
@@ -521,14 +521,32 @@ def test_live_ties_are_drawn_from_the_first_block_a_minute_after_reveal_close(
     assert pools == tie_ordered(
         (frozenset(copies),), _seed(_reveal_close(storage, second))
     )
-    # Later votes reuse the seed; a restarted validator reads the same block.
+    # Later votes reuse the seed instead of reading the chain again.
     assert orchestrator.duplicate_pools() == pools
     assert chain.lookups == 1
+
+
+def test_a_restarted_validator_votes_from_stored_seeds_while_the_archive_is_down(
+    storage: Storage,
+) -> None:
+    # Given: a validator that read both newest seeds before it stopped.
+    first = _open(storage, 0, ROUND_STATE_CLOSED)
+    second = _open(storage, 1, ROUND_STATE_REVEALED)
+    copies = {"a": FORECAST, "b": FORECAST, "c": FORECAST}
+    chain = _Chain(head=_reveal_close(storage, second) + timedelta(hours=1))
+    pools = _orchestrator(
+        storage, {first: copies, second: copies}, tie_seed_reads=chain.reads
+    ).duplicate_pools()
+    chain.failure = ConnectionError("archive down")
+
+    # When: it restarts while the archive cannot answer.
     restarted = _orchestrator(
         storage, {first: copies, second: copies}, tie_seed_reads=chain.reads
     )
+
+    # Then: it orders ties by the stored seed, without reading the chain.
     assert restarted.duplicate_pools() == pools
-    assert chain.lookups == 2  # noqa: PLR2004 — one read per process
+    assert chain.lookups == 1
 
 
 def test_until_the_newest_seed_is_known_the_window_ends_one_round_earlier(
@@ -620,16 +638,82 @@ def test_while_the_archive_shows_neither_newest_seed_votes_keep_the_last_window(
     # Votes keep the last window's rounds with its seed, so copies revealed
     # once that seed was public join no pool.
     assert orchestrator.duplicate_pools() == seeded_by(rounds[2], first)
-    # A process that has seeded no window cannot vote.
+    # A process restarted during the outage votes with the same window, from
+    # the seed it stored.
     restarted = _orchestrator(
         storage, accepted, blends=blends, tie_seed_reads=chain.reads
     )
-    with pytest.raises(TieSeedUnavailable):
-        restarted.duplicate_pools()
+    assert restarted.duplicate_pools() == seeded_by(rounds[2], first)
     chain.failure = None
     newest = seeded_by(rounds[4], first, second)
     assert orchestrator.duplicate_pools() == newest
     assert restarted.duplicate_pools() == newest
+
+
+def test_a_restart_in_a_long_outage_votes_with_the_newest_stored_window(
+    storage: Storage,
+) -> None:
+    # Given: a seeded window, then an outage that lasts past every round a
+    # vote looks up, while new copies reveal.
+    copies = dict.fromkeys("abcde", FORECAST)
+    rounds = [_open(storage, day, ROUND_STATE_CLOSED) for day in (0, 1)]
+    accepted: dict[str, Mapping[str, Values]] = dict.fromkeys(rounds, copies)
+    blends = dict.fromkeys("abcdexy", Decimal("0.9"))
+    chain = _Chain(head=datetime(2027, 1, 1, tzinfo=UTC))
+    orchestrator = _orchestrator(
+        storage, accepted, blends=blends, tie_seed_reads=chain.reads
+    )
+    seeded = tie_ordered((frozenset(copies),), _seed(_reveal_close(storage, rounds[1])))
+    assert orchestrator.duplicate_pools() == seeded
+    chain.failure = ConnectionError("archive down")
+    for day in range(2, 3 + POOL_WINDOW_ROUNDS):
+        rounds.append(_open(storage, day, ROUND_STATE_REVEALED))
+        accepted[rounds[day]] = {**copies, "x": OTHER, "y": OTHER}
+
+    # When: the validator restarts during the outage.
+    restarted = _orchestrator(
+        storage, accepted, blends=blends, tie_seed_reads=chain.reads
+    )
+
+    # Then: it votes as the running process does, with the stored window and
+    # its seed, never that seed on the rounds revealed since.
+    assert orchestrator.duplicate_pools() == seeded
+    assert restarted.duplicate_pools() == seeded
+
+
+def test_a_round_published_late_in_an_outage_joins_every_vote_alike(
+    storage: Storage,
+) -> None:
+    # Given: an older round still unpublished when a newer one seeds the window.
+    late = _open(storage, 0, None)
+    rounds = [late, _open(storage, 1, ROUND_STATE_REVEALED)]
+    distinct = {"a": FORECAST, "b": NUDGED, "c": OTHER}
+    accepted: dict[str, Mapping[str, Values]] = {
+        late: {"a": FORECAST, "b": FORECAST, "c": OTHER},
+        rounds[1]: distinct,
+    }
+    chain = _Chain(head=datetime(2027, 1, 1, tzinfo=UTC))
+    running = _orchestrator(storage, accepted, tie_seed_reads=chain.reads)
+    assert running.duplicate_pools() == ()
+    # The archive fails while newer rounds reveal, then the older round's
+    # publication recovers.
+    chain.failure = ConnectionError("archive down")
+    for day in (2, 3):
+        rounds.append(_open(storage, day, ROUND_STATE_REVEALED))
+        accepted[rounds[day]] = distinct
+    storage.set_round_state(late, RISK_SCHEMA_ID, ROUND_STATE_REVEALED, now_iso=NOW)
+
+    # When: the validator restarts on the same database.
+    restarted = _orchestrator(storage, accepted, tie_seed_reads=chain.reads)
+
+    # Then: both pool the late round's copies under the stored seed, with the
+    # same weights.
+    seeded = tie_ordered(
+        (frozenset({"a", "b"}),), _seed(_reveal_close(storage, rounds[1]))
+    )
+    assert running.duplicate_pools() == seeded
+    assert restarted.duplicate_pools() == seeded
+    assert running.weights() == restarted.weights()
 
 
 def test_votes_keep_a_window_seeded_from_the_round_before_the_newest(
@@ -779,3 +863,7 @@ def test_revealed_round_ids_lists_post_reveal_rounds_newest_first(
     assert storage.revealed_round_ids(RISK_SCHEMA_ID, limit=5) == rounds[::-1]
     assert storage.revealed_round_ids(RISK_SCHEMA_ID, limit=2) == rounds[:0:-1]
     assert storage.revealed_round_ids("other.schema", limit=5) == []
+    assert (
+        storage.revealed_round_ids(RISK_SCHEMA_ID, limit=5, at_or_before=rounds[1])
+        == rounds[1::-1]
+    )

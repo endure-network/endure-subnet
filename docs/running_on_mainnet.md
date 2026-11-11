@@ -7,7 +7,9 @@
 > image channel under the [owner release decision](releases/v0.1.3.md)
 > are supported there. Do not run a staging release candidate or a locally built image on mainnet.
 
-`v0.1.3` uses protocol key `2044` ([version contract](../endure/protocol/version_contract.py)).
+`v0.1.3` uses protocol key `2044` ([version contract](../endure/protocol/version_contract.py));
+the current source candidate uses key `2045`, which ships only in a coordinated
+release.
 It replaces the key-`2043` `v0.1.2` images and adds
 [identical-forecast pooling](#identical-forecasts): miners and validators
 upgrade together, the published [owner burn rate](#owner-burn-rate) stays in
@@ -203,9 +205,10 @@ operators:
   read from `--endure.market_data_endpoint`. A round joins the pool window once
   that block is final, so every validator with the same window draws the same
   order.
-- **Archive outages.** A running validator keeps voting with the newest window
-  whose seed it has read. One restarted before it can read a seed abstains with
-  `score_state_unavailable`, and its `/miners` answers 503, until it reads one.
+- **Archive outages.** A validator, restarted or not, keeps voting with the
+  newest stored seed and the revealed rounds up to its round. One that has
+  stored no seed yet abstains with `score_state_unavailable`, and its
+  `/miners` answers 503, until it reads one.
   `/live` answers meanwhile, and the
   [archive preflight](#release-pinned-consensus-policy-key-2042) still runs
   first.
@@ -375,9 +378,8 @@ failure reads as zero scores: a validator restarted while scored resumes
 earned weights with no owner-vote flicker. A miner that re-registers at a new
 UID keeps its earned weight only if it returns before validators archive its
 score state, which they do at the first scoring pass after 2 consecutive
-metagraph resyncs miss its hotkey; after that it starts from zero. A running validator agrees with a restarted one
-once both have read the same pool tie seed; a validator restarted during an
-archive outage does not vote until it can read one (see
+metagraph resyncs miss its hotkey; after that it starts from zero. A running
+validator and a restarted one vote alike (see
 [identical forecasts](#identical-forecasts)).
 If the durable score state cannot be read, emission abstains with the
 `score_state_unavailable` block above: no owner vote, no stale weights, and

@@ -58,6 +58,7 @@ from endure.storage.tables import (
     assessment_realized_targets,
     assessment_score_history,
     consensus_bundle_snapshots,
+    pool_tie_seeds,
     rounds,
     submissions,
     universe_snapshots,
@@ -940,22 +941,56 @@ class Storage:
                 for row in connection.execute(query)
             ]
 
-    def revealed_round_ids(self, schema_id: str, *, limit: int) -> list[str]:
+    def revealed_round_ids(
+        self, schema_id: str, *, limit: int, at_or_before: str | None = None
+    ) -> list[str]:
         """The newest ``limit`` rounds past their reveal, newest first.
 
-        Each one scores from its immutable consensus snapshot.
+        Each one scores from its immutable consensus snapshot. With
+        ``at_or_before``, no round newer than that one is listed.
         """
+        query = select(rounds.c.round_id).where(
+            rounds.c.schema_id == schema_id,
+            rounds.c.state.in_(POST_EMBARGO_ROUND_STATES),
+        )
+        if at_or_before is not None:
+            query = query.where(rounds.c.round_id <= at_or_before)
         with self._engine.connect() as connection:
             result = connection.execute(
-                select(rounds.c.round_id)
-                .where(
-                    rounds.c.schema_id == schema_id,
-                    rounds.c.state.in_(POST_EMBARGO_ROUND_STATES),
-                )
-                .order_by(rounds.c.round_id.desc())
-                .limit(limit)
+                query.order_by(rounds.c.round_id.desc()).limit(limit)
             )
             return [str(row.round_id) for row in result]
+
+    def newest_tie_seed(self, schema_id: str) -> tuple[str, str] | None:
+        """The newest round with a stored tie seed, and that seed."""
+        with self._engine.connect() as connection:
+            row = connection.execute(
+                select(pool_tie_seeds.c.round_id, pool_tie_seeds.c.seed)
+                .where(pool_tie_seeds.c.schema_id == schema_id)
+                .order_by(pool_tie_seeds.c.round_id.desc())
+                .limit(1)
+            ).one_or_none()
+        return None if row is None else (str(row.round_id), str(row.seed))
+
+    def tie_seed(self, round_id: str, schema_id: str) -> str | None:
+        """The pool tie seed stored for a revealed round, if one was read."""
+        with self._engine.connect() as connection:
+            seed = connection.execute(
+                select(pool_tie_seeds.c.seed).where(
+                    pool_tie_seeds.c.round_id == round_id,
+                    pool_tie_seeds.c.schema_id == schema_id,
+                )
+            ).scalar_one_or_none()
+        return None if seed is None else str(seed)
+
+    def record_tie_seed(self, round_id: str, schema_id: str, seed: str) -> None:
+        """Store a round's tie seed once; a finalized block's hash never changes."""
+        with self._engine.begin() as connection:
+            connection.execute(
+                sqlite_insert(pool_tie_seeds)
+                .values(round_id=round_id, schema_id=schema_id, seed=seed)
+                .on_conflict_do_nothing(index_elements=["round_id", "schema_id"])
+            )
 
     def _post_embargo_rounds(self, schema_id: str, *, now_iso: str):
         """Embargo enforced at the read path, not by write-ordering trust."""
