@@ -1,5 +1,31 @@
 # Changelog
 
+## v0.1.4 — archive resilience and horizon-maturity blend
+
+Protocol key `2045`; miners and validators must upgrade together. No
+chain-parameter change: SN30's `weights_version` (`2040`) accepts key `2045`.
+Package/API version is `0.1.4`. See the
+[release notes, operator upgrade and soak decision](docs/releases/v0.1.4.md).
+
+- The blend counts each 30-day EMA by its maturity, so first 30-day rounds no
+  longer halve it; up to 20% of a 5-day score waits on the 30-day record.
+- Each round's pool tie seed is stored once read (migration `0016`), so a
+  restarted validator votes without reading the archive, even through an outage.
+- Timestamp-to-block searches start near the target: about 4 archive reads
+  instead of 25, returning the same blocks.
+- A validator whose archive only throttles at startup reports `unverified` in
+  `runtime.archive_check` and re-checks hourly; a definitive failure stops it.
+- Nothing is read from a market-data archive before it answers the mainnet
+  genesis.
+- Any archive rate-limit answer, including the public archive's in-band
+  `Historical work rate limit exceeded`, pauses all archive reads for 60 seconds.
+- A throttled block-timestamp read is retried instead of read as zero, and each
+  timestamp takes two archive requests instead of four.
+- Each Alpha pool snapshot takes one runtime call instead of two.
+- A live validator's `health_tick_max_duration_seconds` must also leave room for
+  a 180-second archive re-check: it must exceed the resolution budget plus 780.
+- The operator-node miner template reads the public lite node by default.
+
 ## v0.1.3 — identical-forecast pooling
 
 Protocol key `2044`; miners and validators must upgrade together. No

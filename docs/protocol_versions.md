@@ -307,3 +307,41 @@ Key `2044` ships as [`v0.1.3`](releases/v0.1.3.md). Miners and validators must
 upgrade together; the release does not raise the chain's weight-version floor.
 SN30's chain `weights_version` of `2040` accepts key-`2044` submissions
 unchanged.
+
+Key `2044` is recorded as `activation-0047`. It first appeared on the public
+first-parent staging lineage in commit
+`f65d9e0454324670d6d95e1d6fa149b7d784deb3`; its source-bound receipt is
+`4c128a8ffdd56ea0512585749fc23e7efb54e2eb1992a499a12d5cec0d0d32da`.
+The published `v0.1.3` images retain that assignment.
+
+Key `2045` is leased to archive resilience and the horizon-maturity blend.
+Each round's pool tie seed is
+stored once read (migration `0016`), so a restarted validator orders ties
+without reading the archive; the seed's block and hash are unchanged. While the
+archive shows neither newest round's seed, votes take the newest stored seed
+and the newest revealed rounds up to its round, the same whether the validator
+restarted or not. The timestamp-to-block boundary searches start from a
+12-second estimate corrected by one read, then gallop and bisect, returning the
+block a bisection from block 0 returns in a few reads instead of about 25. The
+seed store, its read before the chain and the window votes take in an outage in
+[assessment_orchestrator.py](../endure/scoring/assessment_orchestrator.py) and
+[repository.py](../endure/storage/repository.py), and the boundary searches in
+[market_sampling.py](../endure/scoring/market_sampling.py), are digest-covered.
+The blended score counts each 30d EMA by its maturity and holds back up to 20%
+of each pair's 5d score until its 30d record matures, for pay, `/miners` and
+consensus weighting alike; see the
+[scope](specs/2026-07-06-alpha-risk-v1-scope.md). EMAs and pooling are
+unchanged.
+
+Its watched-tree digest is
+`933cf2b04ab774e8d8d1a0632790e15bacfd8fe332692fc24d3373eb75473e88`.
+The public lease authority receipt uses
+`PREVIOUS_RECEIPT=234fa4a7d49b3ae5ed9e03a1853a299a03d8d89b7ecfce0393b12291f7e8f38a`,
+`CURRENT_VERSION_KEY=2045`, and
+`CURRENT_VERSION_DIGEST=933cf2b04ab774e8d8d1a0632790e15bacfd8fe332692fc24d3373eb75473e88`
+under the `LEASE_AUTHORITY` format above, producing
+`e8cdf9e89de9b68d1b8bda9686dd1d2fc989af0307136b98a7968f5c71b32be3`.
+Key `2045` ships as [`v0.1.4`](releases/v0.1.4.md). Miners and validators must
+upgrade together; the release does not raise the chain's weight-version floor.
+SN30's chain `weights_version` of `2040` accepts key-`2045` submissions
+unchanged.

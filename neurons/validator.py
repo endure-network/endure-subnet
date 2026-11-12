@@ -36,7 +36,7 @@ from alembic import command as alembic_command
 from alembic.config import Config as AlembicConfig
 from fastapi import Request
 
-from endure.api.app import PublicationIdentity, RuntimeHealth
+from endure.api.app import ArchiveCheck, PublicationIdentity, RuntimeHealth
 from endure.assessment.registry import default_registry
 from endure.assessment.schemas.forge_lending import FORGE_LENDING_SCHEMA_ID
 from endure.assessment.schemas.subnet_alpha_risk import (
@@ -70,7 +70,10 @@ from endure.base.validator import (
     normalize_commitment_hash,
 )
 from endure.live.alpha_market_data import (
+    LIVE_MARKET_DATA_ARCHIVE_PROBE_TIMEOUT_SECONDS,
     LIVE_TIE_SEED_TIMEOUT_SECONDS,
+    ArchiveReadinessUnverified,
+    BittensorSubnetInfoFetcher,
     LiveAlphaPriceProvider,
     LiveAlphaPriceProviderConfig,
     read_chain_genesis,
@@ -114,7 +117,10 @@ from endure.scoring.emission_policy import (
     recheck_owner_vote,
     select_emission_mode,
 )
-from endure.scoring.market_data import recorded_mainnet_fixture_provider
+from endure.scoring.market_data import (
+    AlphaMarketDataUnavailable,
+    recorded_mainnet_fixture_provider,
+)
 from endure.scoring.policy import DEFAULT_PAYOUT_HALF_LIFE_ROUNDS
 from endure.scoring.risk.orchestrator import RiskScoringOrchestrator
 from endure.scoring.weights import Payout
@@ -164,6 +170,28 @@ _OWNER_READ_ATTEMPTS: Final = 3
 # /health reuses the durable confirmation summary this long, so public polling
 # cannot turn into one database query per request; emission events drop it.
 _CONFIRMATION_SUMMARY_TTL_SECONDS: Final = 5.0
+# The archive check reads this known active mainnet Alpha subnet. A validator
+# that started with its archive unverified re-runs the check this often, inside
+# a tick; a re-check outlasts its deadline by the requests in flight.
+_ARCHIVE_PROBE_NETUID: Final = 30
+_ARCHIVE_RECHECK_SECONDS: Final = 3600.0
+_ARCHIVE_RECHECK_MAX_SECONDS: Final = (
+    LIVE_MARKET_DATA_ARCHIVE_PROBE_TIMEOUT_SECONDS + 60.0
+)
+
+
+def _check_archive(
+    endpoint: str, *, fetcher: BittensorSubnetInfoFetcher | None = None
+) -> ArchiveCheck:
+    """Run the archive check; only a definitive failure raises."""
+    try:
+        validate_mainnet_archive(
+            endpoint, netuid=_ARCHIVE_PROBE_NETUID, fetcher=fetcher
+        )
+    except ArchiveReadinessUnverified as error:
+        bt.logging.warning(f"{safe_error(error)}; continuing unverified")
+        return "unverified"
+    return "passed"
 
 
 def _read_owner_fact[T](read: Callable[[], T], *, what: str) -> T:
@@ -299,16 +327,17 @@ class Validator(BaseValidatorNeuron):
                 "the watchdog window cannot prevent stale-tick restarts"
             )
         # A live tick that scores, and every live vote, may also read two pool
-        # tie seeds, each under its own deadline.
+        # tie seeds, each under its own deadline, after an archive re-check.
         if _uses_live_mainnet_data(resolved_config) and int(
             resolved_config.endure.resolution_budget_seconds
-        ) + 2 * LIVE_TIE_SEED_TIMEOUT_SECONDS >= int(
+        ) + 2 * LIVE_TIE_SEED_TIMEOUT_SECONDS + _ARCHIVE_RECHECK_MAX_SECONDS >= int(
             resolved_config.endure.health_tick_max_duration_seconds
         ):
             raise RuntimeError(
                 "endure.health_tick_max_duration_seconds must exceed "
                 "endure.resolution_budget_seconds plus two "
-                f"{LIVE_TIE_SEED_TIMEOUT_SECONDS:.0f}-second tie seed reads; "
+                f"{LIVE_TIE_SEED_TIMEOUT_SECONDS:.0f}-second tie seed reads and "
+                f"a {_ARCHIVE_RECHECK_MAX_SECONDS:.0f}-second archive re-check; "
                 "a live tick waiting on a slow archive would otherwise outlive "
                 "the watchdog window"
             )
@@ -317,11 +346,13 @@ class Validator(BaseValidatorNeuron):
         _run_migrations(resolved_config.endure.database_url)
         if uses_mainnet_consensus_policy(resolved_config):
             _require_hotkey(resolved_config)
+        archive_check: ArchiveCheck | None = None
         if _uses_live_mainnet_data(resolved_config):
             # Scoring and pool tie seeds read this archive on testnet too, so
-            # every validator that reads one must read mainnet.
-            validate_mainnet_archive(
-                str(resolved_config.endure.market_data_endpoint), netuid=30
+            # every validator that reads one must read mainnet. Only a
+            # definitive failure refuses startup; throttling starts unverified.
+            archive_check = _check_archive(
+                str(resolved_config.endure.market_data_endpoint)
             )
         super().__init__(
             config=resolved_config,
@@ -358,6 +389,7 @@ class Validator(BaseValidatorNeuron):
         self._payout: Payout | None = None
         self._pools: OrderedPools = ()
         self._vertical_runtime: VerticalRuntime
+        self._archive_fetcher: BittensorSubnetInfoFetcher | None = None
         self._service = self._build_service()
         self._seed_deregistration_tracker()
         self._tick_failures = 0
@@ -370,6 +402,12 @@ class Validator(BaseValidatorNeuron):
         self._started_monotonic = time.monotonic()
         self._current_tick_budget = ResolutionBudget.unlimited()
         self._process_started_at = _utc_now().isoformat()
+        self._archive_check = archive_check
+        self._archive_recheck_at: float | None = (
+            time.monotonic() + _ARCHIVE_RECHECK_SECONDS
+            if archive_check == "unverified"
+            else None
+        )
         self._api_server: uvicorn.Server | None = None
         self._api_thread: threading.Thread | None = None
         self._attach_handlers()
@@ -590,6 +628,7 @@ class Validator(BaseValidatorNeuron):
                 self._service.consecutive_resolution_failures
             ),
             "last_resolution_error": self._service.last_resolution_error,
+            "archive_check": getattr(self, "_archive_check", None),
             "consecutive_empty_scored_rounds": (
                 self._service.consecutive_empty_scored_rounds
             ),
@@ -731,11 +770,39 @@ class Validator(BaseValidatorNeuron):
         )
 
     def watchdog_exit_reason(self) -> str | None:
+        if getattr(self, "_archive_check", None) == "failed":
+            return "archive check failed"
         if not self._validator_loop_alive():
             return "validator loop thread exited"
         if self._tick_stale():
             return "validator tick stale"
         return None
+
+    def _archive_recheck_due(self) -> bool:
+        due_at: float | None = getattr(self, "_archive_recheck_at", None)
+        return due_at is not None and time.monotonic() >= due_at
+
+    def _recheck_archive(self) -> None:
+        """Re-run the archive check of a validator that started unverified.
+
+        A definitive failure, a wrong chain or missing history, stops the
+        validator through the watchdog, as at startup: scoring must never
+        resolve or void a target from that archive.
+        """
+        try:
+            # The scoring fetcher, so a check shares its cooldown and its bound
+            # on hung requests.
+            self._archive_check = _check_archive(
+                str(self.config.endure.market_data_endpoint),
+                fetcher=getattr(self, "_archive_fetcher", None),
+            )
+        except AlphaMarketDataUnavailable as error:
+            bt.logging.error(f"archive check failed: {safe_error(error)}")
+            self._archive_check = "failed"
+        if self._archive_check == "unverified":
+            self._archive_recheck_at = time.monotonic() + _ARCHIVE_RECHECK_SECONDS
+        else:
+            self._archive_recheck_at = None
 
     def _start_api(self) -> None:
         port = int(self.config.endure.api_port)
@@ -1791,6 +1858,12 @@ class Validator(BaseValidatorNeuron):
         """One round-service tick; updates scores when new resolutions land."""
         self._begin_long_op()
         try:
+            if self._archive_recheck_due():
+                await asyncio.to_thread(self._recheck_archive)
+            if getattr(self, "_archive_check", None) == "failed":
+                # The watchdog is stopping the validator; nothing may resolve
+                # or void a target from this archive until then.
+                return
             selected = scoring_set(
                 self.metagraph.hotkeys, self._deregistration_tracker()
             )
@@ -1859,10 +1932,11 @@ def _build_risk_vertical_runtime(validator: Validator) -> VerticalRuntime:
             window_end_block = None
             tie_seed_reads = None
         else:
+            endpoint = str(validator.config.endure.market_data_endpoint)
+            validator._archive_fetcher = BittensorSubnetInfoFetcher(endpoint)
             live_provider = LiveAlphaPriceProvider(
-                config=LiveAlphaPriceProviderConfig(
-                    endpoint=str(validator.config.endure.market_data_endpoint)
-                ),
+                config=LiveAlphaPriceProviderConfig(endpoint=endpoint),
+                fetcher=validator._archive_fetcher,
                 progress_fn=validator._mark_tick_progress,
                 deadline_exceeded_fn=validator._tick_budget_exhausted,
             )

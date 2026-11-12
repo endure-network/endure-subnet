@@ -3,8 +3,12 @@ from __future__ import annotations
 import asyncio
 import threading
 from decimal import Decimal
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
+import pytest
+
+from endure.live.alpha_market_data import ArchiveReadinessUnverified
+from endure.scoring.market_data import AlphaMarketDataUnavailable
 from neurons.validator import Validator
 
 
@@ -87,6 +91,39 @@ class TestForwardWiring:
         asyncio.run(validator.forward())
 
         assert validator._deregistration_tracker().confirmed() == ["hk-gone"]
+
+
+@pytest.mark.parametrize(
+    ("outcome", "check", "checks_again", "ticks"),
+    [
+        (None, "passed", False, True),
+        (ArchiveReadinessUnverified("still throttled"), "unverified", True, True),
+        (AlphaMarketDataUnavailable("archive is not mainnet"), "failed", False, False),
+    ],
+)
+def test_forward_rechecks_an_unverified_archive_when_due(
+    outcome: Exception | None, check: str, checks_again: bool, ticks: bool
+) -> None:
+    # Given: a validator that started with its archive unverified, now due a check.
+    service = MagicMock()
+    service.tick.return_value = None
+    validator = _wired_validator(service)
+    validator._archive_check = "unverified"
+    validator._archive_recheck_at = 0.0
+    validator._archive_fetcher = MagicMock()
+    probe = MagicMock(side_effect=outcome)
+
+    # When: the next tick runs.
+    with patch("neurons.validator.validate_mainnet_archive", probe):
+        asyncio.run(validator.forward())
+
+    # Then: the check ran once, on the scoring fetcher; only another unverified
+    # result schedules more, and only a failed archive skips the tick.
+    probe.assert_called_once()
+    assert probe.call_args.kwargs["fetcher"] is validator._archive_fetcher
+    assert validator._archive_check == check
+    assert (validator._archive_recheck_at is not None) is checks_again
+    assert service.tick.called is ticks
 
 
 def test_empty_fresh_weights_clear_cached_scores_and_snapshot() -> None:

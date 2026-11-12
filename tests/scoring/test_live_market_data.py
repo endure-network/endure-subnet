@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import gc
+import json
 import threading
 import time
 import weakref
@@ -18,6 +19,7 @@ from async_substrate_interface.errors import (
     StateDiscardedError,
     SubstrateRequestException,
 )
+from async_substrate_interface.sync_substrate import SubstrateInterface
 from websockets.datastructures import Headers
 from websockets.exceptions import InvalidStatus
 from websockets.http11 import Response
@@ -30,6 +32,9 @@ from endure.live.alpha_market_data import (
     LIVE_MARKET_DATA_REQUEST_PAUSE_SECONDS,
     LIVE_TIE_SEED_TIMEOUT_SECONDS,
     MAINNET_ARCHIVE_ENDPOINT,
+    ArchiveCoolingDown,
+    ArchiveNotMainnet,
+    ArchiveReadinessUnverified,
     BittensorSubnetInfoFetcher,
     LiveAlphaPriceProvider,
     LiveAlphaPriceProviderConfig,
@@ -50,7 +55,12 @@ from endure.scoring.market_data import (
     ResolutionWindow,
     alpha_snapshot_from_reserves,
 )
+from endure.scoring.market_sampling import SNAPSHOT_FETCH_FAILURES
 from scripts.record_lending_market_fixtures import _row_from_reserves
+
+TIMESTAMP_NOW_STORAGE_KEY = (
+    "0xf0c365c3cf59d671eb72da0e7a4113c49f1f0515f462cdcf84e0f1d6045dfcbb"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,18 +128,14 @@ class FakeSubnetFetcher:
         return f"0xABCDEF{block:058X}"
 
 
-@dataclass(frozen=True, slots=True)
-class FakeStorageValue:
-    value: int
-
-
 @dataclass(slots=True)
 class FakeArchiveSubstrate:
     finalized: int
     timestamps_by_block: dict[int, int]
     query_hashes: list[str] = field(default_factory=list)
     closed: bool = False
-    genesis: str | None = None
+    genesis: str = MAINNET_GENESIS_HASH
+    pending_storage_errors: list[Exception] = field(default_factory=list)
 
     def get_chain_finalised_head(self) -> str:
         return "finalized"
@@ -139,24 +145,26 @@ class FakeArchiveSubstrate:
         return self.finalized
 
     def get_block_hash(self, block_id: int) -> str:
-        if block_id == 0 and self.genesis is not None:
-            return self.genesis
-        return f"block-{block_id}"
+        return self.genesis if block_id == 0 else f"block-{block_id}"
 
-    def query(
-        self,
-        module: str,
-        storage_function: str,
-        params: list[str] | None = None,
-        block_hash: str | None = None,
-    ) -> FakeStorageValue:
-        assert module == "Timestamp"
-        assert storage_function == "Now"
-        assert params is None
-        assert block_hash is not None
+    def rpc_request(self, method: str, params: list[str] | None) -> dict[str, object]:
+        assert method == "state_getStorage"
+        assert params is not None
+        storage_key, block_hash = params
+        assert storage_key == TIMESTAMP_NOW_STORAGE_KEY
         self.query_hashes.append(block_hash)
-        block = int(block_hash.removeprefix("block-"))
-        return FakeStorageValue(value=self.timestamps_by_block[block])
+        if self.pending_storage_errors:
+            raise self.pending_storage_errors.pop(0)
+        block = (
+            0 if block_hash == self.genesis else int(block_hash.removeprefix("block-"))
+        )
+        timestamp = self.timestamps_by_block.get(block)
+        if timestamp is None:
+            return {"jsonrpc": "2.0", "result": None}
+        return {
+            "jsonrpc": "2.0",
+            "result": "0x" + timestamp.to_bytes(8, "little").hex(),
+        }
 
     def close(self) -> None:
         self.closed = True
@@ -281,14 +289,13 @@ def _archive_probe_provider(
     )
 
 
-def test_archive_readiness_uses_deep_history_and_timestamp_lookback() -> None:
+def test_archive_readiness_reads_the_pool_at_the_thirty_day_boundary() -> None:
     fetcher = _archive_probe_fetcher()
 
     _archive_probe_provider(fetcher).validate_archive(netuid=30)
 
-    # The old midpoint is required by scoring's binary search even though it
-    # precedes the 30-day reserve lookback; only one historical pool is fetched.
-    assert 50 in fetcher.timestamp_calls
+    # Scoring's boundary search finds the last block 30 days back, and only
+    # that one historical pool is fetched.
     assert fetcher.calls == [(30, 70)]
     assert fetcher.current_calls == 0
 
@@ -336,7 +343,43 @@ def test_archive_readiness_rejects_wrong_or_missing_genesis(
     assert fetcher.timestamp_calls == []
 
 
-@pytest.mark.parametrize("missing_block", [50, 70, 100])
+def test_live_provider_reads_nothing_from_an_archive_on_another_chain() -> None:
+    # Given: a scoring provider whose archive answers another chain's genesis.
+    fetcher = _archive_probe_fetcher()
+    fetcher.genesis = "0xwrong-chain"
+    provider = _archive_probe_provider(fetcher)
+
+    # When / Then: boundary, tie seed and pool reads all refuse before reading,
+    # with an error that scoring neither defers, resolves nor voids from.
+    with pytest.raises(ArchiveNotMainnet):
+        provider.block_for_reveal_close(_reveal_close(20), now=_reveal_close(10_000))
+    with pytest.raises(ArchiveNotMainnet):
+        provider.tie_seed_reads().finalized_block()
+    with pytest.raises(ArchiveNotMainnet):
+        provider.latest_pool_observation(30)
+    assert fetcher.timestamp_calls == []
+    assert fetcher.calls == []
+    assert not issubclass(
+        ArchiveNotMainnet, (*TIE_SEED_READ_FAILURES, *SNAPSHOT_FETCH_FAILURES)
+    )
+
+
+def test_live_provider_confirms_mainnet_once() -> None:
+    # Given: a scoring provider on a mainnet archive.
+    fetcher = _archive_probe_fetcher()
+    provider = _archive_probe_provider(fetcher)
+
+    # When: it maps two timestamps to blocks.
+    provider.block_for_reveal_close(_reveal_close(20), now=_reveal_close(10_000))
+    provider.last_finalized_block_at_or_before(
+        _reveal_close(40), now=_reveal_close(10_000)
+    )
+
+    # Then: the genesis was read once, before the first of those reads.
+    assert fetcher.genesis_calls == 1
+
+
+@pytest.mark.parametrize("missing_block", [70, 100])
 def test_archive_readiness_rejects_pruned_or_missing_timestamp_history(
     missing_block: int,
 ) -> None:
@@ -369,24 +412,33 @@ def test_archive_readiness_rejects_missing_historical_pool() -> None:
 
 
 @pytest.mark.parametrize(
-    "error",
+    ("error", "expected"),
     [
-        LookupError("historical state discarded"),
-        TimeoutError("archive timed out"),
-        OSError("archive wss://archive.example/private-key?token=secret unavailable"),
-        SubstrateRequestException(
-            {"code": -32000, "message": "State already discarded"}
+        (LookupError("historical state discarded"), AlphaMarketDataUnavailable),
+        (TimeoutError("archive timed out"), ArchiveReadinessUnverified),
+        (
+            OSError("archive wss://archive.example/private-key?token=secret down"),
+            ArchiveReadinessUnverified,
+        ),
+        (
+            SubstrateRequestException(
+                {"code": -32000, "message": "State already discarded"}
+            ),
+            AlphaMarketDataUnavailable,
         ),
     ],
 )
-def test_archive_readiness_rejects_unavailable_historical_reserves(
-    error: Exception,
+def test_archive_readiness_classifies_unavailable_historical_reserves(
+    error: Exception, expected: type[Exception]
 ) -> None:
+    # Given: the historical pool read fails with missing history or an outage.
     fetcher = _archive_probe_fetcher()
     fetcher.failed_blocks = frozenset({70})
     fetcher.failure_error = error
 
-    with pytest.raises(AlphaMarketDataUnavailable) as caught:
+    # When / Then: missing history refuses the archive; an outage that lasts
+    # until the deadline leaves it unverified. Neither leaks the endpoint.
+    with pytest.raises(expected) as caught:
         _archive_probe_provider(fetcher).validate_archive(netuid=30)
 
     assert "secret" not in str(caught.value)
@@ -432,8 +484,10 @@ def test_archive_probe_refuses_a_pruned_node_promptly(
     )
 
     # When / Then: missing history fails within the normal retry ladder, while
-    # a transport outage is retried until the probe deadline.
-    with pytest.raises(AlphaMarketDataUnavailable):
+    # a transport outage is retried until the probe deadline and leaves the
+    # archive unverified.
+    expected = AlphaMarketDataUnavailable if prompt else ArchiveReadinessUnverified
+    with pytest.raises(expected):
         provider.validate_archive(netuid=30)
     assert (clock[0] < 10.0) is prompt
     assert (clock[0] >= 120.0) is not prompt
@@ -448,7 +502,7 @@ def test_archive_readiness_enforces_probe_deadline() -> None:
         now_fn=lambda: next(ticks),
     )
 
-    with pytest.raises(AlphaMarketDataUnavailable):
+    with pytest.raises(ArchiveReadinessUnverified):
         provider.validate_archive(netuid=30)
 
     assert fetcher.calls == []
@@ -551,6 +605,125 @@ def test_archive_probe_waits_out_a_handshake_rate_limit_within_its_deadline() ->
     # well inside the 120-second probe deadline.
     assert len(handshakes) == 2
     assert 60.0 <= handshakes[1] < 70.0
+    fetcher.close()
+
+
+def test_archive_probe_stays_unverified_while_timestamp_reads_are_throttled() -> None:
+    # Given: a mainnet archive that throttles every timestamp read in-band.
+    clock = [0.0]
+    source = _archive_probe_fetcher()
+    substrate = FakeArchiveSubstrate(
+        finalized=source.finalized,
+        timestamps_by_block=source.timestamps_by_block,
+        genesis=MAINNET_GENESIS_HASH,
+        pending_storage_errors=[
+            SubstrateRequestException("Historical work rate limit exceeded")
+            for _ in range(10)
+        ],
+    )
+    fetcher = BittensorSubnetInfoFetcher(
+        "mock://archive",
+        subtensor=BlockingSubtensor(),
+        now_fn=lambda: clock[0],
+        min_request_interval_seconds=0.0,
+    )
+    fetcher._make_substrate = lambda: substrate
+
+    def sleep(seconds: Decimal) -> None:
+        clock[0] += float(seconds)
+
+    provider = LiveAlphaPriceProvider(
+        config=LiveAlphaPriceProviderConfig(endpoint="mock://archive"),
+        fetcher=fetcher,
+        sleep=sleep,
+        now_fn=lambda: clock[0],
+    )
+
+    # When / Then: the check ends unverified at its deadline, never refused.
+    with pytest.raises(ArchiveReadinessUnverified):
+        provider.validate_archive(netuid=30)
+    fetcher.close()
+
+
+@pytest.mark.parametrize("stored", [{}, {5: 0}])
+def test_timestamp_read_refuses_a_missing_or_zero_time_after_genesis(
+    stored: dict[int, int],
+) -> None:
+    # Given: genesis, which stores no timestamp, and a later block that
+    # answers no value or zero.
+    substrate = FakeArchiveSubstrate(finalized=10, timestamps_by_block=stored)
+    fetcher = BittensorSubnetInfoFetcher(
+        "mock://archive", min_request_interval_seconds=0.0
+    )
+    fetcher._make_substrate = lambda: substrate
+
+    # When / Then: genesis reads as zero, and the later block is a failed read.
+    assert fetcher.timestamp_at_block(0) == 0
+    with pytest.raises(SubstrateRequestException):
+        fetcher.timestamp_at_block(5)
+    fetcher.close()
+
+
+def test_a_failed_read_naming_a_block_with_429_in_it_arms_no_cooldown() -> None:
+    # Given: an archive with no timestamp at block 1,429.
+    substrate = FakeArchiveSubstrate(
+        finalized=2_000, timestamps_by_block={1_428: _timestamp(1)}
+    )
+    fetcher = BittensorSubnetInfoFetcher(
+        "mock://archive", min_request_interval_seconds=0.0
+    )
+    fetcher._make_substrate = lambda: substrate
+
+    # When / Then: that read fails, and the next read goes out at once
+    # instead of waiting out an HTTP 429 cooldown.
+    with pytest.raises(SubstrateRequestException, match="block=1429"):
+        fetcher.timestamp_at_block(1_429)
+    assert fetcher.timestamp_at_block(1_428) == _timestamp(1)
+    fetcher.close()
+
+
+@dataclass(slots=True)
+class ScriptedSocket:
+    replies: dict[str, dict[str, object]]
+    sent: list[dict[str, object]] = field(default_factory=list)
+
+    def send(self, message: str) -> None:
+        self.sent.append(json.loads(message))
+
+    def recv(self, timeout: float | None = None, decode: bool = False) -> bytes:
+        request = self.sent[-1]
+        reply = {"jsonrpc": "2.0", "id": request["id"]}
+        return json.dumps({**reply, **self.replies[str(request["method"])]}).encode()
+
+
+def test_sdk_timestamp_read_raises_an_in_band_throttle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given: the real SDK client on an archive that throttles the storage read
+    # in-band, a reply SubstrateInterface.query decodes as a zero timestamp.
+    socket = ScriptedSocket(
+        replies={
+            "chain_getBlockHash": {"result": "0x" + "ab" * 32},
+            "state_getStorage": {
+                "error": {
+                    "code": -32004,
+                    "message": "Historical work rate limit exceeded",
+                }
+            },
+        }
+    )
+    substrate = SubstrateInterface(url="mock://archive", _mock=True)
+    monkeypatch.setattr(substrate, "connect", lambda init=False: socket)
+    fetcher = BittensorSubnetInfoFetcher(
+        "mock://archive", min_request_interval_seconds=0.0
+    )
+    fetcher._make_substrate = lambda: substrate
+
+    # When / Then: the read raises the throttle, which arms the cooldown.
+    with pytest.raises(SubstrateRequestException, match="rate limit"):
+        fetcher.timestamp_at_block(5)
+    with pytest.raises(ArchiveCoolingDown):
+        fetcher.timestamp_at_block(5)
     fetcher.close()
 
 
@@ -1352,6 +1525,9 @@ def test_baseline_risk_bundle_skips_timed_out_netuids_without_wedging() -> None:
         subtensor_factory=make_subtensor,
         min_request_interval_seconds=0.0,
     )
+    fetcher._make_substrate = lambda: FakeArchiveSubstrate(
+        finalized=1, timestamps_by_block={}
+    )
     provider = LiveAlphaPriceProvider(
         config=LiveAlphaPriceProviderConfig(
             max_attempts=1,
@@ -1460,6 +1636,48 @@ def test_fetcher_bounds_indefinitely_timed_out_archive_workers() -> None:
         assert fetcher._abandoned_workers_condition.wait_for(
             lambda: fetcher._abandoned_workers == 0, timeout=1
         )
+
+
+def test_repeated_archive_checks_share_one_bound_on_hung_requests(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given: a scoring fetcher whose pool reads hang until released, and a
+    # check deadline short enough for several checks.
+    monkeypatch.setattr(
+        "endure.live.alpha_market_data.LIVE_MARKET_DATA_ARCHIVE_PROBE_TIMEOUT_SECONDS",
+        0.3,
+    )
+    release = threading.Event()
+    connections: list[IndefinitelyBlockingSubtensor] = []
+
+    def make_subtensor() -> IndefinitelyBlockingSubtensor:
+        connection = IndefinitelyBlockingSubtensor(release=release)
+        connections.append(connection)
+        return connection
+
+    source = _archive_probe_fetcher()
+    fetcher = BittensorSubnetInfoFetcher(
+        "mock://archive",
+        request_timeout_seconds=0.05,
+        subtensor_factory=make_subtensor,
+        min_request_interval_seconds=0.0,
+    )
+    fetcher._make_substrate = lambda: FakeArchiveSubstrate(
+        finalized=source.finalized, timestamps_by_block=source.timestamps_by_block
+    )
+
+    try:
+        # When: more checks run on it than its bound admits hung requests.
+        for _ in range(LIVE_MARKET_DATA_MAX_ABANDONED_WORKERS + 2):
+            with pytest.raises(ArchiveReadinessUnverified):
+                validate_mainnet_archive("mock://archive", netuid=30, fetcher=fetcher)
+
+        # Then: the hung requests never outgrow that one bound.
+        assert len(connections) == LIVE_MARKET_DATA_MAX_ABANDONED_WORKERS
+        assert fetcher._abandoned_workers == LIVE_MARKET_DATA_MAX_ABANDONED_WORKERS
+    finally:
+        release.set()
+        fetcher.close()
 
 
 def test_fetcher_connects_lazily_and_never_blocks_init_on_a_hanging_factory() -> None:
@@ -1724,9 +1942,12 @@ class InBandThrottledSubtensor:
             }
         ),
         SubstrateRequestException("Historical work rate limit exceeded"),
+        SubstrateRequestException("Too Many Requests"),
     ],
 )
-def test_fetcher_keeps_connection_after_in_band_rate_limit(error: Exception) -> None:
+def test_fetcher_backs_off_but_keeps_connection_after_in_band_rate_limit(
+    error: Exception,
+) -> None:
     # Given: a cached connection whose operation answers an in-band rate limit.
     connections: list[InBandThrottledSubtensor] = []
 
@@ -1746,13 +1967,103 @@ def test_fetcher_keeps_connection_after_in_band_rate_limit(error: Exception) -> 
     with pytest.raises((type(error), ConnectionError)):
         fetcher.subnet(netuid=9)
 
-    # When: the next operation runs immediately, with no cooldown armed.
+    # When: the next operations run inside the cooldown, then after it.
+    with pytest.raises(ArchiveCoolingDown):
+        fetcher.subnet(netuid=9)
+    clock[0] = LIVE_MARKET_DATA_RATE_LIMIT_COOLDOWN_SECONDS + 1
     result = fetcher.subnet(netuid=9)
 
-    # Then: the healthy connection is reused instead of being voided.
+    # Then: nothing reached the archive during the cooldown, and the healthy
+    # connection is reused afterwards instead of being voided.
     assert result.tao_in == 5_000_000_009
     assert len(connections) == 1
     assert connections[0].calls == 2
+
+
+def test_live_provider_waits_out_a_throttle_cooldown_without_spending_attempts() -> (
+    None
+):
+    # Given: an archive that throttles the first read in-band, then answers,
+    # and a provider allowed only two attempts per read.
+    clock = [0.0]
+    connection = InBandThrottledSubtensor(
+        error=SubstrateRequestException("Historical work rate limit exceeded")
+    )
+    fetcher = BittensorSubnetInfoFetcher(
+        endpoint="mock://archive",
+        subtensor=connection,
+        now_fn=lambda: clock[0],
+        min_request_interval_seconds=0.0,
+    )
+    fetcher._make_substrate = lambda: FakeArchiveSubstrate(
+        finalized=1, timestamps_by_block={}
+    )
+
+    def sleep(seconds: Decimal) -> None:
+        clock[0] += float(seconds)
+
+    provider = LiveAlphaPriceProvider(
+        config=LiveAlphaPriceProviderConfig(endpoint="mock://archive", max_attempts=2),
+        fetcher=fetcher,
+        sleep=sleep,
+        now_fn=lambda: clock[0],
+    )
+
+    # When: a miner reads the latest pool.
+    observation = provider.latest_pool_observation(9)
+
+    # Then: the second attempt waited for the cooldown to end, so the read
+    # succeeds with only two requests sent.
+    assert observation is not None
+    assert connection.calls == 2
+    assert clock[0] >= LIVE_MARKET_DATA_RATE_LIMIT_COOLDOWN_SECONDS
+    fetcher.close()
+
+
+@dataclass(slots=True)
+class FakeSdkSubtensor:
+    queries: list[tuple[str, str, object, int | None]] = field(default_factory=list)
+
+    def query_runtime_api(
+        self,
+        runtime_api: str,
+        method: str,
+        params: object = None,
+        block: int | None = None,
+    ) -> object:
+        self.queries.append((runtime_api, method, params, block))
+        return {"tao_in": 5_000_000_007, "alpha_in": 1_000_000_000, "subnet_name": []}
+
+    def get_current_block(self) -> int:
+        return 9_999
+
+    def close(self) -> None:
+        return None
+
+
+def test_fetcher_reads_pool_reserves_with_one_runtime_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given: the production factory over an SDK that answers dynamic info and
+    # has no other subnet read.
+    sdk = FakeSdkSubtensor()
+    monkeypatch.setattr(
+        "endure.live.alpha_market_data.bt.Subtensor", lambda **_kwargs: sdk
+    )
+    fetcher = BittensorSubnetInfoFetcher(
+        "mock://archive", min_request_interval_seconds=0.0
+    )
+
+    # When: a historical snapshot is read.
+    reserves = fetcher.subnet(netuid=7, block=4_200)
+
+    # Then: one dynamic-info runtime call yields the pool reserves.
+    assert (int(reserves.tao_in), int(reserves.alpha_in)) == (
+        5_000_000_007,
+        1_000_000_000,
+    )
+    assert sdk.queries == [("SubnetInfoRuntimeApi", "get_dynamic_info", [7], 4_200)]
+    fetcher.close()
 
 
 def test_fetcher_voids_connection_for_transport_errors_mentioning_rate_limits() -> None:
@@ -1841,7 +2152,7 @@ def test_live_provider_marks_progress_per_retry_attempt() -> None:
         return outcome
 
     # When: the retry loop runs to success.
-    assert provider._with_retry(flaky) == 7
+    assert provider._retry(flaky) == 7
 
     # Then: liveness is marked once per attempt.
     assert marks == [1, 1, 1]

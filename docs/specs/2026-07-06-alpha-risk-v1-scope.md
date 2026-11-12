@@ -147,10 +147,20 @@ and frozen at it.
 skipped scores 0, so cherry-picking easy assets cannot beat full coverage.
 
 **EMA and earned weights**: one EMA per (hotkey, netuid, output, horizon)
-coordinate on the existing spine; blended score = equal-weight mean of a
-miner's scored-coordinate EMAs; earned weights use the existing sharpened
-normalization. Output/horizon weighting in the blend is deferred. Key `2042`
-does not change scoring coefficients or the mainnet target universe.
+coordinate on the existing spine. A 30d coordinate's maturity after `n` resolved
+rounds is `m = 1 - 2^(-n/5)`, the most its zero-prior EMA can reach. Each
+(netuid, output) pair scores
+
+```text
+(ema_5d + ema_30d) x (0.80 + 0.20 x m) / (1 + m)
+```
+
+with a missing EMA or maturity counted as zero, and the blended score is the mean
+over the miner's pairs. A pair with no 30d record keeps 80% of its 5d EMA, moves
+to the plain average of its two EMAs as the 30d record matures, and a young 30d
+EMA does not read as poor accuracy. Earned weights use the existing
+sharpened normalization of this score, and consensus weighting uses the same
+score. Output/horizon weighting in the blend is otherwise deferred.
 
 **SN30 owner-vote fallback (key `2042`)**: served Alpha Risk on mainnet SN30
 and Bittensor testnet submits the whole vote (u16 `65535`) to the UID of the
@@ -394,8 +404,8 @@ to resolve against the Forge scope doc.
 - Dynamic universe selection (top-N by liquidity).
 - Slippage-at-size output (derivable from `liquidity_depth` under the AMM
   curve).
-- Output/horizon weighting in the blended score; confidence-weighted
-  scoring.
+- Output/horizon weighting in the blended score beyond 30d maturity;
+  confidence-weighted scoring.
 - Forge lending reactivation and any lending parameter derivation.
 - Simulation-based scoring; any non-mainnet data source.
 

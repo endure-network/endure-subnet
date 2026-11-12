@@ -3,8 +3,7 @@
 Which blocks are sampled, how a timestamp maps to a finalized block, and when
 gaps void a series determine realized values and therefore scores, so they
 live in the watched tree. Archive I/O stays in ``endure.live``: the boundary
-searches receive the timestamp lookup as a callable and issue exactly the same
-lookups in the same order.
+searches receive the timestamp lookup as a callable.
 """
 
 from __future__ import annotations
@@ -21,7 +20,10 @@ from endure.scoring.market_data import (
     AlphaPriceSnapshot,
     ResolutionWindow,
 )
-from endure.scoring.risk.observables import CANONICAL_ALPHA_SNAPSHOT_CADENCE_BLOCKS
+from endure.scoring.risk.observables import (
+    BLOCK_SECONDS,
+    CANONICAL_ALPHA_SNAPSHOT_CADENCE_BLOCKS,
+)
 
 # The SDK's own retry substrate surfaces exhaustion as MaxRetriesExceeded
 # (a SubstrateRequestException, plain Exception subclass) — observed live on
@@ -133,15 +135,16 @@ def first_block_at_or_after(
         )
     if finalized_timestamp == timestamp_ms:
         return finalized_block
-    lower_block = 0
-    upper_block = finalized_block
-    while lower_block < upper_block:
-        midpoint = lower_block + (upper_block - lower_block) // 2
-        if timestamp_at(midpoint) >= timestamp_ms:
-            upper_block = midpoint
-        else:
-            lower_block = midpoint + 1
-    return lower_block
+    return _first_block_reaching(
+        lambda block: timestamp_at(block) >= timestamp_ms,
+        upper_block=finalized_block,
+        guess=_guess_block(
+            timestamp_ms,
+            finalized_block=finalized_block,
+            finalized_timestamp=finalized_timestamp,
+            timestamp_at=timestamp_at,
+        ),
+    )
 
 
 def last_block_at_or_before(
@@ -155,20 +158,84 @@ def last_block_at_or_before(
         )
     if finalized_timestamp == timestamp_ms:
         return finalized_block
-    lower_block = 0
-    upper_block = finalized_block
-    while lower_block < upper_block:
-        midpoint = lower_block + (upper_block - lower_block) // 2
-        if timestamp_at(midpoint) > timestamp_ms:
-            upper_block = midpoint
-        else:
-            lower_block = midpoint + 1
-    last_block = lower_block - 1
+    first_after = _first_block_reaching(
+        lambda block: timestamp_at(block) > timestamp_ms,
+        upper_block=finalized_block,
+        guess=_guess_block(
+            timestamp_ms,
+            finalized_block=finalized_block,
+            finalized_timestamp=finalized_timestamp,
+            timestamp_at=timestamp_at,
+        ),
+    )
+    last_block = first_after - 1
     if last_block < 0:
         raise AlphaMarketDataUnavailable(
             "timestamp precedes the finalized archive history"
         )
     return last_block
+
+
+def _guess_block(
+    timestamp_ms: int,
+    *,
+    finalized_block: int,
+    finalized_timestamp: int,
+    timestamp_at: Callable[[int], int],
+) -> int:
+    """Where ``timestamp_ms`` falls, from 12-second blocks, corrected once.
+
+    Missed slots make the estimate from the head drift (about a hundred blocks
+    a month on mainnet); the timestamp at the estimate corrects most of that.
+    """
+    block_ms = BLOCK_SECONDS * 1_000
+    estimate = finalized_block - (finalized_timestamp - timestamp_ms) // block_ms
+    if estimate <= 0:
+        # Genesis carries no timestamp, so start from the first stamped block.
+        return 1
+    return estimate + (timestamp_ms - timestamp_at(estimate)) // block_ms
+
+
+def _first_block_reaching(
+    reached: Callable[[int], bool], *, upper_block: int, guess: int
+) -> int:
+    """The first block in ``[0, upper_block]`` where ``reached`` holds.
+
+    ``reached`` holds at ``upper_block`` and, since timestamps never decrease,
+    at every block after the first one. The search gallops out from ``guess``
+    and then bisects, so it returns the block a bisection from block 0 would,
+    in a few reads when the guess is close.
+    """
+    if upper_block == 0:
+        return 0
+    last_unreached, first_reached = -1, upper_block
+    probe = min(max(guess, 0), upper_block - 1)
+    step = 1
+    if reached(probe):
+        first_reached = probe
+        while first_reached - last_unreached > 1:
+            probe = max(first_reached - step, last_unreached + 1)
+            if not reached(probe):
+                last_unreached = probe
+                break
+            first_reached = probe
+            step *= 2
+    else:
+        last_unreached = probe
+        while first_reached - last_unreached > 1:
+            probe = min(last_unreached + step, first_reached - 1)
+            if reached(probe):
+                first_reached = probe
+                break
+            last_unreached = probe
+            step *= 2
+    while first_reached - last_unreached > 1:
+        midpoint = last_unreached + (first_reached - last_unreached) // 2
+        if reached(midpoint):
+            first_reached = midpoint
+        else:
+            last_unreached = midpoint
+    return first_reached
 
 
 class SeriesSampling:

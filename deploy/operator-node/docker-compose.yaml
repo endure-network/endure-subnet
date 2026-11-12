@@ -91,7 +91,7 @@ services:
         "--wallet.hotkey", "${MINER_HOTKEY:?set MINER_HOTKEY}",
         "--endure.active_schema", "risk.v1.subnet_alpha",
         "--endure.serving_stage", "${SERVING_STAGE:?set SERVING_STAGE}",
-        "--endure.market_data_endpoint", "${MARKET_DATA_ENDPOINT:-wss://archive.chain.opentensor.ai:443}",
+        "--endure.market_data_endpoint", "${MINER_MARKET_DATA_ENDPOINT:-wss://lite.chain.opentensor.ai:443}",
         "--endure.validator_axon_overrides", "${VALIDATOR_AXON_OVERRIDES:-}",
         "--axon.port", "8092",
         "--axon.external_ip", "${EXTERNAL_IP:?set EXTERNAL_IP}",
