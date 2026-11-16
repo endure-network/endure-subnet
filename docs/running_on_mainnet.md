@@ -419,8 +419,13 @@ validator already approaching inactivity.
    that value with a warning and runs the protocol floor `0`, so leftover values
    are harmless but misleading.
    Also delete the [options that no longer do anything](#ignored-options).
-3. Stop the old weight writer before starting Endure. Keep exactly one writer
-   per hotkey; do not run an external weight setter beside it.
+3. Stop the old weight writer before starting Endure. If it is an Endure
+   validator, stop it while its `/health` shows `open_weight_submissions: 0`.
+   A vote it leaves open carries the old protocol key, which the new process
+   cannot confirm: the new process holds its first vote until that vote's
+   deadline, and `/health` answers 503 from the deadline until the first new
+   vote confirms. Keep exactly one writer per hotkey; do not run an external
+   weight setter beside it.
 4. Start one final emission-enabled Endure process, with the axon on and
    `--neuron.disable_set_weights` omitted (default `false`). Verify archive
    readiness, accepted submissions, and durable weight confirmations. The
