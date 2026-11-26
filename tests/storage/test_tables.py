@@ -22,6 +22,7 @@ EXPECTED_TABLES = {
     "universe_snapshots",
     "submissions",
     "consensus_bundle_snapshots",
+    "pool_tie_seeds",
     "weight_emission_batches",
     "weight_emission_rows",
     "weight_emission_startup_fences",

@@ -23,7 +23,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal, localcontext
-from typing import TYPE_CHECKING, Final, NotRequired, TypedDict
+from typing import TYPE_CHECKING, Final, Literal, NotRequired, TypedDict
 
 from fastapi import FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -43,7 +43,8 @@ from endure.protocol.version_contract import CURRENT_VERSION_KEY
 from endure.publication.risk_feed import Signer, build_signed_risk_feed
 from endure.runtime.identity import runtime_identity
 from endure.scoring.context import TR_CONTEXT
-from endure.scoring.weights import Payout, normalize_weights
+from endure.scoring.policy import DEFAULT_PAYOUT_HALF_LIFE_ROUNDS
+from endure.scoring.weights import Payout, blended_score, normalize_weights
 from endure.storage.repository import (
     POST_EMBARGO_ROUND_STATES,
     ROUND_STATE_OPEN,
@@ -89,11 +90,15 @@ class RpcGateHealth(TypedDict):
     abandoned_generations: int
 
 
+type ArchiveCheck = Literal["passed", "unverified", "failed"]
+
+
 class RuntimeHealth(TypedDict):
     """Validator-loop health surfaced under /health's ``runtime`` field.
 
-    A dead loop, stale tick, nonzero tick/universe/resolution failures, or two
-    consecutive empty scored rounds returns a degraded 503 response.
+    A dead loop, stale tick, nonzero tick/universe/resolution failures, two
+    consecutive empty scored rounds, or a failed archive check returns a
+    degraded 503 response.
     """
 
     process_started_at: NotRequired[str]
@@ -110,6 +115,7 @@ class RuntimeHealth(TypedDict):
     last_universe_error: str | None
     consecutive_resolution_failures: NotRequired[int]
     last_resolution_error: str | None
+    archive_check: NotRequired[ArchiveCheck | None]
     consecutive_empty_scored_rounds: NotRequired[int]
     last_empty_scored_round: str | None
     last_set_weights_ok: NotRequired[str | None]
@@ -189,6 +195,7 @@ def _assessment_leaderboard(
     schema_id: str,
     active_coordinates: frozenset[AssessmentCoordinate] | None,
     payout: Payout | None,
+    horizons: tuple[int, ...],
 ) -> list[dict[str, object]]:
     states = (
         state
@@ -199,7 +206,11 @@ def _assessment_leaderboard(
     for state in states:
         by_hotkey.setdefault(state.miner_hotkey, []).append(state)
     blends = {
-        hotkey: _mean([state.ema for state in hotkey_states])
+        hotkey: blended_score(
+            hotkey_states,
+            horizons=horizons,
+            half_life_rounds=DEFAULT_PAYOUT_HALF_LIFE_ROUNDS,
+        )
         for hotkey, hotkey_states in sorted(by_hotkey.items())
         if hotkey_states
     }
@@ -407,6 +418,7 @@ def _register_core_routes(  # noqa: PLR0913 — explicit read API dependencies
                 or runtime["consecutive_tick_failures"] > 0
                 or runtime.get("consecutive_universe_failures", 0) > 0
                 or runtime.get("consecutive_resolution_failures", 0) > 0
+                or runtime.get("archive_check") == "failed"
                 or runtime.get("consecutive_empty_scored_rounds", 0)
                 >= _EMPTY_SCORED_ROUNDS_HEALTH_THRESHOLD
                 or runtime.get("consecutive_set_weights_failures", 0) > 0
@@ -447,7 +459,13 @@ def _register_core_routes(  # noqa: PLR0913 — explicit read API dependencies
             raise HTTPException(
                 status_code=503, detail="validator weights not computed yet"
             )
-        return _assessment_leaderboard(storage, schema_id, active_coordinates, current)
+        return _assessment_leaderboard(
+            storage,
+            schema_id,
+            active_coordinates,
+            current,
+            RISK_HORIZONS if publisher == "risk" else (),
+        )
 
     @app.get("/rounds/{round_id}")
     def round_meta(round_id: str) -> dict[str, object]:

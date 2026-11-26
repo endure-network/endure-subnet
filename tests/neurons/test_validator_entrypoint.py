@@ -1356,8 +1356,52 @@ def test_a_testnet_validator_must_read_a_mainnet_archive(
     ):
         Validator(config=cfg)
 
-    probe.assert_called_once_with(str(cfg.endure.market_data_endpoint), netuid=30)
+    probe.assert_called_once_with(
+        str(cfg.endure.market_data_endpoint), netuid=30, fetcher=None
+    )
     transport.assert_not_called()
+
+
+def test_a_throttled_archive_starts_the_validator_unverified(
+    mock_validator_config: bt.Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import neurons.validator as validator_module
+    from endure.live.alpha_market_data import ArchiveReadinessUnverified
+    from endure.scoring.market_data import AlphaMarketDataUnavailable
+
+    cfg = mock_validator_config
+    cfg.endure.active_schema = RISK_SCHEMA_ID
+    cfg.endure.devnet_time_compression = False
+    cfg.neuron.axon_off = True
+    cfg.neuron.disable_set_weights = True
+    # Given: a live-data validator whose startup check sees only throttling.
+    monkeypatch.setattr(validator_module, "_uses_live_mainnet_data", lambda _: True)
+    monkeypatch.setattr(
+        validator_module,
+        "validate_mainnet_archive",
+        MagicMock(side_effect=ArchiveReadinessUnverified("throttled")),
+    )
+
+    # When: it starts.
+    validator = validator_module.Validator(config=cfg)
+
+    # Then: it runs and reports the archive as unverified instead of exiting,
+    # with a re-check scheduled.
+    assert validator.runtime_health()["archive_check"] == "unverified"
+    assert validator._archive_recheck_at is not None
+    assert validator.watchdog_exit_reason() != "archive check failed"
+
+    # When: the re-check, on the scoring fetcher, finds a definitive failure.
+    recheck = MagicMock(
+        side_effect=AlphaMarketDataUnavailable("archive is not mainnet")
+    )
+    monkeypatch.setattr(validator_module, "validate_mainnet_archive", recheck)
+    validator._recheck_archive()
+
+    # Then: the watchdog stops the validator, as a failed startup check would.
+    assert validator._archive_fetcher is not None
+    assert recheck.call_args.kwargs["fetcher"] is validator._archive_fetcher
+    assert validator.watchdog_exit_reason() == "archive check failed"
 
 
 def test_a_compressed_testnet_run_reads_no_archive(
@@ -1386,8 +1430,8 @@ def test_a_compressed_testnet_run_reads_no_archive(
     probe.assert_not_called()
 
 
-@pytest.mark.parametrize(("watchdog", "starts"), ((1200, False), (1201, True)))
-def test_a_live_watchdog_leaves_room_for_two_tie_seed_reads(
+@pytest.mark.parametrize(("watchdog", "starts"), ((1380, False), (1381, True)))
+def test_a_live_watchdog_leaves_room_for_tie_seed_reads_and_an_archive_recheck(
     production_validator_config: bt.Config, watchdog: int, starts: bool
 ) -> None:
     from neurons.validator import Validator

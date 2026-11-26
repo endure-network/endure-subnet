@@ -1,5 +1,6 @@
 """Shared consensus-critical Alpha Risk scoring defaults."""
 
+from decimal import Decimal
 from typing import Final
 
 # Experimental Alpha Risk testnet starting value. The public calibration report
@@ -10,3 +11,7 @@ WEIGHT_SHARPENING_GAMMA: Final = 3
 # Experimental Alpha Risk testnet payout memory. Keep lockstep with the public
 # calibration artifact and change only through a versioned protocol update.
 DEFAULT_PAYOUT_HALF_LIFE_ROUNDS: Final = 5
+
+# Share of a coordinate's short-horizon score held back until it has a record on
+# the longest horizon. Change only through a versioned protocol update.
+LONG_HORIZON_HOLD_BACK: Final = Decimal("0.20")

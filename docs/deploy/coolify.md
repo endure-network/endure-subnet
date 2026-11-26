@@ -175,11 +175,12 @@ If rollback is required, restore that revision through the dashboard, restore
 the database only when necessary, and repeat the health, round, and weight
 checks above.
 
-Migration `0014_drop_kre_tables` is such a necessary case: an `0013` image
-cannot start against a database stamped at `0014`. A rollback across this
-boundary must stop both applications and restore the verified pre-`0014`
+Any schema migration is such a necessary case: an image cannot start against
+a database stamped past the newest migration it knows. A rollback across a
+migration must stop both applications and restore the verified pre-upgrade
 snapshot before the old validator starts. Never use `alembic downgrade`, which
-recreates empty legacy table shapes but cannot restore deleted KRE rows.
+for `0014_drop_kre_tables` recreates empty legacy table shapes but cannot
+restore the deleted KRE rows.
 
 The protocol key comes from
 [`version_contract.py`](../../endure/protocol/version_contract.py), not this

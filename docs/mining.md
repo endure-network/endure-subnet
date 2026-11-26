@@ -34,7 +34,8 @@ Use the command shape in [the testnet runbook](running_on_testnet.md). Endure's
 testnet netuid is `504`; supply your wallet name/hotkey, a reachable axon address, and
 `--endure.serving_stage testnet`. Alpha Risk obtains market data through
 `--endure.market_data_endpoint`; do not supply a private endpoint in a public
-report. The miner entry point is [neurons/miner.py](../neurons/miner.py).
+report. The reference miner reads only the current mainnet chain head, so any
+mainnet node works; it does not need the rate-limited public archive. The miner entry point is [neurons/miner.py](../neurons/miner.py).
 Live miner axons accept requests only from registered hotkeys carrying a
 validator permit. Mock/local development keeps the configurable permissive
 behavior, but live operation ignores attempts to allow unregistered callers.
@@ -118,9 +119,9 @@ Read the current rate with
 The round universe is every whitelisted netuid × both horizons × all four
 outputs. Read it per round from `/rounds/{round_id}/universe`; a 15-netuid
 whitelist yields 120 scored coordinates. Once you are in
-the scoring set, zero-fill applies to the whole universe: submitting only one
-horizon, or a subset of netuids, zero-fills the rest and scales your blended
-score down by the missing fraction before weight sharpening. Cubic sharpening
+the scoring set, zero-fill applies to the whole universe: submitting a subset
+of netuids zero-fills the rest and scales your blended score down by the
+missing fraction before weight sharpening. Cubic sharpening
 then amplifies the gap — a miner matching another's accuracy on half the
 universe earns roughly one eighth of the weight, not one half. Submitting a
 defensible estimate for every coordinate strictly dominates skipping it: a
@@ -214,15 +215,21 @@ owner-vote fallback is separate:
 - Round results fold into a per-coordinate EMA with a five-round half-life:
   payouts track a rolling record, not one lucky or unlucky day. Absence decays
   it; archival removes fully decayed hotkeys.
+- Your 30-day EMAs count by the rounds they have resolved, so a young one does
+  not read as poor accuracy. For each netuid and output, up to 20% of the 5-day
+  score is held back until the 30-day record matures. After sharpening, the
+  hold-back alone costs about half your pay against an equally accurate miner
+  with a full record. The formula is in
+  [the scope](specs/2026-07-06-alpha-risk-v1-scope.md).
 - Weights apply `gamma = 3` sharpening to blended records before
   normalization, so sustained accuracy gaps compound: a `0.9` record out-earns
   a `0.5` record roughly six to one, and near-zero records earn effectively
   nothing.
 
-Key `2042` retains the scoring constants shipped at key `2041`
-([policy.py](../endure/scoring/policy.py),
-[subnet_alpha_risk.py](../endure/assessment/schemas/subnet_alpha_risk.py)).
-They are release-pinned, not operator tuning controls, and remain experimental;
+Scoring constants are release-pinned in
+[policy.py](../endure/scoring/policy.py) and
+[subnet_alpha_risk.py](../endure/assessment/schemas/subnet_alpha_risk.py),
+not operator tuning controls, and remain experimental;
 see [economic limitations](economic-limitations.md).
 
 ## Troubleshooting and support

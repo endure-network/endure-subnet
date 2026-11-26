@@ -207,6 +207,17 @@ assessment_score_history = Table(
     ),
 )
 
+pool_tie_seeds = Table(
+    "pool_tie_seeds",
+    metadata,
+    Column("round_id", Text, primary_key=True),
+    Column("schema_id", Text, primary_key=True),
+    Column("seed", Text, nullable=False),
+    ForeignKeyConstraint(
+        ["round_id", "schema_id"], ["rounds.round_id", "rounds.schema_id"]
+    ),
+)
+
 weight_emission_startup_fences = Table(
     "weight_emission_startup_fences",
     metadata,

@@ -276,14 +276,20 @@
       "evidence_sha256": "906c7da0c18c7768cfeebdaa566516f60e37ce9dc661d93b3df549bee3522ecf",
       "key": 2043,
       "record_id": "activation-0046"
+    },
+    {
+      "digest": "777d3671ffd72c112fd853dc018c7f38449821da16a9d8539f113b07cc35ed47",
+      "evidence_sha256": "4c128a8ffdd56ea0512585749fc23e7efb54e2eb1992a499a12d5cec0d0d32da",
+      "key": 2044,
+      "record_id": "activation-0047"
     }
   ],
   "current_lease": {
-    "authority_sha256": "234fa4a7d49b3ae5ed9e03a1853a299a03d8d89b7ecfce0393b12291f7e8f38a",
-    "digest": "777d3671ffd72c112fd853dc018c7f38449821da16a9d8539f113b07cc35ed47",
-    "holder": "feat/identical-forecast-pooling",
-    "key": 2044
+    "authority_sha256": "e8cdf9e89de9b68d1b8bda9686dd1d2fc989af0307136b98a7968f5c71b32be3",
+    "digest": "933cf2b04ab774e8d8d1a0632790e15bacfd8fe332692fc24d3373eb75473e88",
+    "holder": "feat/horizon-maturity-blend",
+    "key": 2045
   },
-  "previous_activation_id": "activation-0046",
+  "previous_activation_id": "activation-0047",
   "schema_version": 1
 }

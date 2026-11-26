@@ -12,9 +12,12 @@ import numpy as np
 from endure.assessment.coordinates import AssessmentCoordinate, AssessmentEmaState
 from endure.assessment.schemas.subnet_alpha_risk import (
     HORIZON_5D_SECONDS,
+    RISK_HORIZONS,
     RISK_SCHEMA_ID,
     RiskOutput,
 )
+from endure.scoring.policy import DEFAULT_PAYOUT_HALF_LIFE_ROUNDS
+from endure.scoring.weights import blended_score, normalize_weights
 from endure.storage.repository import Storage
 
 NOW = "2026-08-12T12:00:00+00:00"
@@ -54,7 +57,15 @@ def _ema(hotkey: str, value: str) -> AssessmentEmaState:
             output=RiskOutput.MAX_DRAWDOWN.value,
         ),
         ema=Decimal(value),
-        resolved_rounds=1,
+        resolved_rounds=100,
+    )
+
+
+def _blend(hotkey: str, value: str) -> Decimal:
+    return blended_score(
+        [_ema(hotkey, value)],
+        horizons=RISK_HORIZONS,
+        half_life_rounds=DEFAULT_PAYOUT_HALF_LIFE_ROUNDS,
     )
 
 
@@ -83,13 +94,10 @@ def test_startup_reconstructs_scores_from_sqlite_after_npz_gap(
     assert program is not None
     weights = program.weights()
     expected_raw = {
-        "miner-hotkey-1": Decimal("0.3"),
-        "miner-hotkey-2": Decimal("0.7"),
+        "miner-hotkey-1": _blend("miner-hotkey-1", "0.3"),
+        "miner-hotkey-2": _blend("miner-hotkey-2", "0.7"),
     }
-    expected_weights = {
-        "miner-hotkey-1": Decimal("0.07297297297297297297297297297"),
-        "miner-hotkey-2": Decimal("0.9270270270270270270270270270"),
-    }
+    expected_weights = normalize_weights(expected_raw)
 
     # Then: startup installs cubic-sharpened weights, never linear blends.
     assert validator._last_tick_ok is None
@@ -193,8 +201,8 @@ def test_restart_recovers_committed_scores_after_uncheckpointed_crash(
 
     # Then: the emission-ready vector is reconstructed from the committed transaction.
     assert restarted._service.blended_snapshot() == {
-        "miner-hotkey-1": Decimal("0.4"),
-        "miner-hotkey-2": Decimal("0.8"),
+        "miner-hotkey-1": _blend("miner-hotkey-1", "0.4"),
+        "miner-hotkey-2": _blend("miner-hotkey-2", "0.8"),
     }
     assert restarted.scores == [
         weights.get(hotkey, Decimal(0)) for hotkey in restarted.hotkeys

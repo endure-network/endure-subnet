@@ -1,18 +1,15 @@
 # Running Endure on Mainnet
 
-> **Mainnet serving is opt-in and owner-gated.** `v0.1.3` retains
+> **Mainnet serving is opt-in and owner-gated.** `v0.1.4` retains
 > experimental economic limitations. Alpha Risk serves on mainnet only when
 > the operator passes the explicit `--endure.serving_stage mainnet` acknowledgement on a
 > recognized mainnet endpoint, and only releases promoted to the `:prod`
-> image channel under the [owner release decision](releases/v0.1.3.md)
+> image channel under the [owner release decision](releases/v0.1.4.md)
 > are supported there. Do not run a staging release candidate or a locally built image on mainnet.
 
-`v0.1.3` uses protocol key `2044` ([version contract](../endure/protocol/version_contract.py)).
-It replaces the key-`2043` `v0.1.2` images and adds
-[identical-forecast pooling](#identical-forecasts): miners and validators
-upgrade together, the published [owner burn rate](#owner-burn-rate) stays in
-place through the cutover, and the release needs no chain-parameter change:
-`weights_version` (`2040`) accepts key `2044`. The [release notes](releases/v0.1.3.md) summarise the operator upgrade.
+`v0.1.4` uses protocol key `2045` ([version contract](../endure/protocol/version_contract.py)).
+Miners and validators upgrade together; the [release notes](releases/v0.1.4.md)
+cover the upgrade.
 Supported development uses Python `>=3.12,<3.13` and Bittensor `>=10.5,<11`.
 Endure's mainnet netuid is `30`; the subnet rates itself under the same rules
 as every other member of the Alpha Risk universe.
@@ -88,16 +85,29 @@ them at the next protocol key change. Their values never apply:
 
 Before transport startup, a read-only market-data preflight verifies Finney's
 genesis identity (compared as normalized hex; an empty genesis answer is
-retried like other missing data), deep finalized timestamp history used by
-boundary search, and positive Alpha/TAO reserves for subnet 30 at least 30
-days before the finalized head. A reachable non-archive endpoint is
-insufficient. Transient transport failures, including an HTTP 429 cooldown
-during a coordinated restart, are
-retried until the probe's 120-second deadline; missing historical data,
-including a pruned node's `UnknownBlock: State already discarded` error, fails
-promptly. The SQLite database URL/path and the mainnet hotkey file are checked
-offline before the probe. Failure refuses startup; successful probing is not a
-guarantee of future archive availability. Chain identity is derived on every start —
+retried like other missing data), finalized timestamps 30 days deep, and
+positive Alpha/TAO reserves for subnet 30 at least 30 days before the
+finalized head. A reachable non-archive endpoint is
+insufficient. A wrong chain or missing historical data, including a pruned
+node's `UnknownBlock: State already discarded` error, refuses startup
+promptly. Transient failures, including rate limiting, timeouts and transport
+errors, are retried until the probe's 120-second deadline; if only they remain,
+the validator starts with `/health` `runtime.archive_check` set to
+`unverified` and re-runs the check hourly until it reports `passed`. Until the
+archive answers the mainnet genesis, the validator reads nothing from it. A
+re-check that finds a definitive failure stops the validator, as a failed
+startup check does. The SQLite database URL/path and the mainnet hotkey file
+are checked offline before the probe. Successful probing is not a guarantee of
+future archive availability.
+
+Give each validator its own keyed archive endpoint for `MARKET_DATA_ENDPOINT`.
+Resolution reads the archive heavily, and the public
+`wss://archive.chain.opentensor.ai:443` throttles historical reads with
+`Historical work rate limit exceeded`. After any rate-limit answer a validator
+pauses all archive reads for 60 seconds, so throttling slows resolution rather
+than stopping it.
+
+Chain identity is derived on every start —
 from a named endpoint, or by reading the genesis of any non-aliased endpoint —
 and is never taken from an operator config file.
 Validator and miner processes end with an explicit process exit after log
@@ -190,9 +200,10 @@ operators:
   read from `--endure.market_data_endpoint`. A round joins the pool window once
   that block is final, so every validator with the same window draws the same
   order.
-- **Archive outages.** A running validator keeps voting with the newest window
-  whose seed it has read. One restarted before it can read a seed abstains with
-  `score_state_unavailable`, and its `/miners` answers 503, until it reads one.
+- **Archive outages.** A validator, restarted or not, keeps voting with the
+  newest stored seed and the revealed rounds up to its round. One that has
+  stored no seed yet abstains with `score_state_unavailable`, and its
+  `/miners` answers 503, until it reads one.
   `/live` answers meanwhile, and the
   [archive preflight](#release-pinned-consensus-policy-key-2042) still runs
   first.
@@ -362,9 +373,8 @@ failure reads as zero scores: a validator restarted while scored resumes
 earned weights with no owner-vote flicker. A miner that re-registers at a new
 UID keeps its earned weight only if it returns before validators archive its
 score state, which they do at the first scoring pass after 2 consecutive
-metagraph resyncs miss its hotkey; after that it starts from zero. A running validator agrees with a restarted one
-once both have read the same pool tie seed; a validator restarted during an
-archive outage does not vote until it can read one (see
+metagraph resyncs miss its hotkey; after that it starts from zero. A running
+validator and a restarted one vote alike (see
 [identical forecasts](#identical-forecasts)).
 If the durable score state cannot be read, emission abstains with the
 `score_state_unavailable` block above: no owner vote, no stale weights, and
@@ -388,7 +398,7 @@ RPC/inclusion/finality delays, and the health detection window below. Postpone a
 cutover with insufficient headroom; this release cannot instantly rescue a
 validator already approaching inactivity.
 
-1. Agree the key-2044 release and canonical policy with independently operated
+1. Agree the new release and canonical policy with independently operated
    validators before asking miners to register. Promote qualified images through
    the existing release process and pin their digests. Miners upgrade in the
    same window: validators reject submissions carrying another protocol key.
@@ -420,7 +430,7 @@ validator already approaching inactivity.
 5. An explicitly true `disable_set_weights` is an indefinite off switch for both
    modes, not an unattended cutover configuration. Scores never auto-enable it.
    Do not raise chain `weights_version` for this cutover: SN30's value is
-   `2040` and Subtensor accepts a `version_key` at or above it, so key-`2044`
+   `2040` and Subtensor accepts a `version_key` at or above it, so the new key's
    submissions are accepted unchanged. Raising it is a later, deliberate owner
    decision only after every permit validator runs the new key; raising it
    earlier would reject validators still on an older key.
